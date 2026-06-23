@@ -743,6 +743,12 @@ def get_signup(signup_id: str, agent_id: str | None = None) -> dict | None:
             row = c.execute(f"SELECT * FROM run_signups WHERE id={ph}", (signup_id,)).fetchone()
         if not row:
             return None
+        _maybe_ready_required(c, row["run_id"])
+        if agent_id:
+            row = c.execute(f"SELECT * FROM run_signups WHERE id={ph} AND agent_id={ph}",
+                            (signup_id, agent_id)).fetchone()
+        else:
+            row = c.execute(f"SELECT * FROM run_signups WHERE id={ph}", (signup_id,)).fetchone()
         return _expire_signup_if_needed(c, dict(row))
 
 

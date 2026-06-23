@@ -89,6 +89,28 @@ def test_signup_duplicate_ready_gate_and_open_run_filter(tmp_path, monkeypatch):
         assert st.json()["status"] == "active"
 
 
+def test_signup_status_poll_rechecks_ready_gate_after_concurrent_signups(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        store.create_connected_run({
+            "id": "run_gate_poll", "game": "onuw", "label": "ONUW", "status": "open",
+            "n_games": 1, "players": 2, "seed_base": 4,
+        })
+        tokens = [_register(client, f"race-{i}")[1] for i in range(2)]
+        signups = [
+            client.post("/api/runs/run_gate_poll/signups", headers=_auth(token),
+                        json={"protocol_version": "arena-agent-v1"}).json()["signup_id"]
+            for token in tokens
+        ]
+        with store.conn() as c:
+            c.execute("UPDATE run_signups SET status='waiting', seat=NULL WHERE run_id='run_gate_poll'")
+            c.execute("UPDATE runs SET status='waiting' WHERE id='run_gate_poll'")
+
+        status = client.get(f"/api/signups/{signups[0]}", headers=_auth(tokens[0]))
+        assert status.status_code == 200, status.text
+        assert status.json()["status"] == "ready_required"
+        assert status.json()["seat"] == 0
+
+
 def test_agent_auth_scopes_signup_access(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
         store.create_connected_run({
