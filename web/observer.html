@@ -694,7 +694,7 @@ function renderPhases(){
 }
 function lastActionFor(pid){ let out=null;
   for(let i=0;i<=step;i++){ const mo=moments[i]; if(mo.kind!=="ev")continue; const e=mo.e;
-    if(e.t==="act"&&e.pid===pid)out={k:"night",v:e.text}; if(e.t==="vote"&&e.pid===pid)out={k:"vote",v:"→ "+nm(e.tgt)}; } return out; }
+    if(e.t==="act"&&e.pid===pid)out={k:"night",v:e.text}; if(e.t==="vote"&&e.pid===pid)out={k:"vote",v:"→ "+voteName(e.tgt)}; } return out; }
 function renderStrip(){
   const s=document.getElementById("strip"); s.innerHTML=""; const m=T(); const dead=deadSet();
   m.players.forEach((pl,pid)=>{ const b=document.createElement("button");
