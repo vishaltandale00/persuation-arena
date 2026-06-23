@@ -1,8 +1,7 @@
-"""Run-layer tests: role-balancing schedule, batch resilience, per-role + forfeit scoring,
+"""Run-layer tests: fresh-deal schedule, batch resilience, per-role + forfeit scoring,
 and agent forfeit telemetry. No API calls (the model client / _play_one are stubbed)."""
 from __future__ import annotations
 
-from collections import Counter
 from types import SimpleNamespace
 
 from arena import batch, store
@@ -12,30 +11,29 @@ from arena.config import AgentSpec
 SPECS = [AgentSpec(name=f"A{i}", model=f"m{i}") for i in range(5)]
 
 
-# ---- role-balanced schedule -------------------------------------------------
-def test_schedule_full_blocks_balance_every_seat():
-    sched = batch.role_balanced_schedule(n_games=20, n_players=5, seed_base=9000)
+# ---- fresh-deal schedule ----------------------------------------------------
+def test_schedule_uses_fresh_seed_every_game_and_rotates_seats():
+    sched = batch.fresh_deal_schedule(n_games=20, n_players=5, seed_base=9000)
     assert len(sched) == 20
-    # 4 full blocks; within a block every rotation 0..4 appears exactly once on a single shared seed
+    assert [seed for _, seed, _ in sched] == list(range(9000, 9020))
+    # Within each 5-game cycle, every rotation 0..4 appears exactly once.
     for b in range(4):
         block = sched[b * 5:(b + 1) * 5]
         assert sorted(r for _, _, r in block) == [0, 1, 2, 3, 4]
-        assert {s for _, s, _ in block} == {9000 + b}
-    # gids are 1..20 contiguous
     assert [g for g, _, _ in sched] == list(range(1, 21))
 
 
-def test_schedule_partial_final_block():
-    sched = batch.role_balanced_schedule(n_games=7, n_players=5, seed_base=100)
+def test_schedule_partial_cycle_continues_fresh_deals():
+    sched = batch.fresh_deal_schedule(n_games=7, n_players=5, seed_base=100)
     assert [(g, s, r) for g, s, r in sched] == [
-        (1, 100, 0), (2, 100, 1), (3, 100, 2), (4, 100, 3), (5, 100, 4),
-        (6, 101, 0), (7, 101, 1),
+        (1, 100, 0), (2, 101, 1), (3, 102, 2), (4, 103, 3), (5, 104, 4),
+        (6, 105, 0), (7, 106, 1),
     ]
 
 
-def test_schedule_rotation_gives_each_agent_each_seat_once_per_block():
-    # over one block, agent at spec-index k occupies seats (k+rot)%5 for rot in 0..4 -> all 5 seats
-    sched = batch.role_balanced_schedule(n_games=5, n_players=5, seed_base=0)
+def test_schedule_rotation_gives_each_agent_each_seat_once_per_cycle():
+    # Over one cycle, agent at spec-index k occupies seats (k+rot)%5 for rot in 0..4 -> all 5 seats.
+    sched = batch.fresh_deal_schedule(n_games=5, n_players=5, seed_base=0)
     seats_for_agent = {k: set() for k in range(5)}
     for _, _, rot in sched:
         for seat in range(5):
@@ -44,24 +42,15 @@ def test_schedule_rotation_gives_each_agent_each_seat_once_per_block():
     assert all(seats == {0, 1, 2, 3, 4} for seats in seats_for_agent.values())
 
 
-def test_block_gives_every_agent_identical_role_multiset():
-    """The point of the fix: a full block balances ROLES, not just seats. All games in a block
-    share a seed -> one deal; each agent visits each seat once -> each agent plays the deal's full
-    role multiset exactly once."""
+def test_schedule_does_not_repeat_no_wolf_deal_across_cycle():
     from arena.games.onuw import ONUW
-    core = ONUW({i: f"P{i}" for i in range(5)}, seed=777)
-    core.deal()
-    seat_role = {i: core.dealt[i] for i in range(5)}  # this block's dealt player-roles by seat
-    sched = batch.role_balanced_schedule(n_games=5, n_players=5, seed_base=777)
-    roles_for_agent = {k: Counter() for k in range(5)}
-    for _, seed, rot in sched:
-        assert seed == 777  # one shared deal across the block
-        for seat in range(5):
-            spec_idx = (seat + rot) % 5          # seat_to_spec[seat] = specs[(seat+rot)%n]
-            roles_for_agent[spec_idx][seat_role[seat]] += 1
-    multisets = {tuple(sorted(c.items())) for c in roles_for_agent.values()}
-    assert len(multisets) == 1                    # every agent played the identical role mix
-    assert multisets == {tuple(sorted(Counter(seat_role.values()).items()))}
+
+    counts = []
+    for _, seed, _ in batch.fresh_deal_schedule(n_games=5, n_players=5, seed_base=702742):
+        core = ONUW({i: f"P{i}" for i in range(5)}, seed=seed)
+        core.deal()
+        counts.append(list(core.dealt.values()).count("Werewolf"))
+    assert counts == [0, 2, 2, 1, 2]
 
 
 # ---- batch resilience -------------------------------------------------------

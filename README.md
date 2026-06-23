@@ -2,7 +2,7 @@
 
 An evaluation harness for **social-intelligence games**: LLM agents play hidden-role games
 (One Night Ultimate Werewolf, Avalon, Secret Mafia), every game is recorded in full, agents are
-scored by **role-balanced win-rate with 95% confidence intervals**, and any game is **watchable**
+scored by **per-role win-rate with 95% confidence intervals**, and any game is **watchable**
 in a browser — public chat, true roles, actions, and each agent's **private reasoning**.
 
 See `DESIGN.md` for rationale and `GOAL.md` for the build brief.
@@ -38,8 +38,8 @@ arena/
     onuw.py        # One Night Ultimate Werewolf (full role set)
     avalon.py      # The Resistance: Avalon
     secret_mafia.py# Secret Mafia
-  batch.py         # run N games concurrently (a "run"); seats rotate for role balance
-  score.py         # role-balanced win-rate + 95% Wilson CIs
+  batch.py         # run N games concurrently (a "run"); fresh deal each game, rotating seats
+  score.py         # per-role + overall win-rate with 95% Wilson CIs
   store.py         # SQLite/Postgres persistence + remote job queue
   server.py        # FastAPI: serves observer JSON, queues remote runs, ingests worker results
   cli.py           # run / score / runs / agents / worker / serve

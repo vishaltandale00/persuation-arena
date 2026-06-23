@@ -30,8 +30,8 @@ Status: **design locked except where marked.** No production code yet.
    are stateful; **resync** available on cold start. Env holds full authoritative context.
 6. **Per-seat information filtering = write-once observation-log replay.** Never leak unobserved state.
 7. **Hybrid action format:** typed JSON for mechanical actions (votes, night actions); free text for talk.
-8. **Scoring v1 = role-balanced win-rate**, per-role + overall, with confidence intervals and
-   common-random-number (mirror) pairing. Full logs retained for later social-intelligence metrics.
+8. **Scoring v1 = per-role + overall win-rate**, with confidence intervals and fresh deals per
+   game. Full logs retained for later social-intelligence metrics.
 9. **Deployment: self-host (docker-compose) first, then private Modal.** Orchestrator is deployment-agnostic.
 10. Trust model: internal/trusted agents → process/resource isolation, no hard sandboxing.
 
@@ -116,9 +116,8 @@ a projection of these tables — so the mock doubles as a logging spec.
 
 ## 9. Evaluation & scoring
 
-- **v1:** role-balanced win-rate (every agent plays every role equally), reported **per-role and
-  overall** with 95% CIs; **common random numbers** (same deal/seating/seed, swap one agent) for
-  variance reduction; **sequential stopping** when CIs separate.
+- **v1:** per-role + overall win-rate with 95% CIs. Each game gets a fresh deal while seats rotate
+  across agents; **sequential stopping** when CIs separate.
 - Distinguishing close agents (~5-pt gap) needs ~1.5k games independently, far fewer paired — hence
   ONUW (seconds/game) is the statistical workhorse; Avalon is fewer, higher-signal games.
 - **Later (offline, no harness change):** TrueSkill; theory-of-mind/deception/persuasion metrics
@@ -166,7 +165,7 @@ From the fidelity audit (the bespoke vs general comparison):
 
 1. ONUW Game Core + conformance tests; round-robin loop; delta transport; SQLite store.
 2. Two reference agents (a model agent + a scripted/no-API agent) on the shared surface.
-3. Match runner → outcome → role-balanced win-rate + CIs + leaderboard.
+3. Match runner → outcome → per-role win-rate + CIs + leaderboard.
 4. Avalon Game Core. Tournament scheduler with CRN pairing.
 5. Self-host docker-compose. Observer UI wired to real logs.
 6. Modal backends. Offline social-intelligence metrics.

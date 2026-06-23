@@ -39,7 +39,7 @@ def _score(args):
     if len(have) < run["n_games"] and not args.allow_partial:
         print(f"run '{args.run}' is incomplete: {len(have)}/{run['n_games']} games saved "
               f"(status={run['status']}). Re-run the missing games, or pass --allow-partial "
-              f"to score the partial run anyway (per-role balance may be skewed).")
+              f"to score the partial run anyway (sample size may be skewed).")
         return
     sc = score_run(args.run)
     if not sc:
@@ -47,7 +47,7 @@ def _score(args):
         return
     if len(have) < run["n_games"]:
         print(f"WARNING: scoring a PARTIAL run ({len(have)}/{run['n_games']} games) — "
-              f"role balance may be incomplete.\n")
+              f"sample size may be skewed.\n")
     rows = sorted(sc.items(), key=lambda kv: -kv[1]["overall"]["rate"])
     print(f"{'agent':10} {'win%':>5}  {'95% CI':>12}  {'n':>3}  {'fft%':>4}  by faction")
     for name, d in rows:

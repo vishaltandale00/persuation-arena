@@ -4,11 +4,8 @@ Games are independent, so we play many at once in a thread pool — the OpenAI c
 and each game is internally sequential. Worker threads only PLAY (and return transcripts); the main
 thread does all SQLite writes, avoiding concurrent-write locking.
 
-Role balancing: games are grouped into BLOCKS of n_players games that share one seed (hence one
-deal). Within a block the agent→seat assignment cycles through all n_players rotations, so every
-agent plays each seat — and therefore each of that deal's dealt roles — exactly once per block.
-This makes per-agent role mix balanced by construction (on full blocks), instead of relying on
-seat rotation over independent random deals where role assignment is only balanced in expectation.
+Scheduling: every game gets a fresh seed/deal. Seat assignment still rotates by game so no agent is
+stuck in one seat, but the run never repeats the same hidden-role deal across a whole block.
 
 Resilience: a single game's exception is caught and the run continues; the run is marked 'partial'
 (not 'done') so a hole in the rotation matrix can't silently bias the leaderboard.
@@ -32,17 +29,15 @@ def _now() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-def role_balanced_schedule(n_games: int, n_players: int, seed_base: int) -> list[tuple[int, int, int]]:
+def fresh_deal_schedule(n_games: int, n_players: int, seed_base: int) -> list[tuple[int, int, int]]:
     """Return [(gid, seed, rot)] for a run.
 
-    Block b = games [b*n_players, (b+1)*n_players); all games in a block use seed_base+b (one deal),
-    and rot cycles 0..n_players-1 so each agent visits each seat once per block. A final partial
-    block (when n_games is not a multiple of n_players) is still rotated but not perfectly balanced.
+    Seeds increment per game so each game gets an independent deal. Rot cycles 0..n_players-1 so
+    each agent still visits each seat regularly, without replaying the same hidden-role state.
     """
     sched = []
     for g in range(n_games):
-        block, rot = divmod(g, n_players)
-        sched.append((g + 1, seed_base + block, rot))
+        sched.append((g + 1, seed_base + g, g % n_players))
     return sched
 
 
@@ -70,11 +65,6 @@ def run_batch(game: str = "onuw", n_games: int = 20, seed_base: int = 9000,
         raise ValueError(f"{core_cls.TITLE} supports {lo}–{hi} players, got {n_players}")
     run_id = run_id or f"run_{seed_base}"
     agents_meta = [{"name": s.name, "model": s.model, "harness": s.harness} for s in specs]
-    if n_games % n_players:
-        print(f"[{run_id}] note: n_games={n_games} is not a multiple of {n_players}; "
-              f"the final block is partially rotated (role balance is exact only on full blocks).",
-              flush=True)
-
     store.save_run({
         "id": run_id, "game": game, "label": core_cls.TITLE, "status": "running",
         "n_games": n_games, "players": n_players, "seed_base": seed_base,
@@ -82,7 +72,7 @@ def run_batch(game: str = "onuw", n_games: int = 20, seed_base: int = 9000,
     })
 
     skip_gids = set(skip_gids or [])
-    sched = [(gid, seed, rot) for (gid, seed, rot) in role_balanced_schedule(n_games, n_players, seed_base)
+    sched = [(gid, seed, rot) for (gid, seed, rot) in fresh_deal_schedule(n_games, n_players, seed_base)
              if gid not in skip_gids]
     failed: list[int] = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
