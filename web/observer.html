@@ -86,6 +86,19 @@
   .winbars{display:flex;flex-direction:column;gap:8px}
   .wb{display:flex;align-items:center;gap:9px}
   .wb .nm{width:78px;font-size:12.5px} .wb .bar{height:8px;border-radius:4px;background:var(--accent)} .wb .c{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+  .factions{display:flex;flex-direction:column;gap:9px}
+  .frow{border-top:1px solid var(--line);padding-top:9px}
+  .frow:first-child{border-top:0;padding-top:0}
+  .fname{font-weight:600;font-size:12px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fpairs{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  .fcell{border:1px solid var(--line-2);border-radius:7px;padding:7px 8px;min-width:0;background:#fcfcfc}
+  .fcell.good{background:var(--good-soft);border-color:#cfe6df}
+  .fcell.evil{background:var(--evil-soft);border-color:#ecccca}
+  .flabel{font-family:var(--mono);font-size:9px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fpct{font-family:var(--mono);font-size:14px;font-weight:600;margin-top:2px}
+  .fcell.good .fpct{color:var(--good)}
+  .fcell.evil .fpct{color:var(--evil)}
+  .fn{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:1px}
   .teamsplit{display:flex;gap:8px;margin-bottom:4px}
   .ts{flex:1;border:1px solid var(--line-2);border-radius:8px;padding:10px;text-align:center}
   .ts .n{font-size:18px;font-weight:600} .ts.good{background:var(--good-soft);border-color:#cfe6df} .ts.good .n{color:var(--good)} .ts.evil{background:var(--evil-soft);border-color:#ecccca} .ts.evil .n{color:var(--evil)}
@@ -568,9 +581,11 @@ function renderRunOverview(){
         return '<div class="wb"><span class="nm">'+esc(a.name)+'</span><span class="bar" style="width:'+(s.rate*120)+'px"></span><span class="c">'+pct+'% <span style="color:var(--faint)">('+lo+'–'+hi+'%, n='+s.n+' · forfeits '+rel.forfeits+'/'+rel.calls+')</span></span></div>';
       }).join("")+'</div>'+
       '<div class="lbl" style="margin:16px 0 6px">By faction · win-rate</div>'+
-      '<div class="vg">'+curRun.agents.map(a=>{
+      '<div class="factions">'+curRun.agents.map(a=>{
         const s=sc[a.name]||{}, g=s.good||{rate:0,n:0}, e=s.evil||{rate:0,n:0};
-        return '<div class="r"><span>'+esc(a.name)+'</span><span style="font-family:var(--mono);font-size:11px;color:var(--ink-2)">'+lbl[0].toLowerCase()+' '+Math.round(g.rate*100)+'% (n'+g.n+') · '+lbl[1].toLowerCase()+' '+Math.round(e.rate*100)+'% (n'+e.n+')</span></div>';
+        return '<div class="frow"><div class="fname" title="'+escAttr(a.name)+'">'+esc(a.name)+'</div>'+
+          '<div class="fpairs"><div class="fcell good"><div class="flabel">'+esc(lbl[0])+'</div><div class="fpct">'+Math.round(g.rate*100)+'%</div><div class="fn">n='+g.n+'</div></div>'+
+          '<div class="fcell evil"><div class="flabel">'+esc(lbl[1])+'</div><div class="fpct">'+Math.round(e.rate*100)+'%</div><div class="fn">n='+e.n+'</div></div></div></div>';
       }).join("")+'</div>';
   } else {
     res.innerHTML='<div class="lbl">'+(running?("Running — "+prog+" games complete. Results appear as games finish."):"Not started yet.")+'</div>';
