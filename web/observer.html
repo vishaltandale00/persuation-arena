@@ -65,18 +65,21 @@
   .panel{border:1px solid var(--line);border-radius:11px;background:var(--panel)}
   .panel h3{margin:0;padding:13px 16px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600}
   .panel .body{padding:14px 16px}
+  .ovside{display:flex;flex-direction:column;gap:16px}
   .cfg{display:grid;grid-template-columns:1fr 1fr;gap:12px 18px}
   .cfg .c .k{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint)}
   .cfg .c .v{margin-top:2px;font-size:13.5px}
   .agtable{display:flex;flex-direction:column}
-  .agrow{display:grid;grid-template-columns:130px 1fr 120px 44px;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+  .agrow{display:flex;flex-direction:column;gap:5px;padding:10px 0;border-bottom:1px solid var(--line)}
   .agrow:last-child{border-bottom:0}
-  .agrow .who{display:flex;align-items:center;gap:9px}
+  .agrow .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .agrow .who{display:flex;align-items:center;gap:9px;min-width:0}
   .agrow .av{width:26px;height:26px;border-radius:6px;display:grid;place-items:center;font-family:var(--mono);font-size:10px;font-weight:600;border:1px solid var(--line-2);color:var(--ink-2)}
-  .agrow .nm{font-weight:600}
-  .agrow .md{font-family:var(--mono);font-size:12px}
-  .agrow .hn{font-family:var(--mono);font-size:11px;color:var(--ink-2);border:1px solid var(--line-2);border-radius:5px;padding:2px 7px;justify-self:start}
-  .agrow .wn{font-family:var(--mono);font-size:12px;color:var(--ink-2);justify-self:end}
+  .agrow .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .agrow .wn{font-family:var(--mono);font-size:11px;color:var(--ink-2);white-space:nowrap}
+  .agrow .meta,.agrow .conn{font-family:var(--mono);font-size:10.5px;color:var(--faint);overflow-wrap:anywhere}
+  .agrow .conn{line-height:1.45}
+  .pending{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
   .winbars{display:flex;flex-direction:column;gap:8px}
   .wb{display:flex;align-items:center;gap:9px}
   .wb .nm{width:78px;font-size:12.5px} .wb .bar{height:8px;border-radius:4px;background:var(--accent)} .wb .c{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
@@ -308,18 +311,17 @@
     <div class="pagehead"><h1 id="ovtitle"></h1><p id="ovsub"></p></div>
     <div class="ovgrid">
       <div>
-        <div class="panel"><h3>Agents in this run</h3><div class="body"><div class="agtable" id="ovagents"></div></div></div>
-        <div class="panel" id="connectedPanel" style="display:none;margin-top:16px"><h3>Connected agents</h3><div class="body" id="ovconnected"></div></div>
         <div class="section-h" style="margin:22px 0 8px"><span class="lbl" id="gameslbl"></span></div>
         <div class="glist">
           <div class="gh"><span></span><span>Game</span><span>Seed</span><span>Result</span><span>Winner</span><span></span></div>
           <div id="ovgames"></div>
         </div>
       </div>
-      <div>
+      <div class="ovside">
+        <div class="panel"><h3>Agents</h3><div class="body"><div class="agtable" id="ovagents"></div><div id="ovpending"></div></div></div>
         <div class="panel"><h3>Settings</h3><div class="body"><div class="cfg" id="ovcfg"></div></div></div>
-        <div class="panel" style="margin-top:16px"><h3>Results</h3><div class="body" id="ovresults"></div></div>
-        <div class="panel" id="eventPanel" style="display:none;margin-top:16px"><h3>Run events</h3><div class="body" id="ovevents"></div></div>
+        <div class="panel"><h3>Results</h3><div class="body" id="ovresults"></div></div>
+        <div class="panel" id="eventPanel" style="display:none"><h3>Run events</h3><div class="body" id="ovevents"></div></div>
       </div>
     </div>
   </div>
@@ -541,10 +543,7 @@ function renderRunOverview(){
   document.getElementById("ovid").textContent=curRun.id;
   document.getElementById("ovtitle").textContent=curRun.label;
   document.getElementById("ovsub").textContent=(running?("running · "+prog+" games"):(curRun.nGames+" games"))+" · "+curRun.players+" agents · "+(curRun.status==="done"?"completed":running?"running":"queued");
-  document.getElementById("ovagents").innerHTML=curRun.agents.map((a,i)=>
-    '<div class="agrow"><div class="who"><div class="av">'+tagOf(a.name)+'</div><div><div class="nm">'+esc(a.name)+'</div>'+(a.status?'<div class="sub">seat '+(a.seat??"—")+' · '+a.status+'</div>':'')+'</div></div>'+
-    '<div class="md">'+a.model+'</div><div class="hn">'+a.harness+'</div>'+
-    '<div class="wn">'+(a.wins!=null?a.wins+"w":"—")+'</div></div>').join("");
+  document.getElementById("ovagents").innerHTML=curRun.agents.map(agentRow).join("");
   document.getElementById("ovcfg").innerHTML=
     cfgItem("Game",curRun.label)+cfgItem("Players",curRun.players)+cfgItem("Games to play",curRun.nGames)+
     (curRun.game==="onuw"?cfgItem("Deck",DECK_LABELS[curRun.deckPreset]||curRun.deckPreset||"Arena pressure"):"")+
@@ -587,6 +586,24 @@ function renderRunOverview(){
   document.querySelectorAll(".grow2[data-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.g));
   renderConnectedDebug();
 }
+function agentRow(a){
+  const connected=curRun.connected||a.signup_id||a.status;
+  const status=a.status||"waiting";
+  const seat=a.seat!=null?("seat "+a.seat):"seat —";
+  const right=connected
+    ? '<span class="pill '+escAttr(status)+'">'+esc(status)+'</span>'
+    : '<div class="wn">'+(a.wins!=null?a.wins+"w":"—")+'</div>';
+  const conn=connected
+    ? '<div class="conn">'+seat+
+        (a.signup_id?' · '+esc(a.signup_id):'')+'<br>'+
+        'poll '+relTime(a.last_poll_utc)+' · cursor '+esc(a.last_event_id||"none")+
+        (a.ready_deadline_at?'<br>ready by '+esc(a.ready_deadline_at.slice(11,19)):'')+
+      '</div>'
+    : '';
+  return '<div class="agrow"><div class="top"><div class="who"><div class="av">'+tagOf(a.name)+'</div>'+
+    '<div class="nm">'+esc(a.name)+'</div></div>'+right+'</div>'+
+    '<div class="meta">'+esc(a.model)+' · '+esc(a.harness)+'</div>'+conn+'</div>';
+}
 function cfgItem(k,v){ return '<div class="c"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'; }
 function relTime(ts){
   if(!ts) return "never";
@@ -607,27 +624,16 @@ function compactPayload(e){
   return JSON.stringify(p);
 }
 function renderConnectedDebug(){
-  const cp=document.getElementById("connectedPanel"), ep=document.getElementById("eventPanel");
+  const ep=document.getElementById("eventPanel"), pending=document.getElementById("ovpending");
   if(!curRun.connected){
-    cp.style.display="none"; ep.style.display="none"; return;
+    pending.innerHTML=""; ep.style.display="none"; return;
   }
-  cp.style.display=""; ep.style.display="";
-  const signups=(curDebug&&curDebug.signups)||curRun.agents.map(a=>({
-    display_name:a.name, signup_id:a.signup_id, status:a.status, seat:a.seat,
-    last_poll_utc:a.last_poll_utc, last_event_id:a.last_event_id, ready_deadline_at:a.ready_deadline_at
-  }));
-  document.getElementById("ovconnected").innerHTML=
-    '<div class="connrows">'+signups.map(s=>
-      '<div class="connrow"><div class="seat">s'+(s.seat??"—")+'</div>'+
-      '<div><div class="nm">'+esc(s.display_name||s.signup_id)+'</div><div class="sub">'+esc(s.signup_id||"")+' · poll '+relTime(s.last_poll_utc)+' · cursor '+esc(s.last_event_id||"none")+'</div></div>'+
-      '<span class="pill '+escAttr(s.status||"waiting")+'">'+esc(s.status||"waiting")+'</span>'+
-      '<div class="sub">'+(s.ready_deadline_at?("ready by "+esc(s.ready_deadline_at.slice(11,19))):"")+'</div></div>'
-    ).join("")+'</div>'+
-    ((curDebug&&curDebug.pending_turns&&curDebug.pending_turns.length)?
-      '<div class="lbl" style="margin:12px 0 6px">Pending turns</div>'+
+  ep.style.display="";
+  pending.innerHTML=(curDebug&&curDebug.pending_turns&&curDebug.pending_turns.length)?
+      '<div class="pending"><div class="lbl" style="margin-bottom:6px">Pending turns</div>'+
       '<div class="connrows">'+curDebug.pending_turns.map(t=>
         '<div class="connrow"><div class="seat">s'+t.seat+'</div><div><div class="nm">'+esc(t.action_kind)+'</div><div class="sub">'+esc(t.turn_id)+' · '+esc(t.phase)+'</div></div><span class="pill active">pending</span><div class="sub">'+esc((t.deadline_at||"").slice(11,19))+'</div></div>'
-      ).join("")+'</div>':'');
+      ).join("")+'</div></div>':'';
   const events=(curDebug&&curDebug.recent_events)||[];
   document.getElementById("ovevents").innerHTML=events.length?
     '<div class="evlist">'+events.slice(-80).map(e=>
