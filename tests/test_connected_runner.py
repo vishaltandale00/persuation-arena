@@ -136,7 +136,7 @@ def test_connected_batch_completes_with_store_backed_replies(tmp_path, monkeypat
     _sqlite_store(tmp_path, monkeypatch)
     store.create_connected_run({
         "id": "run_batch", "game": "onuw", "label": "ONUW", "status": "open",
-        "n_games": 1, "players": 5, "seed_base": 11,
+        "n_games": 3, "players": 5, "seed_base": 11,
     })
     agent_by_signup = {}
     for i in range(5):
@@ -189,10 +189,34 @@ def test_connected_batch_completes_with_store_backed_replies(tmp_path, monkeypat
 
     run = store.get_run("run_batch")
     assert run["status"] == "done"
-    assert len(run["games"]) == 1
+    assert len(run["games"]) == 3
     assert {s["status"] for s in store.list_run_signups("run_batch")} == {"completed"}
-    event_types = [e["type"] for e in store.list_run_events("run_batch")]
+    events = store.list_run_events("run_batch", max_events=1000)
+    event_types = [e["type"] for e in events]
     assert "private_observation" in event_types
     assert "pass" in event_types
     assert "vote_revealed" in event_types
     assert "run_completed" in event_types
+
+    by_game = {}
+    for event in events:
+        by_game.setdefault(event["game_instance_id"], []).append(event)
+    for gid in range(1, 4):
+        game_events = by_game[f"run_batch_game_{gid:03d}"]
+        vote_observations = [
+            event for event in game_events
+            if event["phase"] == "vote"
+            and event["type"] == "private_observation"
+            and event["payload"]["action_kind"] == "onuw.vote"
+        ]
+        vote_results = [
+            event for event in game_events
+            if event["phase"] == "vote" and event["type"] == "action_result"
+        ]
+        vote_reveals = [
+            event for event in game_events
+            if event["phase"] == "vote" and event["type"] == "vote_revealed"
+        ]
+        assert len(vote_observations) == 5
+        assert len(vote_results) == 5
+        assert len(vote_reveals) == 5

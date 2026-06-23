@@ -152,6 +152,13 @@ def _utc_after(seconds: int) -> str:
         timespec="microseconds").replace("+00:00", "Z")
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _job(row) -> dict | None:
     if not row:
         return None
@@ -176,7 +183,16 @@ def conn():
     if _is_pg():
         import psycopg
         from psycopg.rows import dict_row
-        c = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row)
+        connect_timeout = _env_int("ARENA_PG_CONNECT_TIMEOUT_SECONDS", 8)
+        statement_timeout = _env_int("ARENA_PG_STATEMENT_TIMEOUT_MS", 15000)
+        extra_options = os.environ.get("ARENA_PG_OPTIONS", "").strip()
+        options = f"{extra_options} -c statement_timeout={statement_timeout}".strip()
+        c = psycopg.connect(
+            os.environ["DATABASE_URL"],
+            row_factory=dict_row,
+            connect_timeout=connect_timeout,
+            options=options,
+        )
     else:
         STORE_DIR.mkdir(parents=True, exist_ok=True)
         c = sqlite3.connect(DB_PATH)

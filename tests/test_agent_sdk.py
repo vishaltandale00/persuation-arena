@@ -71,6 +71,26 @@ def test_http_client_uses_protocol_paths_and_bearer_headers():
     assert any(c[1] == "/api/signups/signup_1/poll" for c in calls)
 
 
+def test_http_client_retries_transient_status_with_retry_after(monkeypatch):
+    calls = {"n": 0}
+    sleeps = []
+
+    monkeypatch.setattr("persuasion_arena_agent.client.time.sleep", lambda delay: sleeps.append(delay))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "0.25"}, json={"detail": "busy"})
+        return httpx.Response(200, json={"runs": [{"run_id": "run_retry"}]})
+
+    client = ArenaHttpClient("https://example.test", transport=httpx.MockTransport(handler),
+                             max_retries=2)
+
+    assert client.discover_runs("onuw") == [{"run_id": "run_retry"}]
+    assert calls["n"] == 2
+    assert sleeps == [0.25]
+
+
 def test_arena_agent_ready_poll_act_and_event_cursor(tmp_path):
     path = tmp_path / "credentials.json"
     calls = {"polls": [], "acts": 0}
