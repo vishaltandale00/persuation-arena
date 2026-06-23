@@ -820,6 +820,33 @@ def mark_signup_ready(signup_id: str, agent_id: str) -> tuple[dict | None, str |
         return _rowdict(c.execute(f"SELECT * FROM run_signups WHERE id={ph}", (signup_id,)).fetchone()), None
 
 
+def activate_run_if_ready(run_id: str) -> int:
+    """Coordinator-driven, race-free activation. When enough seated signups are ready, promote them
+    to active in ONE authoritative write, mark the run running, and emit the active event (once).
+    Idempotent — safe to call on every poll. Returns the count of seated+active signups.
+
+    This replaces relying on the agents' concurrent mark_ready() each noticing 'all ready' (a race
+    that can miss the promotion and never retry, especially across multiple API servers on Neon)."""
+    ph, now = _ph(), _utcnow()
+    with conn() as c:
+        run = c.execute(f"SELECT players FROM runs WHERE id={ph}", (run_id,)).fetchone()
+        if not run:
+            return 0
+        signups = _active_signups(c, run_id)
+        ready = [s for s in signups if s.get("seat") is not None and s["status"] in ("ready", "active")]
+        if len(ready) >= int(run["players"]):
+            cur = c.execute(
+                f"UPDATE run_signups SET status={ph}, updated_utc={ph} "
+                f"WHERE run_id={ph} AND status IN ('ready','ready_required')",
+                ("active", now, run_id))
+            if (cur.rowcount or 0) > 0:
+                c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'",
+                          ("running", run_id))
+                append_event_tx(c, run_id, "run_status", {"status": "active"}, phase="run")
+        return sum(1 for s in _active_signups(c, run_id)
+                   if s.get("seat") is not None and s["status"] == "active")
+
+
 def list_run_signups(run_id: str, statuses: set[str] | None = None) -> list[dict]:
     ph = _ph()
     with conn() as c:

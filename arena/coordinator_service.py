@@ -56,15 +56,17 @@ def _seated_active(run_id: str) -> int:
 
 
 def wait_for_active(run_id: str, need: int, timeout_s: float = 300.0) -> int:
-    """Block until `need` agents are seated+active (all signed up and readied), or timeout. Returns
-    the count actually active (may be < need on timeout — the caller decides whether to proceed)."""
+    """Block until `need` agents are seated+active, or timeout. The coordinator DRIVES activation
+    (a single race-free promotion of ready->active) rather than waiting for the agents to each
+    self-promote — that agent-side promotion is racy across servers on Neon. Returns the active
+    count (may be < need on timeout — the caller decides whether to proceed)."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        n = _seated_active(run_id)
+        n = store.activate_run_if_ready(run_id)
         if n >= need:
             return n
         time.sleep(0.5)
-    return _seated_active(run_id)
+    return store.activate_run_if_ready(run_id)
 
 
 def coordinate(run_id: str, rounds: int = 5) -> dict:

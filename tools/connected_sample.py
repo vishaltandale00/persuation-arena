@@ -29,11 +29,17 @@ import time
 
 from persuasion_arena_agent.agent import ArenaAgent
 from persuasion_arena_agent.credentials import CredentialsStore
-from examples.model_agent import ModelAgent
+from examples.session_agent import SessionAgent
+from examples.file_memory_agent import FileMemoryAgent
 
 from arena import store
 from arena.connected import run_connected_batch
 from arena.score import score_run
+
+# Basic reference harnesses, alternated across seats so a run mixes independently-built harnesses
+# (an LLM-session one and a write-events-to-a-file one). Each owns its own memory; the SDK only
+# delivers the delta event stream.
+HARNESSES = [SessionAgent, FileMemoryAgent]
 
 # The five real competitors (name shown on the site -> OpenRouter model slug).
 ROSTER = [
@@ -49,15 +55,16 @@ def _log(msg: str) -> None:
     print(f"[sample] {msg}", flush=True)
 
 
-def _run_agent(name: str, model: str, run_id: str, server: str, cred_path: str) -> None:
-    """One agent identity: register -> sign up -> ready -> poll/act until the run completes."""
+def _run_agent(name: str, model: str, run_id: str, server: str, cred_path: str, harness_cls) -> None:
+    """One agent identity: register -> sign up -> ready -> poll/act until the run completes.
+    `harness_cls` is the participant's harness — it owns its memory; the SDK only delivers events."""
     try:
         agent = ArenaAgent(name=name, server=server, credentials=CredentialsStore(cred_path))
-        ma = ModelAgent(model)
-        agent.on_event(ma.on_event)   # fold the delta event stream into per-game state
-        agent.act(ma.act)             # decide from reconstructed state + the action request
+        ma = harness_cls(model)
+        agent.on_event(ma.on_event)   # the harness folds each delta event into its OWN memory
+        agent.act(ma.act)             # the harness decides from the memory it built
         signup = agent.signup(run_id=run_id)
-        _log(f"{name}: signed up ({signup.status}, seat={signup.seat})")
+        _log(f"{name} [{harness_cls.__name__}]: signed up ({signup.status}, seat={signup.seat})")
         agent.run_forever([signup])
         _log(f"{name}: done")
     except Exception as e:  # an agent thread dying must not wedge the others
@@ -67,12 +74,11 @@ def _run_agent(name: str, model: str, run_id: str, server: str, cred_path: str) 
 def _wait_for_active(run_id: str, need: int, timeout_s: float = 180.0) -> int:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        active = store.list_run_signups(run_id, statuses={"active"})
-        seated = [s for s in active if s.get("seat") is not None]
-        if len(seated) >= need:
-            return len(seated)
+        n = store.activate_run_if_ready(run_id)   # coordinator-driven, race-free
+        if n >= need:
+            return n
         time.sleep(0.5)
-    return len(store.list_run_signups(run_id, statuses={"active"}))
+    return store.activate_run_if_ready(run_id)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--models", default=None,
                    help="comma-separated OpenRouter slugs to use instead of the default roster "
                         "(names derived from the slug); handy for cheap local validation")
+    p.add_argument("--join", action="store_true",
+                   help="agents-only: the run already exists and a REMOTE coordinator (e.g. the "
+                        "per-run Modal container) drives it — don't create the run or coordinate "
+                        "locally; just connect agents and wait for them to finish")
+    p.add_argument("--wait", type=int, default=1200, help="join-mode: seconds to wait for agents")
     args = p.parse_args(argv)
 
     if args.models:
@@ -93,30 +104,45 @@ def main(argv: list[str] | None = None) -> int:
     else:
         roster = list(ROSTER)
     players = len(roster)
-    _log(f"creating open run {args.run_id} (onuw, players={players}, games={args.games}, "
-         f"deck={args.deck}, seed={args.seed})")
-    store.create_connected_run({
-        "id": args.run_id,
-        "game": "onuw",
-        "label": "One Night Ultimate Werewolf",
-        "status": "open",
-        "n_games": args.games,
-        "players": players,
-        "seed_base": args.seed,
-        "submitter": "connected-sample",
-        "deck_preset": args.deck,
-    })
+    if args.join:
+        _log(f"joining existing run {args.run_id} as agents only — a remote coordinator "
+             f"(e.g. the per-run Modal container) drives the game")
+    else:
+        _log(f"creating open run {args.run_id} (onuw, players={players}, games={args.games}, "
+             f"deck={args.deck}, seed={args.seed})")
+        store.create_connected_run({
+            "id": args.run_id,
+            "game": "onuw",
+            "label": "One Night Ultimate Werewolf",
+            "status": "open",
+            "n_games": args.games,
+            "players": players,
+            "seed_base": args.seed,
+            "submitter": "connected-sample",
+            "deck_preset": args.deck,
+        })
 
     threads = []
-    for name, model in roster:
+    for i, (name, model) in enumerate(roster):
+        harness_cls = HARNESSES[i % len(HARNESSES)]
         # A path that does NOT exist yet (an empty file would make CredentialsStore json.loads("") crash);
         # the dir exists so the SDK can write the credential on first register.
         cred_path = os.path.join(tempfile.mkdtemp(prefix="arena-cred-"), "cred.json")
-        t = threading.Thread(target=_run_agent, args=(name, model, args.run_id, args.server, cred_path),
+        t = threading.Thread(target=_run_agent,
+                             args=(name, model, args.run_id, args.server, cred_path, harness_cls),
                              daemon=True, name=name)
         t.start()
         threads.append(t)
         time.sleep(0.3)  # stagger registration so seat order is stable
+
+    if args.join:
+        _log("agents connected; the remote coordinator will seat them and run the game(s). "
+             "waiting for agents to finish...")
+        for t in threads:
+            t.join(timeout=args.wait)
+        alive = [t.name for t in threads if t.is_alive()]
+        _log("all agents finished" if not alive else f"timed out; still running: {alive}")
+        return 0 if not alive else 1
 
     _log("waiting for all agents to seat and ready...")
     active = _wait_for_active(args.run_id, players)
