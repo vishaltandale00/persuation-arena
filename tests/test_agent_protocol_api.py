@@ -111,6 +111,26 @@ def test_signup_status_poll_rechecks_ready_gate_after_concurrent_signups(tmp_pat
         assert status.json()["seat"] == 0
 
 
+def test_signup_status_poll_does_not_regress_running_run(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        store.create_connected_run({
+            "id": "run_no_regress", "game": "onuw", "label": "ONUW", "status": "open",
+            "n_games": 1, "players": 1, "seed_base": 5,
+        })
+        _, token = _register(client, "runner")
+        signup = client.post("/api/runs/run_no_regress/signups", headers=_auth(token),
+                             json={"protocol_version": "arena-agent-v1"}).json()
+        signup_id = signup["signup_id"]
+        client.post(f"/api/signups/{signup_id}/ready", headers=_auth(token),
+                    json={"protocol_version": "arena-agent-v1"})
+        assert store.get_run("run_no_regress")["status"] == "running"
+
+        status = client.get(f"/api/signups/{signup_id}", headers=_auth(token))
+        assert status.status_code == 200
+        assert status.json()["status"] == "active"
+        assert store.get_run("run_no_regress")["status"] == "running"
+
+
 def test_agent_auth_scopes_signup_access(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
         store.create_connected_run({

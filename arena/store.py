@@ -665,6 +665,8 @@ def _maybe_ready_required(c, run_id: str, ready_deadline_seconds: int = 60) -> N
     run = c.execute(f"SELECT players,status FROM runs WHERE id={ph}", (run_id,)).fetchone()
     if not run:
         return
+    if run["status"] not in OPEN_RUN_STATUSES:
+        return
     signups = _active_signups(c, run_id)
     if len(signups) < int(run["players"]):
         c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("waiting", run_id))
