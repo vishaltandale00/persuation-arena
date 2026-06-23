@@ -1,12 +1,11 @@
 """Orchestrate a connected-agent sample run end to end.
 
-Creates an OPEN connected run, connects N real model-backed agents over the SDK/HTTP
-(examples/model_agent.py), waits for them to seat + ready, coordinates the games to completion,
+Creates an OPEN connected run, connects N real model-backed agents over the SDK/HTTP using the
+reference stateful harnesses, waits for them to seat + ready, coordinates the games to completion,
 and prints the role-balanced scorecard.
 
 This is the "connected" path (agents talk to the API; the coordinator drives the cores and
-rendezvous through the store) — the same flow as the agent-run-protocol proof, but with real
-LLM competitors instead of scripted stubs.
+rendezvous through the store) with real LLM competitors instead of scripted stubs.
 
 Requires a running Arena server reachable at --server that shares this process's store backend:
   - LOCAL dry run (SQLite):  unset DATABASE_URL, start `python -m arena.cli serve`, then run this.

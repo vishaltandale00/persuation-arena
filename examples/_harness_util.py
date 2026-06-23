@@ -173,20 +173,36 @@ def action_request(turn) -> str:
             'Reply with ONLY {"reasoning": "...", "action": <the action>}.')
 
 
+REPAIR_MESSAGE = ("That action was missing or illegal. "
+                  "Reply again with ONLY valid JSON and a LEGAL action.")
+
+
+def interpret(turn, raw_text: str) -> tuple[Any, str, bool]:
+    """Parse one brain's raw text into (action, reasoning, is_legal). Pure: no model call, no
+    mutation. Every harness brain (OpenRouter chat, codex, opencode, Claude Agent SDK) funnels its
+    output through here, so JSON extraction, coercion, and legality live in exactly one place."""
+    obj = _extract_json(raw_text) or {}
+    action = _coerce(turn, obj.get("action"))
+    reasoning = str(obj.get("reasoning", "")).strip()
+    return action, reasoning, _is_legal(turn, action)
+
+
+def fallback_action(turn) -> dict:
+    """A guaranteed-legal action so a seat never forfeits when a brain yields nothing usable."""
+    return _fallback_action(turn)
+
+
 def decide(model: str, messages: list[dict], turn) -> tuple[Any, str, str]:
     """LLM call + validate + one repair + legal fallback. `messages` is whatever the harness built
     from its own memory; this never mutates it."""
     raw = _llm(model, messages)
-    obj = _extract_json(raw) or {}
-    action, reasoning = _coerce(turn, obj.get("action")), str(obj.get("reasoning", "")).strip()
-    if _is_legal(turn, action):
+    action, reasoning, legal = interpret(turn, raw)
+    if legal:
         return action, reasoning, raw
     repair = list(messages) + [{"role": "assistant", "content": raw},
-                               {"role": "user", "content": "That action was missing or illegal. "
-                                "Reply again with ONLY valid JSON and a LEGAL action."}]
+                               {"role": "user", "content": REPAIR_MESSAGE}]
     raw2 = _llm(model, repair)
-    obj2 = _extract_json(raw2) or {}
-    action2, reasoning2 = _coerce(turn, obj2.get("action")), str(obj2.get("reasoning", "")).strip()
-    if _is_legal(turn, action2):
+    action2, reasoning2, legal2 = interpret(turn, raw2)
+    if legal2:
         return action2, reasoning2, raw2
-    return _fallback_action(turn), reasoning or "(fallback: no legal action produced)", raw
+    return fallback_action(turn), reasoning or "(fallback: no legal action produced)", raw

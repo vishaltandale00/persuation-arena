@@ -18,5 +18,10 @@ dependencies = [
 arena-agent = "persuasion_arena_agent.cli:main"
 arena-connected-runner = "arena.connected:main"
 
+[project.optional-dependencies]
+harness-agents = [
+    "claude-agent-sdk>=0.2.108",
+]
+
 [tool.setuptools.packages.find]
 include = ["arena*", "persuasion_arena_agent*", "api*", "app*"]

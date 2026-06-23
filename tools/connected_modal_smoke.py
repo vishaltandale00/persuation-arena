@@ -3,14 +3,14 @@
 Spawns a per-run Modal container, waits for its Tunnel URL, connects N scripted agents directly to it,
 lets the game(s) play, and reports the container's result. Uses the FREE scripted random_agent, so it
 proves the TOPOLOGY — per-run server + tunnel + agent connectivity + coordination + Neon persistence —
-with no LLM cost, and decoupled from the in-flight stateful model_agent work.
+with no LLM cost.
 
 The Modal container does all Neon writes (creates the run, serves, coordinates, persists); this process
 only spawns + drives agents, so it never queries prod Neon directly.
 
 Prereqs:
   .venv/bin/modal deploy arena/modal_app.py
-  modal secret `arena-db` holding DATABASE_URL
+  modal secret `neon-database-url` holding DATABASE_URL
 Run:
   PYTHONPATH=. .venv/bin/python tools/connected_modal_smoke.py --games 1 --rounds 2
 """

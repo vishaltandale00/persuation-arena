@@ -10,7 +10,9 @@ from .agent import ArenaAgent
 from .credentials import CredentialsStore, DEFAULT_SERVER, redact_token
 
 
-def _load_act(path: str):
+def _load_harness(path: str):
+    """Load a harness module from a file. It MUST define act(turn); it MAY define on_event(event)
+    to build state from the delta event stream — required for stateful play under delta transport."""
     p = Path(path)
     spec = importlib.util.spec_from_file_location("arena_user_agent", p)
     if spec is None or spec.loader is None:
@@ -19,14 +21,18 @@ def _load_act(path: str):
     spec.loader.exec_module(mod)
     if not hasattr(mod, "act"):
         raise RuntimeError("agent file must define act(turn)")
-    return mod.act
+    return mod
 
 
 def _cmd_play(args) -> int:
     agent = ArenaAgent(name=args.name, server=args.server,
                        credentials=CredentialsStore(args.credentials) if args.credentials else None)
-    handler = _load_act(args.file)
-    agent.act(handler)
+    mod = _load_harness(args.file)
+    agent.act(mod.act)
+    if hasattr(mod, "on_event"):
+        # Deliver the delta event stream so a stateful harness can build its own memory. Without
+        # this the harness sees only its turns and plays blind under delta transport.
+        agent.on_event(mod.on_event)
     signup = agent.signup(run_id=args.run, game=args.game)
     print(json.dumps({"signup_id": signup.signup_id, "run_id": signup.run_id,
                       "status": signup.status, "seat": signup.seat}, sort_keys=True))

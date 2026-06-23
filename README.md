@@ -1,134 +1,237 @@
 # Persuasion Arena
 
-An evaluation harness for **social-intelligence games**: LLM agents play hidden-role games
-(One Night Ultimate Werewolf, Avalon, Secret Mafia), every game is recorded in full, agents are
-scored by **per-role win-rate with 95% confidence intervals**, and any game is **watchable**
-in a browser — public chat, true roles, actions, and each agent's **private reasoning**.
+Persuasion Arena is an evaluation harness for social-deduction AI agents. Agents play hidden-role
+games, the arena records every game, and the observer UI lets you inspect public chat, true roles,
+actions, outcomes, and private reasoning traces.
 
-See `DESIGN.md` for rationale and `GOAL.md` for the build brief.
+The current build supports:
+
+- One Night Ultimate Werewolf, The Resistance: Avalon, and Secret Mafia cores.
+- Local batch runs with model agents through OpenRouter.
+- A browser observer for run history, transcripts, scores, deck presets, and hosted run creation.
+- SQLite for local development and Postgres/Neon for hosted or shared runs.
+- Remote worker mode, where model keys stay on laptops while a hosted server queues work.
+- Connected-agent mode, where external harnesses register, sign up for runs, receive event deltas,
+  maintain their own memory, and submit actions through the SDK.
+- Optional Modal per-run coordinator containers for connected runs.
+
+## Status
+
+This is an active prototype, ready for private collaboration and experimentation. It is not yet a
+polished public package: install from the repo for now, and expect API details to move while the
+agent protocol settles.
 
 ## Quickstart
 
+Prerequisites:
+
+- Python 3.12+
+- `uv`
+- An OpenRouter API key for model-backed runs
+
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt pytest pyyaml python-dotenv
-echo "OPENROUTER_API_KEY=sk-or-..." > .env        # your OpenRouter key
+uv sync
+echo "OPENROUTER_API_KEY=sk-or-..." > .env
 
-# play a run of games (cheap models by default)
-python -m arena.cli run --game onuw --games 20
+# Run a local batch of One Night Ultimate Werewolf games.
+uv run python -m arena.cli run --game onuw --games 20 --run-id demo_onuw
 
-# print its leaderboard
-python -m arena.cli score --run run_9000
+# Print the leaderboard.
+uv run python -m arena.cli score --run demo_onuw
 
-# serve the observer, then open http://localhost:8000/observer.html
-python -m arena.cli serve --port 8000
+# Serve the observer UI.
+uv run python -m arena.cli serve --port 8000
 ```
 
-Models run via **OpenRouter** (one key, any model). The default roster (`agents.yaml`) uses cheap
-models so a 20-game run costs a few cents.
+Open `http://localhost:8000/observer.html` after starting the server.
 
-## What's here
+## Project Layout
 
-```
+```text
 arena/
-  config.py        # loads OPENROUTER_API_KEY from .env; caps; roster
-  openrouter.py    # agent: prompt -> {reasoning, action} JSON (retry -> default on failure)
+  batch.py                 local batch runner
+  cli.py                   run, score, serve, worker commands
+  connected.py             connected-agent coordinator loop
+  coordinator_service.py   Modal-agnostic serve-and-coordinate helpers
+  modal_app.py             optional Modal per-run coordinator
+  openrouter.py            OpenRouter-backed in-process model agent
+  score.py                 win rates and Wilson confidence intervals
+  server.py                FastAPI API and observer backend
+  store.py                 SQLite/Postgres persistence and queue
   games/
-    base.py        # team map, tally_votes, compute_winners (Hunter chain, Tanner)
-    onuw.py        # One Night Ultimate Werewolf (full role set)
-    avalon.py      # The Resistance: Avalon
-    secret_mafia.py# Secret Mafia
-  batch.py         # run N games concurrently (a "run"); fresh deal each game, rotating seats
-  score.py         # per-role + overall win-rate with 95% Wilson CIs
-  store.py         # SQLite/Postgres persistence + remote job queue
-  server.py        # FastAPI: serves observer JSON, queues remote runs, ingests worker results
-  cli.py           # run / score / runs / agents / worker / serve
-web/observer.html# the observer UI (fetches from the server)
-tests/             # pytest: ONUW + Avalon conformance + invariants (no API calls)
+    onuw.py                One Night Ultimate Werewolf
+    avalon.py              The Resistance: Avalon
+    secret_mafia.py        Secret Mafia
+
+persuasion_arena_agent/    SDK for external connected agents
+examples/                  reference agents and event-memory harnesses
+tests/                     conformance, API, store, protocol, and runner tests
+tools/                     admin, connected-run, and smoke-test helpers
+web/observer.html          browser observer UI
+agents.yaml                default local model roster
 ```
 
-## Add an agent
+## Local Batch Runs
 
-Edit `agents.yaml` — one entry per agent:
+The default roster lives in `agents.yaml`. Each entry names an agent, an OpenRouter model slug, and
+the harness type:
 
 ```yaml
-- {name: Ada, model: mistralai/mistral-small-2603, harness: base}
+agents:
+  - {name: Ada, model: openai/gpt-4o-mini, harness: base}
 ```
 
-`model` is any [OpenRouter](https://openrouter.ai/models) slug. That's it — the agent is now in the
-default roster. You can also pass a custom roster per run via the New-run screen or the POST API.
+Useful commands:
 
-## Add a game
-
-1. Write a Game Core class in `arena/games/<game>.py` with a `play(agents) -> transcript` method.
-   Reuse the agent contract: each turn call `agent.act(prompt, parse_action, default_action)` and read
-   `resp.reasoning` (private, logged) and `resp.action` (public). Emit the transcript shape the
-   observer renders (see `onuw.py` — `players`, `cardsInPlay`, `phases` with `events`/`reason`/`synth`,
-   `outcome`, `winner_team`). Honour the invariants in `DESIGN.md §13` (per-seat info filtering,
-   atomic vote, win on end-of-night state).
-2. Register it in `arena/batch.py` → `GAME_CORES`.
-3. The observer auto-renders ONUW and Avalon with custom panels; other games use a generic state panel.
-
-## Start a run
-
-- **CLI:** `python -m arena.cli run --game avalon --games 6 --workers 8`
-- **UI:** open the observer → **New run** → pick game / games / models → **Launch run** (calls `POST /api/run`).
-- A run plays N games concurrently; seats rotate each game so agents play each position equally.
+```bash
+uv run python -m arena.cli agents
+uv run python -m arena.cli run --game onuw --games 20 --workers 8 --deck arena --run-id run_onuw
+uv run python -m arena.cli run --game avalon --games 6 --workers 8 --run-id run_avalon
+uv run python -m arena.cli runs
+uv run python -m arena.cli score --run run_onuw
+uv run python -m arena.cli serve --port 8000
+```
 
 ONUW deck presets:
 
-- `arena` (default): Werewolf x2, Minion, Seer, Robber, Troublemaker, Drunk, Tanner; adds
-  Insomniac at 6 players and Hunter at 7.
-- `classic`: the original simple scaffold with Minion and Villagers.
-- `tanner`: a Tanner/Drunk/Insomniac puzzle deck; Minion/Hunter join larger tables.
+- `arena`: default pressure deck with Minion, Seer, Robber, Troublemaker, Drunk, Tanner, and larger-table additions.
+- `classic`: simpler ONUW scaffold.
+- `tanner`: Tanner/Drunk/Insomniac-focused deck.
 
-Use `--deck arena|classic|tanner` on the CLI, or the **ONUW deck** selector in New Run.
+## Connected Agents
 
-## Remote Vercel + Neon mode
+Connected-agent mode is for external harnesses. The arena owns rules, validation, hidden-information
+filtering, transcripts, and scoring. The participant harness owns memory and action choice.
 
-The hosted site stores runs/jobs in Postgres. Model keys stay on laptops: each worker claims only
-jobs for its owner, runs games locally, and publishes transcripts back to the site.
+Basic SDK shape:
 
-Server env:
+```python
+from persuasion_arena_agent import ArenaAgent
+
+agent = ArenaAgent(name="my-agent", server="http://127.0.0.1:8000")
+
+@agent.on_event
+def remember(event):
+    ...
+
+@agent.act
+def act(turn):
+    return {"action": {"pass": True}, "reasoning": "No useful claim yet."}
+
+signup = agent.signup(run_id="connected_demo")
+agent.run_forever([signup])
+```
+
+Reference harnesses:
+
+- `examples/session_agent.py`: keeps one live model conversation per game.
+- `examples/file_memory_agent.py`: appends event deltas to a local markdown memory file.
+- `examples/random_agent.py`: no-LLM scripted smoke agent.
+
+Local connected sample:
 
 ```bash
-DATABASE_URL=postgresql://...              # Neon pooled URL
-INGEST_TOKENS=alice=long-random-token      # optional, comma-separated owner=token pairs
+# terminal 1
+uv run python -m arena.cli serve --port 8000
+
+# terminal 2
+uv run python tools/connected_sample.py \
+  --run-id connected_demo \
+  --games 1 \
+  --server http://127.0.0.1:8000
+```
+
+## Hosted Worker Mode
+
+Hosted mode lets a central server store runs/jobs in Postgres while workers execute games locally.
+Model keys stay on the worker machines.
+
+Server environment:
+
+```bash
+DATABASE_URL=postgresql://...
+INGEST_TOKENS=alice=long-random-token
 ```
 
 Worker:
 
 ```bash
-python -m arena.cli worker \
-  --server https://your-vercel-app.vercel.app \
+uv run python -m arena.cli worker \
+  --server https://your-arena.example \
   --owner alice \
   --token long-random-token
 ```
 
-The New-run screen has a **Worker owner** field. It must match the worker's `--owner`.
+The owner on the submitted run must match the worker owner. If no `INGEST_TOKENS` are configured,
+the server runs in local-trust mode.
+
+## Optional Modal Coordinator
+
+Connected runs can be served by one short-lived Modal container per run. The central API creates the
+run, spawns a coordinator container, and connected agents discover the coordinator tunnel URL in
+their signup/status responses.
+
+```bash
+grep '^DATABASE_URL=' .env > /tmp/db.env
+uv run modal secret create neon-database-url --from-dotenv /tmp/db.env
+uv run modal deploy arena/modal_app.py
+
+ARENA_MODAL_COORDINATOR=1 uv run python -m arena.cli serve --port 8000
+```
+
+Topology smoke test:
+
+```bash
+PYTHONPATH=. uv run python tools/connected_modal_smoke.py --games 1 --rounds 2
+```
+
+## Adding A Game
+
+1. Add a game core in `arena/games/<game>.py`.
+2. Implement a `play(agents) -> transcript` surface compatible with the observer:
+   `players`, `cardsInPlay`, `phases`, `outcome`, and `winner_team`.
+3. Use typed action schemas for mechanical choices and free text for discussion.
+4. Preserve hidden-information boundaries: a seat can only receive public events and its own private
+   observations.
+5. Register the core in `arena/batch.py` under `GAME_CORES`.
+6. Add tests for role actions, voting, win resolution, persistence, and any connected-agent events.
 
 ## Scoring
 
-`score.py` reports per-agent **overall** and **per-faction** (village/good vs werewolf/evil) win-rate,
-each with a 95% Wilson confidence interval. At n=20 the CIs are ~±20%; separating close agents needs
-more games (see `DESIGN.md §9`). The observer's run overview shows the bars and CIs.
+`arena/score.py` reports:
+
+- overall win rate
+- faction win rate
+- role win rate
+- 95% Wilson confidence intervals
+- forfeits and model-call counts
+
+Small runs are useful for smoke tests, not rankings. Separating close agents requires many games.
 
 ## Tests
 
 ```bash
-python -m pytest tests/ -q
-ARENA_TEST_DATABASE_URL=postgresql://postgres:arena@localhost:5433/arena python -m pytest tests/ -q
+uv run --with pytest python -m pytest tests/ -q
+uv run --with pytest python -m pytest tests/test_store_pg.py -q
 ```
 
-Covers ONUW role actions / swaps / Doppelgänger, Avalon quests + assassination, invariants
-(all-tied-die, no-kill, Hunter chain, Tanner, atomic vote, no-leak filtering), batch resilience,
-dual SQLite/Postgres store behavior, and remote queue claim/ingest/complete semantics.
+Postgres tests use `ARENA_TEST_DATABASE_URL` and skip when the test database is unavailable:
 
-## Known limitations (v1)
+```bash
+ARENA_TEST_DATABASE_URL=postgresql://postgres:arena@localhost:5433/arena \
+  uv run --with pytest python -m pytest tests/ -q
+```
 
-- **Speed:** real games are model-latency-bound; runs play games concurrently (default 8 workers).
-- **Balance:** with cheap models, the deceiving side tends to win (village/good coordinates poorly) —
-  a realistic signal, not a bug.
-- **Avalon hammer rule** is simplified (re-proposals cap at 3 then auto-pass).
-- Mirror/CRN pairing, TrueSkill, and offline ToM/deception metrics are designed-for but not yet built
-  (`DESIGN.md §9`).
+Current coverage includes ONUW role conformance, Avalon quests and assassination, hidden-information
+invariants, scoring, SQLite/Postgres store behavior, remote queue behavior, connected-agent APIs, and
+event-sourced seat-state reconstruction.
+
+## Known Limitations
+
+- Real model runs are model-latency-bound.
+- The default roster uses inexpensive models; results are useful for harness validation but not a
+  serious leaderboard.
+- Avalon currently uses a simplified hammer rule.
+- The Python package metadata and wheel asset layout still need cleanup before public package
+  publishing.
+- Modal coordinator mode is optional infrastructure; use local connected mode first when debugging.

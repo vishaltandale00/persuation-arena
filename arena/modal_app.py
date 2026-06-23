@@ -1,6 +1,6 @@
 """Per-run coordinator on Modal — one isolated, scale-to-zero container per run.
 
-Topology (see DESIGN + the connected-agent protocol):
+Topology:
   central API (Vercel+Neon) creates a run and fire-and-forgets `run_server.spawn(run_config)`.
   Modal cold-starts a container FOR THAT RUN which:
     1. serves that run's API (arena.server:app) under uvicorn,
