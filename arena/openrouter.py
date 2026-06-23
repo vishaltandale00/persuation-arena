@@ -107,7 +107,7 @@ class OpenRouterAgent:
             reasoning = str(obj.get("reasoning", "")).strip()
             try:
                 action = parse_action(obj.get("action"), last_raw)
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, AttributeError):
                 continue
             ms = (time.perf_counter() - t0) * 1000
             self.calls.append({"ok": True, "ms": ms, "raw": last_raw})

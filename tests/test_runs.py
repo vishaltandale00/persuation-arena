@@ -157,6 +157,16 @@ def test_agent_records_forfeit_on_api_failure(monkeypatch):
     assert len(a.calls) == 1 and a.calls[0]["ok"] is False
 
 
+def test_agent_defaults_when_parser_rejects_null_action(monkeypatch):
+    from arena import openrouter
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: _client_returning('{"reasoning":"r","action":null}'))
+    a = openrouter.OpenRouterAgent("X", "m")
+    resp = a.act("obs", lambda action, raw: action.get("move"), default_action="pass")
+    assert resp.ok is False and resp.action == "pass"
+    assert len(a.calls) == 1 and a.calls[0]["ok"] is False
+
+
 def test_agent_records_ok_on_valid_response(monkeypatch):
     from arena import openrouter
     monkeypatch.setattr(openrouter, "client",
