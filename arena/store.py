@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -159,6 +160,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _apply_pg_session_settings(c, statement_timeout: int) -> None:
+    search_path = os.environ.get("ARENA_PG_SEARCH_PATH", "").strip()
+    if search_path:
+        names = [name.strip() for name in search_path.split(",") if name.strip()]
+        if not names or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in names):
+            raise ValueError("ARENA_PG_SEARCH_PATH must contain comma-separated identifiers")
+        quoted = ", ".join(f'"{name}"' for name in names)
+        c.execute(f"SET search_path TO {quoted}")
+    if statement_timeout > 0:
+        c.execute(f"SET statement_timeout = {int(statement_timeout)}")
+
+
 def _job(row) -> dict | None:
     if not row:
         return None
@@ -185,14 +198,12 @@ def conn():
         from psycopg.rows import dict_row
         connect_timeout = _env_int("ARENA_PG_CONNECT_TIMEOUT_SECONDS", 8)
         statement_timeout = _env_int("ARENA_PG_STATEMENT_TIMEOUT_MS", 15000)
-        extra_options = os.environ.get("ARENA_PG_OPTIONS", "").strip()
-        options = f"{extra_options} -c statement_timeout={statement_timeout}".strip()
         c = psycopg.connect(
             os.environ["DATABASE_URL"],
             row_factory=dict_row,
             connect_timeout=connect_timeout,
-            options=options,
         )
+        _apply_pg_session_settings(c, statement_timeout)
     else:
         STORE_DIR.mkdir(parents=True, exist_ok=True)
         c = sqlite3.connect(DB_PATH)
