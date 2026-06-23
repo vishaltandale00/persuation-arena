@@ -84,6 +84,20 @@
   .ts{flex:1;border:1px solid var(--line-2);border-radius:8px;padding:10px;text-align:center}
   .ts .n{font-size:18px;font-weight:600} .ts.good{background:var(--good-soft);border-color:#cfe6df} .ts.good .n{color:var(--good)} .ts.evil{background:var(--evil-soft);border-color:#ecccca} .ts.evil .n{color:var(--evil)}
   .ts .k{font-family:var(--mono);font-size:9.5px;text-transform:uppercase;color:var(--faint);margin-top:2px}
+  .connrows{display:flex;flex-direction:column;gap:8px}
+  .connrow{display:grid;grid-template-columns:34px 1fr 118px 92px;gap:10px;align-items:center;border-bottom:1px solid var(--line);padding:7px 0}
+  .connrow:last-child{border-bottom:0}
+  .connrow .seat{font-family:var(--mono);font-size:11px;color:var(--faint)}
+  .connrow .nm{font-weight:600}
+  .connrow .sub{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+  .pill{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:5px;border:1px solid var(--line-2);justify-self:start}
+  .pill.active,.pill.ready,.pill.completed{background:var(--good-soft);color:var(--good);border-color:#cfe6df}
+  .pill.waiting,.pill.ready_required{background:var(--hover);color:var(--ink-2)}
+  .pill.expired,.pill.cancelled,.pill.rejected{background:var(--evil-soft);color:var(--evil);border-color:#ecccca}
+  .evlist{display:flex;flex-direction:column;gap:7px;max-height:300px;overflow:auto}
+  .ev{display:grid;grid-template-columns:42px 108px 1fr;gap:9px;align-items:start;font-family:var(--mono);font-size:10.5px;border-bottom:1px solid var(--line);padding-bottom:7px}
+  .ev:last-child{border-bottom:0}
+  .ev .seq{color:var(--faint)} .ev .typ{color:var(--ink-2)} .ev .pay{font-family:var(--sans);font-size:12px;color:var(--ink);overflow-wrap:anywhere}
 
   /* games list */
   .glist{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--panel);margin-top:6px}
@@ -222,6 +236,25 @@
     .gh,.grow2{grid-template-columns:16px 70px 1fr 96px;gap:10px} .gh span:nth-child(n+5),.grow2 .gseed,.replay{display:none}
     .keyrow{grid-template-columns:1fr}
   }
+  @media (max-width:600px){
+    .topbar{height:auto;min-height:50px;flex-wrap:wrap;gap:8px;padding:8px 10px}
+    .topbar .grow{display:none}
+    .nav{margin-left:0}
+    .nav button,.btn{font-size:12px;padding:6px 9px}
+    .wrap{padding:18px 14px 50px}
+    .ovgrid,.ovgrid>*{min-width:0}
+    .panel,.panel .body{min-width:0}
+    .agrow{grid-template-columns:1fr;gap:4px}
+    .agrow .md,.agrow .hn,.agrow .wn{justify-self:start;overflow-wrap:anywhere}
+    .agrow .sub{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+    .connrow{grid-template-columns:28px minmax(0,1fr);gap:5px 9px;align-items:start}
+    .connrow .pill,.connrow>.sub{grid-column:2;justify-self:start}
+    .connrow .sub{overflow-wrap:anywhere}
+    .ev{grid-template-columns:38px minmax(0,1fr);gap:5px 8px}
+    .ev .pay{grid-column:1/-1}
+    .gh,.grow2{grid-template-columns:16px 1fr;gap:10px}
+    .gh span:nth-child(n+3),.grow2 .gline,.grow2 .wtag{display:none}
+  }
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -234,6 +267,7 @@
     <button data-s="keys">Model keys</button>
   </nav>
   <span class="grow"></span>
+  <a class="btn" href="agent-run-protocol.html" target="_blank" rel="noreferrer">Protocol</a>
   <button class="btn primary" id="newrun">New run</button>
 </header>
 
@@ -260,6 +294,7 @@
     <div class="ovgrid">
       <div>
         <div class="panel"><h3>Agents in this run</h3><div class="body"><div class="agtable" id="ovagents"></div></div></div>
+        <div class="panel" id="connectedPanel" style="display:none;margin-top:16px"><h3>Connected agents</h3><div class="body" id="ovconnected"></div></div>
         <div class="section-h" style="margin:22px 0 8px"><span class="lbl" id="gameslbl"></span></div>
         <div class="glist">
           <div class="gh"><span></span><span>Game</span><span>Seed</span><span>Result</span><span>Winner</span><span></span></div>
@@ -269,6 +304,7 @@
       <div>
         <div class="panel"><h3>Settings</h3><div class="body"><div class="cfg" id="ovcfg"></div></div></div>
         <div class="panel" style="margin-top:16px"><h3>Results</h3><div class="body" id="ovresults"></div></div>
+        <div class="panel" id="eventPanel" style="display:none;margin-top:16px"><h3>Run events</h3><div class="body" id="ovevents"></div></div>
       </div>
     </div>
   </div>
@@ -350,6 +386,7 @@ let MODEL_CATALOG=DEFAULT_MODELS.map(id=>({id,name:id}));  // [{id,name}] — re
 const HARNESS_OPTS=["base"];  // only the base harness is implemented; others were removed
 function tagOf(n){ return (n[0]+(n[1]||"")).toUpperCase(); }
 function escAttr(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
 /* providers for keys */
 const PROVIDERS=[
@@ -364,6 +401,7 @@ const keyState={};
 /* ===== RUNS — each has its own agent roster (same agents only within the run) ===== */
 const API="api";
 let RUNS={}, RUN_ORDER=[];
+let curDebug=null;
 const TRANSCRIPTS={};
 async function jget(u){ const r=await fetch(API+u); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
 async function jpost(u,body){ const r=await fetch(API+u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})}); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
@@ -459,12 +497,18 @@ async function openRun(id){
   if(runPoll){ clearInterval(runPoll); runPoll=null; }
   try{ curRun=await jget("/runs/"+id); }catch(e){ console.error(e); return; }
   curRun.status=normStatus(curRun.status); curGame=null;
+  curDebug=await loadRunDebug(id);
   renderRunOverview();
   show("run");
   if(curRun.status==="run") runPoll=setInterval(()=>pollRun(id),4000);  // live game-by-game updates
 }
+async function loadRunDebug(id){
+  if(!curRun || !curRun.connected) return null;
+  try{ return await jget("/runs/"+id+"/debug"); }
+  catch(e){ console.error("run debug failed", e); return null; }
+}
 async function pollRun(id){
-  try{ const r=await jget("/runs/"+id); r.status=normStatus(r.status); curRun=r; renderRunOverview();
+  try{ const r=await jget("/runs/"+id); r.status=normStatus(r.status); curRun=r; curDebug=await loadRunDebug(id); renderRunOverview();
        if(r.status!=="run"){ clearInterval(runPoll); runPoll=null; } }
   catch(e){ /* keep showing last-good */ }
 }
@@ -475,7 +519,7 @@ function renderRunOverview(){
   document.getElementById("ovtitle").textContent=curRun.label;
   document.getElementById("ovsub").textContent=(running?("running · "+prog+" games"):(curRun.nGames+" games"))+" · "+curRun.players+" agents · "+(curRun.status==="done"?"completed":running?"running":"queued");
   document.getElementById("ovagents").innerHTML=curRun.agents.map((a,i)=>
-    '<div class="agrow"><div class="who"><div class="av">'+tagOf(a.name)+'</div><div><div class="nm">'+a.name+'</div></div></div>'+
+    '<div class="agrow"><div class="who"><div class="av">'+tagOf(a.name)+'</div><div><div class="nm">'+esc(a.name)+'</div>'+(a.status?'<div class="sub">seat '+(a.seat??"—")+' · '+a.status+'</div>':'')+'</div></div>'+
     '<div class="md">'+a.model+'</div><div class="hn">'+a.harness+'</div>'+
     '<div class="wn">'+(a.wins!=null?a.wins+"w":"—")+'</div></div>').join("");
   document.getElementById("ovcfg").innerHTML=
@@ -492,13 +536,14 @@ function renderRunOverview(){
       '<div class="lbl" style="margin:14px 0 6px">Overall win-rate · 95% CI</div>'+
       '<div class="winbars">'+curRun.agents.map(a=>{
         const s=(sc[a.name]&&sc[a.name].overall)||{rate:0,lo:0,hi:0,n:0};
+        const rel=sc[a.name]||{calls:0,forfeits:0,forfeit_rate:0};
         const pct=Math.round(s.rate*100),lo=Math.round(s.lo*100),hi=Math.round(s.hi*100);
-        return '<div class="wb"><span class="nm">'+a.name+'</span><span class="bar" style="width:'+(s.rate*120)+'px"></span><span class="c">'+pct+'% <span style="color:var(--faint)">('+lo+'–'+hi+'%, n='+s.n+')</span></span></div>';
+        return '<div class="wb"><span class="nm">'+esc(a.name)+'</span><span class="bar" style="width:'+(s.rate*120)+'px"></span><span class="c">'+pct+'% <span style="color:var(--faint)">('+lo+'–'+hi+'%, n='+s.n+' · forfeits '+rel.forfeits+'/'+rel.calls+')</span></span></div>';
       }).join("")+'</div>'+
       '<div class="lbl" style="margin:16px 0 6px">By faction · win-rate</div>'+
       '<div class="vg">'+curRun.agents.map(a=>{
         const s=sc[a.name]||{}, g=s.good||{rate:0,n:0}, e=s.evil||{rate:0,n:0};
-        return '<div class="r"><span>'+a.name+'</span><span style="font-family:var(--mono);font-size:11px;color:var(--ink-2)">'+lbl[0].toLowerCase()+' '+Math.round(g.rate*100)+'% (n'+g.n+') · '+lbl[1].toLowerCase()+' '+Math.round(e.rate*100)+'% (n'+e.n+')</span></div>';
+        return '<div class="r"><span>'+esc(a.name)+'</span><span style="font-family:var(--mono);font-size:11px;color:var(--ink-2)">'+lbl[0].toLowerCase()+' '+Math.round(g.rate*100)+'% (n'+g.n+') · '+lbl[1].toLowerCase()+' '+Math.round(e.rate*100)+'% (n'+e.n+')</span></div>';
       }).join("")+'</div>';
   } else {
     res.innerHTML='<div class="lbl">'+(running?("Running — "+prog+" games complete. Results appear as games finish."):"Not started yet.")+'</div>';
@@ -515,8 +560,56 @@ function renderRunOverview(){
   if(!curRun.games.length && !running) rows='<div style="padding:16px"><span class="lbl">No games yet — run is '+curRun.status+'.</span></div>';
   gl.innerHTML=rows;
   document.querySelectorAll(".grow2[data-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.g));
+  renderConnectedDebug();
 }
 function cfgItem(k,v){ return '<div class="c"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'; }
+function relTime(ts){
+  if(!ts) return "never";
+  const t=Date.parse(ts); if(!Number.isFinite(t)) return ts;
+  const s=Math.max(0,Math.round((Date.now()-t)/1000));
+  if(s<60) return s+"s ago";
+  if(s<3600) return Math.round(s/60)+"m ago";
+  return Math.round(s/3600)+"h ago";
+}
+function compactPayload(e){
+  const p=e.payload||{};
+  if(e.type==="speech") return "seat "+p.actor_seat+": "+(p.text||"");
+  if(e.type==="pass") return "seat "+p.actor_seat+" passed";
+  if(e.type==="vote_revealed") return "seat "+p.actor_seat+" -> "+p.target;
+  if(e.type==="phase_started"||e.type==="phase_ended") return p.text||p.phase||e.phase||"";
+  if(e.type==="game_result") return p.text||p.winner_team||"";
+  if(e.type==="forfeit") return p.reason||JSON.stringify(p);
+  return JSON.stringify(p);
+}
+function renderConnectedDebug(){
+  const cp=document.getElementById("connectedPanel"), ep=document.getElementById("eventPanel");
+  if(!curRun.connected){
+    cp.style.display="none"; ep.style.display="none"; return;
+  }
+  cp.style.display=""; ep.style.display="";
+  const signups=(curDebug&&curDebug.signups)||curRun.agents.map(a=>({
+    display_name:a.name, signup_id:a.signup_id, status:a.status, seat:a.seat,
+    last_poll_utc:a.last_poll_utc, last_event_id:a.last_event_id, ready_deadline_at:a.ready_deadline_at
+  }));
+  document.getElementById("ovconnected").innerHTML=
+    '<div class="connrows">'+signups.map(s=>
+      '<div class="connrow"><div class="seat">s'+(s.seat??"—")+'</div>'+
+      '<div><div class="nm">'+esc(s.display_name||s.signup_id)+'</div><div class="sub">'+esc(s.signup_id||"")+' · poll '+relTime(s.last_poll_utc)+' · cursor '+esc(s.last_event_id||"none")+'</div></div>'+
+      '<span class="pill '+escAttr(s.status||"waiting")+'">'+esc(s.status||"waiting")+'</span>'+
+      '<div class="sub">'+(s.ready_deadline_at?("ready by "+esc(s.ready_deadline_at.slice(11,19))):"")+'</div></div>'
+    ).join("")+'</div>'+
+    ((curDebug&&curDebug.pending_turns&&curDebug.pending_turns.length)?
+      '<div class="lbl" style="margin:12px 0 6px">Pending turns</div>'+
+      '<div class="connrows">'+curDebug.pending_turns.map(t=>
+        '<div class="connrow"><div class="seat">s'+t.seat+'</div><div><div class="nm">'+esc(t.action_kind)+'</div><div class="sub">'+esc(t.turn_id)+' · '+esc(t.phase)+'</div></div><span class="pill active">pending</span><div class="sub">'+esc((t.deadline_at||"").slice(11,19))+'</div></div>'
+      ).join("")+'</div>':'');
+  const events=(curDebug&&curDebug.recent_events)||[];
+  document.getElementById("ovevents").innerHTML=events.length?
+    '<div class="evlist">'+events.slice(-80).map(e=>
+      '<div class="ev"><span class="seq">#'+e.seq+'</span><span class="typ">'+esc(e.type)+'</span><span class="pay">'+esc(compactPayload(e))+'</span></div>'
+    ).join("")+'</div>':
+    '<div class="lbl">No run events recorded yet.</div>';
+}
 
 /* ===== GAME DETAIL ===== */
 async function openGame(gid){

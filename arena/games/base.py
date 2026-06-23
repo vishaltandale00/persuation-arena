@@ -8,7 +8,8 @@ class Agent(Protocol):
     name: str
     model: str
 
-    def act(self, observation: str, parse_action: Callable[[Any, str], Any], default_action: Any): ...
+    def act(self, observation: str, parse_action: Callable[[Any, str], Any],
+            default_action: Any, **turn_meta: Any): ...
 
 
 # Role -> team. Evil roles across games; everything else is good/village.

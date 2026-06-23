@@ -12,8 +12,10 @@ The output is a transcript dict in the shape the observer renders.
 """
 from __future__ import annotations
 
+import inspect
 import random
 from collections import Counter
+from typing import Any, Callable
 
 from .base import NO_KILL, Agent, agent_stats, compute_winners, player_won, tally_votes, team_of
 
@@ -57,7 +59,8 @@ class ONUW:
     MIN_PLAYERS, MAX_PLAYERS = 5, 7
 
     def __init__(self, names: dict[int, str], seed: int, discussion_rounds: int = 2,
-                 deck: list[str] | None = None, deal_override: list[str] | None = None):
+                 deck: list[str] | None = None, deal_override: list[str] | None = None,
+                 event_sink: Callable[..., None] | None = None):
         self.names = names
         self.n = len(names)
         self.seed = seed
@@ -72,6 +75,7 @@ class ONUW:
         self.obs: dict[int, list[str]] = {i: [] for i in range(self.n)}
         self.public: list[str] = []
         self._reborn_insomniacs: list[int] = []  # doppel-insomniac to re-wake at end
+        self.event_sink = event_sink
 
     # ---- setup -------------------------------------------------------------
     def deal(self):
@@ -79,6 +83,9 @@ class ONUW:
         for i in range(self.n):
             self.dealt[i] = self.current[i] = self.believes[i] = cards[i]
         self.center = cards[self.n:]
+        for i in range(self.n):
+            self._emit("role_info", {"seat": i, "role": self.dealt[i]},
+                       phase="setup", visibility="private", target_seat=i)
 
     def _shuffled(self):
         cards = list(self.deck)
@@ -94,6 +101,46 @@ class ONUW:
 
     def _deck_line(self) -> str:
         return ", ".join(f"{k} x{v}" for k, v in Counter(self.deck).items())
+
+    def _emit(self, event_type: str, payload: dict[str, Any], *,
+              phase: str | None = None, visibility: str = "public",
+              target_seat: int | None = None) -> None:
+        if self.event_sink:
+            self.event_sink(event_type, payload, phase=phase,
+                            visibility=visibility, target_seat=target_seat)
+
+    def _players_choice(self, seats: list[int]) -> list[dict[str, Any]]:
+        return [{"seat": i, "name": self.names[i]} for i in seats]
+
+    def _target_schema(self, field: str, seats: list[int], nullable: bool = False) -> dict:
+        enum = list(seats)
+        typ: str | list[str] = "integer"
+        if nullable:
+            enum.append(None)
+            typ = ["integer", "null"]
+        return {
+            "type": "object",
+            "required": [field],
+            "properties": {field: {"type": typ, "enum": enum}},
+            "additionalProperties": False,
+        }
+
+    def _act(self, agent: Agent, observation: str, parse_action, default_action: Any, **turn_meta: Any):
+        try:
+            params = inspect.signature(agent.act).parameters.values()
+            supports_meta = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+        except (TypeError, ValueError):
+            supports_meta = True
+        if supports_meta:
+            return agent.act(observation, parse_action, default_action, **turn_meta)
+        return agent.act(observation, parse_action, default_action)
+
+    def _prepare_or_act(self, agent: Agent, observation: str, parse_action,
+                        default_action: Any, **turn_meta: Any):
+        prepare = getattr(agent, "prepare_act", None)
+        if callable(prepare):
+            return prepare(observation, parse_action, default_action, **turn_meta)
+        return self._act(agent, observation, parse_action, default_action, **turn_meta)
 
     def base_prompt(self, pid: int) -> str:
         believed = self.believes[pid]
@@ -117,6 +164,7 @@ class ONUW:
     def run_night(self, agents: dict[int, Agent]):
         events: list[dict] = [{"t": "sys", "text": "Roles dealt; 3 cards placed in the center; night begins."}]
         reason: dict[int, str] = {}
+        self._emit("phase_started", {"phase": "night", "text": "Night begins."}, phase="night")
 
         # 1) Doppelganger copies a player and performs that role's action now.
         for d in self.players_with_dealt("Doppelganger"):
@@ -175,6 +223,7 @@ class ONUW:
             events.append({"t": "act", "pid": ins, "text": f"Insomniac checks own card -> {self.current[ins]}"})
 
         events.append({"t": "sys", "text": "Dawn breaks. Everyone wakes."})
+        self._emit("phase_ended", {"phase": "night", "text": "Dawn breaks. Everyone wakes."}, phase="night")
         synth = {
             "state": "Roles dealt; night actions resolved in wake order on each role's wake-time view.",
             "key": "Cards may have moved (Robber/Troublemaker/Drunk/Doppelganger). Players act on what they saw, which later swaps can invalidate.",
@@ -207,13 +256,27 @@ class ONUW:
                 raise ValueError("bad target")
             return t
 
-        resp = agent.act(prompt, parse, default_action=targets[0])
+        resp = self._act(
+            agent,
+            prompt,
+            parse,
+            default_action=targets[0],
+            phase="night",
+            action_kind="onuw.doppelganger.copy_player",
+            legal_action={
+                "schema": self._target_schema("target", targets),
+                "choices": {"players": self._players_choice(targets)},
+            },
+            default_wire_action={"target": targets[0]},
+        )
         t = resp.action
         copied = self.current[t]
         self._doppel_role[pid] = copied
         self.current[pid] = copied  # becomes that role for win resolution
         self.believes[pid] = copied
         self.obs[pid].append(f"As Doppelganger you copied {self.names[t]} and became a {copied}.")
+        self._emit("role_info", {"seat": pid, "copied_seat": t, "role": copied},
+                   phase="night", visibility="private", target_seat=pid)
         # perform the copied action immediately for the action roles
         extra = ""
         if copied == "Seer":
@@ -250,13 +313,58 @@ class ONUW:
                 return ("center", idx)
             raise ValueError("bad mode")
 
-        resp = agent.act(prompt, parse, default_action=("center", [0, 1]))
+        center_indices = list(range(len(self.center)))
+        resp = self._act(
+            agent,
+            prompt,
+            parse,
+            default_action=("center", [0, 1]),
+            phase="night",
+            action_kind="onuw.seer.inspect",
+            legal_action={
+                "schema": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "required": ["mode", "target"],
+                            "properties": {
+                                "mode": {"enum": ["player"]},
+                                "target": {"type": "integer", "enum": alive_targets},
+                            },
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "required": ["mode", "indices"],
+                            "properties": {
+                                "mode": {"enum": ["center"]},
+                                "indices": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "enum": center_indices},
+                                    "minItems": 2,
+                                    "maxItems": 2,
+                                    "uniqueItems": True,
+                                },
+                            },
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
+                "choices": {"players": self._players_choice(alive_targets),
+                            "center": center_indices},
+            },
+            default_wire_action={"mode": "center", "indices": [0, 1]},
+        )
         mode, val = resp.action
         if mode == "player":
             self.obs[pid].append(f"As Seer you looked at {self.names[val]}'s card: {self.current[val]}.")
+            self._emit("role_info", {"seat": pid, "target": val, "role": self.current[val]},
+                       phase="night", visibility="private", target_seat=pid)
             return f"Seer views {self.names[val]} -> {self.current[val]}", resp.reasoning, resp.ms
         roles = [self.center[i] for i in val]
         self.obs[pid].append(f"As Seer you looked at center #{val[0]+1},#{val[1]+1}: {roles[0]}, {roles[1]}.")
+        self._emit("role_info", {"seat": pid, "center_indices": val, "roles": roles},
+                   phase="night", visibility="private", target_seat=pid)
         return f"Seer views center #{val[0]+1},#{val[1]+1} -> {roles[0]}, {roles[1]}", resp.reasoning, resp.ms
 
     def _robber_action(self, pid: int, agent: Agent):
@@ -275,7 +383,19 @@ class ONUW:
                 raise ValueError("bad target")
             return t
 
-        resp = agent.act(prompt, parse, default_action=targets[0])
+        resp = self._act(
+            agent,
+            prompt,
+            parse,
+            default_action=targets[0],
+            phase="night",
+            action_kind="onuw.robber.swap_or_decline",
+            legal_action={
+                "schema": self._target_schema("target", targets, nullable=True),
+                "choices": {"players": self._players_choice(targets), "decline": True},
+            },
+            default_wire_action={"target": targets[0]},
+        )
         t = resp.action
         if t is None:
             self.obs[pid].append("As Robber you declined to swap; you are still the Robber.")
@@ -284,6 +404,8 @@ class ONUW:
         new_role = self.current[pid]
         self.obs[pid].append(f"As Robber you swapped with {self.names[t]} and your new card is {new_role}.")
         self.believes[pid] = new_role
+        self._emit("role_info", {"seat": pid, "swapped_with": t, "role": new_role},
+                   phase="night", visibility="private", target_seat=pid)
         return f"Robber swaps with {self.names[t]} -> now {new_role}", resp.reasoning, resp.ms
 
     def _tm_action(self, pid: int, agent: Agent):
@@ -301,7 +423,41 @@ class ONUW:
                 raise ValueError("bad pair")
             return (x, y)
 
-        resp = agent.act(prompt, parse, default_action=(others[0], others[1]))
+        resp = self._act(
+            agent,
+            prompt,
+            parse,
+            default_action=(others[0], others[1]),
+            phase="night",
+            action_kind="onuw.troublemaker.swap_two_or_decline",
+            legal_action={
+                "schema": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "required": ["a", "b"],
+                            "properties": {
+                                "a": {"type": "integer", "enum": others},
+                                "b": {"type": "integer", "enum": others},
+                            },
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "required": ["a", "b"],
+                            "properties": {
+                                "a": {"type": "null"},
+                                "b": {"type": "null"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
+                "choices": {"players": self._players_choice(others), "decline": True},
+                "rules": {"distinct": [["a", "b"]]},
+            },
+            default_wire_action={"a": others[0], "b": others[1]},
+        )
         pair = resp.action
         if pair is None:
             self.obs[pid].append("As Troublemaker you declined to swap anyone.")
@@ -323,7 +479,20 @@ class ONUW:
                 raise ValueError("bad index")
             return i
 
-        resp = agent.act(prompt, parse, default_action=0)
+        indices = list(range(len(self.center)))
+        resp = self._act(
+            agent,
+            prompt,
+            parse,
+            default_action=0,
+            phase="night",
+            action_kind="onuw.drunk.swap_center",
+            legal_action={
+                "schema": self._target_schema("index", indices),
+                "choices": {"center": indices},
+            },
+            default_wire_action={"index": 0},
+        )
         i = resp.action
         self.current[pid], self.center[i] = self.center[i], self.current[pid]
         self.obs[pid].append(f"As Drunk you swapped your card with center #{i+1} (you did not see your new role).")
@@ -337,6 +506,8 @@ class ONUW:
         max_rounds = self.discussion_rounds
         events: list[dict] = [{"t": "sys", "text": f"Day breaks. Round-robin discussion (up to {max_rounds} rounds; ends once a full round passes in silence)."}]
         reason: dict[int, str] = {}
+        self._emit("phase_started", {"phase": "discussion", "text": "Day discussion begins."},
+                   phase="discussion")
         order = list(range(self.n))
         self.rng.shuffle(order)
         msgs = 0
@@ -348,12 +519,16 @@ class ONUW:
                 txt, r, passed, ms = self._speak(pid, agents[pid]); reason[pid] = r
                 if passed:
                     events.append({"t": "pass", "pid": pid, "ms": ms}); self.public.append(f"{self.names[pid]} passes.")
+                    self._emit("pass", {"actor_seat": pid}, phase="discussion")
                 else:
                     events.append({"t": "say", "pid": pid, "text": txt, "ms": ms}); self.public.append(f"{self.names[pid]}: {txt}"); msgs += 1; spoke += 1
+                    self._emit("speech", {"actor_seat": pid, "text": txt}, phase="discussion")
             if spoke == 0:
                 events.append({"t": "sys", "text": "A full round passed in silence — discussion ends."})
                 break
         events.append({"t": "sys", "text": f"Discussion closes ({msgs} messages over {rnd+1} round(s)). Moving to the vote."})
+        self._emit("phase_ended", {"phase": "discussion", "messages": msgs, "rounds": rnd + 1},
+                   phase="discussion")
         synth = {
             "state": f"Round-robin discussion ran {rnd+1} round(s) (cap {max_rounds}); agents claim roles and accuse.",
             "key": "Claims are cheap once cards can move; players weigh hard night-info against unverifiable stories.",
@@ -369,12 +544,47 @@ class ONUW:
         )
 
         def parse(a, raw):
-            s = str(a).strip()
+            if isinstance(a, dict):
+                if a.get("pass") is True:
+                    return "pass"
+                if "speak" in a:
+                    s = str(a["speak"]).strip()
+                else:
+                    raise ValueError("bad speech action")
+            else:
+                s = str(a).strip()
             if not s:
                 raise ValueError("empty")
             return s
 
-        resp = agent.act(prompt, parse, default_action="pass")
+        resp = self._act(
+            agent,
+            prompt,
+            parse,
+            default_action="pass",
+            phase="discussion",
+            action_kind="onuw.discussion.speak_or_pass",
+            legal_action={
+                "schema": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "required": ["speak"],
+                            "properties": {"speak": {"type": "string", "minLength": 1, "maxLength": 1000}},
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "required": ["pass"],
+                            "properties": {"pass": {"enum": [True]}},
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
+                "choices": {"pass": True},
+            },
+            default_wire_action={"pass": True},
+        )
         s = resp.action
         if s.lower() in ("pass", "(pass)", "stay silent", "silent"):
             return "", resp.reasoning, True, resp.ms
@@ -384,15 +594,26 @@ class ONUW:
     def run_vote(self, agents: dict[int, Agent]):
         events: list[dict] = [{"t": "sys", "text": "Vote: everyone points at one player simultaneously (or 'no one')."}]
         reason: dict[int, str] = {}
+        self._emit("phase_started", {"phase": "vote", "text": "Vote begins."}, phase="vote")
         frozen_public = list(self.public)  # freeze pre-vote state; all voters see the same thing
         votes: dict[int, int] = {}
         vote_ms: dict[int, float] = {}
+        pending: dict[int, Any] = {}
         for pid in range(self.n):
-            tgt, r, ms = self._vote(pid, agents[pid], frozen_public); reason[pid] = r
-            votes[pid] = tgt; vote_ms[pid] = ms
+            pending[pid] = self._vote(pid, agents[pid], frozen_public, wait=False)
+        for pid in range(self.n):
+            vote_result = pending[pid].wait() if hasattr(pending[pid], "wait") else pending[pid]
+            if isinstance(vote_result, tuple):
+                tgt, r, ms = vote_result
+            else:
+                tgt, r, ms = vote_result.action, vote_result.reasoning, vote_result.ms
+            reason[pid] = r
+            votes[pid] = tgt
+            vote_ms[pid] = ms
         for pid in range(self.n):
             t = votes[pid]
             events.append({"t": "vote", "pid": pid, "tgt": t, "text": "votes", "ms": vote_ms[pid]})
+            self._emit("vote_revealed", {"actor_seat": pid, "target": t}, phase="vote")
         deaths = tally_votes(votes, list(range(self.n)))
         counts: dict[int, int] = {}
         for t in votes.values():
@@ -409,10 +630,11 @@ class ONUW:
         }
         self._deaths = deaths
         self._votes = votes
+        self._emit("phase_ended", {"phase": "vote", "deaths": deaths}, phase="vote")
         return {"name": "Vote", "kind": "vote", "events": events, "reason": reason, "synth": synth,
                 "votes": [{"pid": p, "tgt": t} for p, t in votes.items()], "tally": tally, "deaths": deaths}
 
-    def _vote(self, pid: int, agent: Agent, frozen_public: list[str]):
+    def _vote(self, pid: int, agent: Agent, frozen_public: list[str], wait: bool = True):
         targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid) + (
             "\n\nFINAL VOTE: point at the player you believe should be eliminated, or vote for no one. "
@@ -421,6 +643,8 @@ class ONUW:
         )
 
         def parse(a, raw):
+            if isinstance(a, dict):
+                a = a["target"]
             t = int(a)
             if t == NO_KILL:
                 return NO_KILL
@@ -428,8 +652,24 @@ class ONUW:
                 raise ValueError("bad target")
             return t
 
-        resp = agent.act(prompt, parse, default_action=self.rng.choice(targets))
-        return resp.action, resp.reasoning, resp.ms
+        default_target = self.rng.choice(targets)
+        req_or_resp = self._prepare_or_act(
+            agent,
+            prompt,
+            parse,
+            default_action=default_target,
+            phase="vote",
+            action_kind="onuw.vote",
+            legal_action={
+                "schema": self._target_schema("target", targets + [NO_KILL]),
+                "choices": {"players": self._players_choice(targets), "no_one": NO_KILL},
+            },
+            default_wire_action={"target": default_target},
+        )
+        resp = req_or_resp.wait() if wait and hasattr(req_or_resp, "wait") else req_or_resp
+        if hasattr(resp, "action"):
+            return resp.action, resp.reasoning, resp.ms
+        return resp
 
     # ---- resolution --------------------------------------------------------
     def resolve(self):
@@ -446,6 +686,7 @@ class ONUW:
             winner, text = "evil", "VILLAGE LOSES."
         self._wins = wins
         events = [{"t": "result", "team": winner, "text": text}]
+        self._emit("game_result", {"winner_team": winner, "text": text, "deaths": deaths}, phase="result")
         synth = {"state": text, "key": "Win evaluated on END-OF-NIGHT roles (Hunter chain + Tanner applied).",
                  "note": "Per-seat decision quality varies — retained for offline scoring."}
         return {"name": "Result", "kind": "result", "events": events, "reason": {}, "synth": synth,

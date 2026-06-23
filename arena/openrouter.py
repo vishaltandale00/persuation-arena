@@ -76,6 +76,7 @@ class OpenRouterAgent:
         observation: str,
         parse_action: Callable[[Any, str], Any],
         default_action: Any,
+        **_: Any,
     ) -> AgentResponse:
         """observation: full filtered prompt for this turn.
         parse_action(action_field, raw_text) -> validated action (raise ValueError if invalid).
