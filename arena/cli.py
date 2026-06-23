@@ -23,7 +23,7 @@ def _run(args):
     from .batch import run_batch
     rid = args.run_id or f"run_{args.seed}"
     run_batch(game=args.game, n_games=args.games, seed_base=args.seed, run_id=rid,
-              workers=args.workers, discussion_rounds=args.rounds)
+              workers=args.workers, discussion_rounds=args.rounds, deck_preset=args.deck)
     print(f"\nDone. View at http://localhost:{args.port}/observer.html  (run: {rid})")
     print(f"Score with: python -m arena.cli score --run {rid}")
 
@@ -137,7 +137,8 @@ def _run_claimed_job(args, job: dict, worker_id: str, token: str | None) -> None
               f"owner={job['owner']} existing={sorted(existing)}", flush=True)
         run_batch(game=job["game"], n_games=int(job["n_games"]), seed_base=int(job["seed_base"]),
                   run_id=job["run_id"], roster=roster, workers=args.workers,
-                  discussion_rounds=int(job["rounds"]), skip_gids=existing,
+                  discussion_rounds=int(job["rounds"]), deck_preset=job.get("deck_preset"),
+                  skip_gids=existing,
                   on_game_saved=publish)
         local = store.get_run(job["run_id"])
         status = (local or {}).get("status", "done")
@@ -195,6 +196,7 @@ def main():
     r.add_argument("--run-id", dest="run_id", default=None)
     r.add_argument("--workers", type=int, default=8)
     r.add_argument("--rounds", type=int, default=5, help="max discussion rounds (ends early on all-pass)")
+    r.add_argument("--deck", default="arena", help="ONUW deck preset: arena, classic, or tanner")
     r.add_argument("--port", type=int, default=8000)
     r.set_defaults(func=_run)
 

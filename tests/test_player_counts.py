@@ -9,7 +9,7 @@ from arena import batch
 from arena.config import AgentSpec
 from arena.games.avalon import Avalon, ROLES_BY_N as AV_ROLES, TEAM_SIZES_BY_N
 from arena.games.base import team_of
-from arena.games.onuw import ONUW, default_deck
+from arena.games.onuw import ONUW, deck_for_preset, deck_preset_options, default_deck
 from arena.games.secret_mafia import SecretMafia, ROLES_BY_N as SM_ROLES
 from tests.scripted import ScriptedDefault
 
@@ -33,14 +33,23 @@ def test_onuw_deck_keeps_three_center_cards(n):
     deck = default_deck(n)
     assert len(deck) == n + 3 and len(deck) - n == 3      # canonical ONUW: exactly 3 center cards
     assert deck.count("Werewolf") == 2 and deck.count("Minion") == 1
+    assert "Tanner" in deck
     core = ONUW({i: f"P{i}" for i in range(n)}, seed=1)
     core.deal()
     assert len(core.center) == 3
 
 
-def test_onuw_five_player_deck_is_unchanged():
-    from arena.games.onuw import DEFAULT_DECK
-    assert default_deck(5) == list(DEFAULT_DECK)          # 5p deals stay byte-identical
+def test_onuw_deck_presets_are_tunable():
+    assert deck_for_preset(5, "arena") == [
+        "Werewolf", "Werewolf", "Minion", "Seer", "Robber", "Troublemaker", "Drunk", "Tanner",
+    ]
+    assert deck_for_preset(5, "classic") == [
+        "Werewolf", "Werewolf", "Seer", "Robber", "Troublemaker", "Minion", "Villager", "Villager",
+    ]
+    assert deck_for_preset(6, "tanner")[-1] == "Minion"
+    opts = deck_preset_options(5)
+    assert {o["id"] for o in opts} == {"arena", "classic", "tanner"}
+    assert next(o for o in opts if o["id"] == "arena")["default"] is True
 
 
 @pytest.mark.parametrize("n,n_evil", [(5, 2), (6, 2), (7, 3)])

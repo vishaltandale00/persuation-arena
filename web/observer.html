@@ -342,6 +342,12 @@
             <option>The Resistance: Avalon</option>
             <option>Secret Mafia</option>
           </select></div>
+        <div id="nf-deck-field"><label>ONUW deck</label>
+          <select id="nf-deck">
+            <option value="arena">Arena pressure</option>
+            <option value="classic">Classic</option>
+            <option value="tanner">Tanner puzzle</option>
+          </select></div>
         <div><label>Games to play</label>
           <input type="number" id="nf-n" value="8" min="1" max="2000" style="width:100px"></div>
         <div><label>Rounds</label>
@@ -384,6 +390,7 @@ const NAME_POOL=["Leo","Vishal","Chappy","Saurav","Neeraj","Shreyan","Scott","Ni
 const DEFAULT_MODELS=["microsoft/phi-4-mini-instruct","mistralai/mistral-small-2603","google/gemini-3.1-flash-lite","meta-llama/llama-3.1-8b-instruct","openai/gpt-4o-mini","deepseek/deepseek-v4-flash"];
 let MODEL_CATALOG=DEFAULT_MODELS.map(id=>({id,name:id}));  // [{id,name}] — replaced by /api/models on the new-run page
 const HARNESS_OPTS=["base"];  // only the base harness is implemented; others were removed
+const DECK_LABELS={arena:"Arena pressure",classic:"Classic",tanner:"Tanner puzzle"};
 function tagOf(n){ return (n[0]+(n[1]||"")).toUpperCase(); }
 function escAttr(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
@@ -524,6 +531,8 @@ function renderRunOverview(){
     '<div class="wn">'+(a.wins!=null?a.wins+"w":"—")+'</div></div>').join("");
   document.getElementById("ovcfg").innerHTML=
     cfgItem("Game",curRun.label)+cfgItem("Players",curRun.players)+cfgItem("Games to play",curRun.nGames)+
+    (curRun.game==="onuw"?cfgItem("Deck",DECK_LABELS[curRun.deckPreset]||curRun.deckPreset||"Arena pressure"):"")+
+    (curRun.deck&&curRun.deck.length?cfgItem("Roles",curRun.deck.join(", ")):"")+
     cfgItem("Status",curRun.status==="done"?"Completed":running?("Running · "+prog):"Queued")+
     cfgItem("Seed base",curRun.seedBase)+cfgItem("Created",curRun.created);
   const res=document.getElementById("ovresults");
@@ -888,11 +897,13 @@ document.getElementById("next").onclick=()=>{ stopPlay(); goNext(); };
 document.getElementById("prev").onclick=()=>{ stopPlay(); goPrev(); };
 document.getElementById("play").onclick=()=>{ timer?stopPlay():startPlay(); };
 document.getElementById("nf-p").addEventListener("change",()=>{ seedAgents(+document.getElementById("nf-p").value||MIN_AGENTS); renderNewRun(); });
+document.getElementById("nf-game").addEventListener("change",()=>{ const g=document.getElementById("nf-game").value; document.getElementById("nf-deck-field").style.display=g.indexOf("Werewolf")>=0?"":"none"; });
 document.getElementById("nf-add").onclick=addAgent;
 document.getElementById("nf-owner").value=localStorage.getItem("arenaWorkerOwner")||"default";
 document.getElementById("nf-launch").onclick=async ()=>{
   const gsel=document.getElementById("nf-game").value;
   const game=gsel.indexOf("Avalon")>=0?"avalon":(gsel.indexOf("Mafia")>=0?"secret_mafia":"onuw");
+  const deck_preset=game==="onuw"?document.getElementById("nf-deck").value:null;
   const games=+document.getElementById("nf-n").value||6;
   const rounds=+document.getElementById("nf-rounds").value||5;
   const owner=(document.getElementById("nf-owner").value||"default").trim()||"default";
@@ -901,7 +912,7 @@ document.getElementById("nf-launch").onclick=async ()=>{
                               .filter(a=>a.name && a.model);
   if(agents.length<MIN_AGENTS){ toast("Each run needs at least "+MIN_AGENTS+" agents with a name and model"); return; }
   try{
-    const r=await fetch(API+"/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({owner,game,games,rounds,agents})});
+    const r=await fetch(API+"/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({owner,game,games,rounds,deck_preset,agents})});
     if(!r.ok) throw new Error(r.status);
     const d=await r.json();
     toast("Run launched: "+d.run_id+" ("+games+" "+game+" games, ≤"+rounds+" rounds)");

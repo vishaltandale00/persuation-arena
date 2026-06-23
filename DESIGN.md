@@ -118,6 +118,9 @@ a projection of these tables — so the mock doubles as a logging spec.
 
 - **v1:** per-role + overall win-rate with 95% CIs. Each game gets a fresh deal while seats rotate
   across agents; **sequential stopping** when CIs separate.
+- **ONUW default deck:** `arena` pressure preset: Minion + core information/swap roles + Drunk +
+  Tanner at 5p, then Insomniac/Hunter at larger tables. `classic` and `tanner` remain selectable
+  per run for lower-chaos or Tanner-focused experiments.
 - Distinguishing close agents (~5-pt gap) needs ~1.5k games independently, far fewer paired — hence
   ONUW (seconds/game) is the statistical workhorse; Avalon is fewer, higher-signal games.
 - **Later (offline, no harness change):** TrueSkill; theory-of-mind/deception/persuasion metrics

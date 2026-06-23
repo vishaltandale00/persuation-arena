@@ -36,21 +36,73 @@ ROLE_DESC = {
 
 WAKE = ["Doppelganger", "Werewolf", "Minion", "Mason", "Seer", "Robber", "Troublemaker", "Drunk", "Insomniac"]
 
-DEFAULT_DECK = ["Werewolf", "Werewolf", "Seer", "Robber", "Troublemaker", "Minion", "Villager", "Villager"]
+DEFAULT_DECK_PRESET = "arena"
 
-# Fixed roster of action/evil roles; villagers pad the deck out to n_players + 3 (always 3 center cards).
-_DECK_BASE = ["Werewolf", "Werewolf", "Minion", "Seer", "Robber", "Troublemaker"]
+# Presets are ordered by inclusion as player count rises. A 5-player ONUW game uses the first
+# 8 cards, 6-player uses the first 9, and 7-player uses all 10.
+_DECK_PRESETS = {
+    "arena": {
+        "label": "Arena pressure",
+        "description": "Default. Adds Minion, Drunk, Tanner, then Insomniac/Hunter as tables grow.",
+        "roles": [
+            "Werewolf", "Werewolf", "Minion", "Seer", "Robber", "Troublemaker",
+            "Drunk", "Tanner", "Insomniac", "Hunter",
+        ],
+    },
+    "classic": {
+        "label": "Classic",
+        "description": "Original simple scaffold: wolves, Minion, core information roles, Villager cover.",
+        "roles": [
+            "Werewolf", "Werewolf", "Seer", "Robber", "Troublemaker", "Minion",
+            "Villager", "Villager", "Villager", "Villager",
+        ],
+    },
+    "tanner": {
+        "label": "Tanner puzzle",
+        "description": "High-uncertainty Tanner/Drunk/Insomniac setup; Minion/Hunter join larger tables.",
+        "roles": [
+            "Werewolf", "Werewolf", "Troublemaker", "Robber", "Insomniac", "Drunk",
+            "Seer", "Tanner", "Minion", "Hunter",
+        ],
+    },
+}
+
+DEFAULT_DECK = list(_DECK_PRESETS[DEFAULT_DECK_PRESET]["roles"][:8])
 
 
-def default_deck(n_players: int) -> list[str]:
-    """Deck for an n-player game: n_players + 3 cards so exactly 3 stay in the center (canonical ONUW).
+def normalize_deck_preset(preset: str | None) -> str:
+    key = (preset or DEFAULT_DECK_PRESET).strip().lower().replace(" ", "_")
+    if key not in _DECK_PRESETS:
+        raise ValueError(f"unknown ONUW deck preset: {preset}")
+    return key
 
-    n_players == 5 returns the canonical DEFAULT_DECK unchanged (same multiset and order) so seeded
-    deals are byte-identical to before; larger tables just add Villagers.
-    """
-    if n_players == 5:
-        return list(DEFAULT_DECK)
-    return list(_DECK_BASE) + ["Villager"] * (n_players + 3 - len(_DECK_BASE))
+
+def deck_for_preset(n_players: int, preset: str | None = None) -> list[str]:
+    """Deck for an n-player game: n_players + 3 cards so exactly 3 stay in the center."""
+    key = normalize_deck_preset(preset)
+    n_cards = n_players + 3
+    roles = _DECK_PRESETS[key]["roles"]
+    if n_cards > len(roles):
+        raise ValueError(f"ONUW deck preset {key} does not support {n_players} players")
+    return list(roles[:n_cards])
+
+
+def default_deck(n_players: int, preset: str | None = None) -> list[str]:
+    return deck_for_preset(n_players, preset)
+
+
+def deck_preset_options(n_players: int | None = None) -> list[dict]:
+    opts = []
+    for key, data in _DECK_PRESETS.items():
+        roles = deck_for_preset(n_players, key) if n_players else list(data["roles"])
+        opts.append({
+            "id": key,
+            "label": data["label"],
+            "description": data["description"],
+            "default": key == DEFAULT_DECK_PRESET,
+            "roles": roles,
+        })
+    return opts
 
 
 class ONUW:
@@ -59,14 +111,16 @@ class ONUW:
     MIN_PLAYERS, MAX_PLAYERS = 5, 7
 
     def __init__(self, names: dict[int, str], seed: int, discussion_rounds: int = 2,
-                 deck: list[str] | None = None, deal_override: list[str] | None = None,
+                 deck: list[str] | None = None, deck_preset: str | None = None,
+                 deal_override: list[str] | None = None,
                  event_sink: Callable[..., None] | None = None):
         self.names = names
         self.n = len(names)
         self.seed = seed
         self.rng = random.Random(seed)
         self.discussion_rounds = discussion_rounds
-        self.deck = deck or default_deck(len(names))
+        self.deck_preset = normalize_deck_preset(deck_preset)
+        self.deck = deck or default_deck(len(names), self.deck_preset)
         self.deal_override = deal_override  # explicit 8-card layout for tests (players then center)
         self.dealt: dict[int, str] = {}
         self.current: dict[int, str] = {}
@@ -707,6 +761,7 @@ class ONUW:
         return {
             "game": self.GAME, "title": self.TITLE, "seed": self.seed,
             "meta": f"{self.n} agents · {len(self.deck)} cards · 1 night, 1 vote · seed {self.seed}",
+            "deckPreset": self.deck_preset,
             "players": players,
             "cardsInPlay": [[c, team_of(c)] for c in self.deck],
             "center": [[c, team_of(c)] for c in self.center],

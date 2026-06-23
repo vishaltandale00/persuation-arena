@@ -30,6 +30,7 @@ from .config import ROOT, SETTINGS, OPENROUTER_BASE_URL, AgentSpec
 from . import openrouter as _or
 from . import store
 from .batch import GAME_CORES
+from .games.onuw import DEFAULT_DECK_PRESET, deck_for_preset, deck_preset_options, normalize_deck_preset
 from .score import score_run
 
 WEB = ROOT / "web"
@@ -130,6 +131,21 @@ def _roster_from_payload(payload: dict) -> list[dict]:
     return roster
 
 
+def _deck_preset_from_payload(game: str, payload: dict) -> str | None:
+    if game != "onuw":
+        return None
+    try:
+        return normalize_deck_preset(payload.get("deck_preset") or payload.get("deckPreset"))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+def _deck_for_api(game: str, players: int, deck_preset: str | None) -> list[str] | None:
+    if game != "onuw":
+        return None
+    return deck_for_preset(players, deck_preset or DEFAULT_DECK_PRESET)
+
+
 def _queue_run(payload: dict, owner: str) -> dict:
     game = payload.get("game", "onuw")
     if game not in GAME_LABELS:
@@ -144,6 +160,7 @@ def _queue_run(payload: dict, owner: str) -> dict:
     if not (core.MIN_PLAYERS <= n_players <= core.MAX_PLAYERS):
         raise HTTPException(400, f"{core.TITLE} supports {core.MIN_PLAYERS}–{core.MAX_PLAYERS} "
                                  f"players, got {n_players}")
+    deck_preset = _deck_preset_from_payload(game, payload)
     job = store.enqueue_job({
         "id": f"job_{uuid.uuid4().hex[:12]}",
         "run_id": run_id,
@@ -155,9 +172,10 @@ def _queue_run(payload: dict, owner: str) -> dict:
         "seed_base": seed,
         "rounds": rounds,
         "agents": agents,
+        "deck_preset": deck_preset,
     })
     return {"run_id": run_id, "job_id": job["id"], "status": "queued", "owner": owner,
-            "game": game, "games": games, "rounds": rounds}
+            "game": game, "games": games, "rounds": rounds, "deck_preset": deck_preset}
 
 
 def _create_connected_run(payload: dict) -> dict:
@@ -172,6 +190,7 @@ def _create_connected_run(payload: dict) -> dict:
     games = max(1, int(payload.get("games", payload.get("n_games", 6))))
     seed = int(payload.get("seed") or (time.time() * 1000) % 1000000)
     run_id = (payload.get("run_id") or f"run_{seed}_{uuid.uuid4().hex[:6]}").strip()
+    deck_preset = _deck_preset_from_payload(game, payload)
     store.create_connected_run({
         "id": run_id,
         "game": game,
@@ -181,9 +200,10 @@ def _create_connected_run(payload: dict) -> dict:
         "players": players,
         "seed_base": seed,
         "submitter": payload.get("owner") or payload.get("submitter") or "connected",
+        "deck_preset": deck_preset,
     })
     return {"run_id": run_id, "status": "open", "game": game, "games": games,
-            "players": players}
+            "players": players, "deck_preset": deck_preset}
 
 
 @app.get("/api/runs")
@@ -194,6 +214,7 @@ def api_runs():
             "id": r["id"], "game": r["game"], "label": r["label"], "status": r["status"],
             "nGames": r["n_games"], "players": r["players"], "seed": r["seed_base"],
             "when": r["created"], "teamSplit": r["team_split"],
+            "deckPreset": r.get("deck_preset") or (DEFAULT_DECK_PRESET if r["game"] == "onuw" else None),
         })
     return out
 
@@ -204,6 +225,16 @@ def api_submit_run(payload: dict):
     if payload.get("connected"):
         return _create_connected_run(payload)
     return _queue_run(payload, _job_owner(payload))
+
+
+@app.get("/api/decks")
+def api_decks(game: str = "onuw", players: int = 5):
+    if game != "onuw":
+        return {"game": game, "presets": []}
+    if not (ONUW_MIN := GAME_CORES["onuw"].MIN_PLAYERS) <= players <= GAME_CORES["onuw"].MAX_PLAYERS:
+        raise HTTPException(400, f"onuw supports {ONUW_MIN}–{GAME_CORES['onuw'].MAX_PLAYERS} players")
+    return {"game": game, "players": players, "default": DEFAULT_DECK_PRESET,
+            "presets": deck_preset_options(players)}
 
 
 @app.get("/api/runs/open")
@@ -397,6 +428,8 @@ def api_run(run_id: str):
     return {
         "id": r["id"], "game": r["game"], "label": r["label"], "status": r["status"],
         "nGames": r["n_games"], "players": r["players"], "seedBase": r["seed_base"],
+        "deckPreset": r.get("deck_preset") or (DEFAULT_DECK_PRESET if r["game"] == "onuw" else None),
+        "deck": _deck_for_api(r["game"], int(r["players"]), r.get("deck_preset")),
         "created": r["created"], "agents": agents, "teamSplit": r["team_split"], "games": games,
         "connected": bool(signups),
         "connectedSummary": {
@@ -587,6 +620,7 @@ def api_launch(payload: dict):
     game = payload.get("game", "onuw")
     games = int(payload.get("games", 6))
     rounds = int(payload.get("rounds", 5))
+    deck_preset = _deck_preset_from_payload(game, payload)
     seed = int(time.time()) % 1000000
     run_id = f"run_{seed}"
     agents = payload.get("agents")
@@ -596,13 +630,15 @@ def api_launch(payload: dict):
         from .batch import run_batch
         try:
             run_batch(game=game, n_games=games, seed_base=seed, run_id=run_id,
-                      roster=roster, workers=8, discussion_rounds=rounds)
+                      roster=roster, workers=8, discussion_rounds=rounds,
+                      deck_preset=deck_preset)
         except Exception as e:  # surface a failed run rather than vanishing
             store.update_run_status(run_id, "done")
             print(f"[{run_id}] run failed: {e}", flush=True)
 
     threading.Thread(target=go, daemon=True).start()
-    return {"run_id": run_id, "status": "running", "game": game, "games": games}
+    return {"run_id": run_id, "status": "running", "game": game, "games": games,
+            "deck_preset": deck_preset}
 
 
 @app.post("/api/jobs/claim")

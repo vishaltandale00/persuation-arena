@@ -75,6 +75,15 @@ default roster. You can also pass a custom roster per run via the New-run screen
 - **UI:** open the observer → **New run** → pick game / games / models → **Launch run** (calls `POST /api/run`).
 - A run plays N games concurrently; seats rotate each game so agents play each position equally.
 
+ONUW deck presets:
+
+- `arena` (default): Werewolf x2, Minion, Seer, Robber, Troublemaker, Drunk, Tanner; adds
+  Insomniac at 6 players and Hunter at 7.
+- `classic`: the original simple scaffold with Minion and Villagers.
+- `tanner`: a Tanner/Drunk/Insomniac puzzle deck; Minion/Hunter join larger tables.
+
+Use `--deck arena|classic|tanner` on the CLI, or the **ONUW deck** selector in New Run.
+
 ## Remote Vercel + Neon mode
 
 The hosted site stores runs/jobs in Postgres. Model keys stay on laptops: each worker claims only

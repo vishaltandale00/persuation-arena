@@ -16,7 +16,7 @@ import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .config import SETTINGS
-from .games.onuw import ONUW
+from .games.onuw import ONUW, normalize_deck_preset
 from .games.avalon import Avalon
 from .games.secret_mafia import SecretMafia
 from .openrouter import OpenRouterAgent
@@ -41,12 +41,15 @@ def fresh_deal_schedule(n_games: int, n_players: int, seed_base: int) -> list[tu
     return sched
 
 
-def _play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds):
+def _play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, deck_preset=None):
     seat_to_spec = [specs[(i + rot) % n_players] for i in range(n_players)]
     names = {i: seat_to_spec[i].name for i in range(n_players)}
     agents = {i: OpenRouterAgent(seat_to_spec[i].name, seat_to_spec[i].model, seat_to_spec[i].harness)
               for i in range(n_players)}
-    t = core_cls(names, seed=seed, discussion_rounds=discussion_rounds).play(agents)
+    kwargs = {"discussion_rounds": discussion_rounds}
+    if core_cls is ONUW:
+        kwargs["deck_preset"] = deck_preset
+    t = core_cls(names, seed=seed, **kwargs).play(agents)
     for p in t["players"]:
         s = seat_to_spec[p["seat"]]
         p["name"], p["model"] = s.name, s.model
@@ -56,19 +59,21 @@ def _play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds):
 
 def run_batch(game: str = "onuw", n_games: int = 20, seed_base: int = 9000,
               run_id: str | None = None, roster=None, workers: int = 8,
-              discussion_rounds: int = 5, skip_gids=None, on_game_saved=None) -> str:
+              discussion_rounds: int = 5, deck_preset: str | None = None,
+              skip_gids=None, on_game_saved=None) -> str:
     specs = list(roster or SETTINGS.roster())
     core_cls = GAME_CORES[game]
     n_players = len(specs)  # the roster IS the table — one agent per seat, no fixed count
     lo, hi = core_cls.MIN_PLAYERS, core_cls.MAX_PLAYERS
     if not (lo <= n_players <= hi):
         raise ValueError(f"{core_cls.TITLE} supports {lo}–{hi} players, got {n_players}")
+    deck_preset = normalize_deck_preset(deck_preset) if game == "onuw" else None
     run_id = run_id or f"run_{seed_base}"
     agents_meta = [{"name": s.name, "model": s.model, "harness": s.harness} for s in specs]
     store.save_run({
         "id": run_id, "game": game, "label": core_cls.TITLE, "status": "running",
         "n_games": n_games, "players": n_players, "seed_base": seed_base,
-        "created": _now(), "agents": agents_meta,
+        "created": _now(), "agents": agents_meta, "deck_preset": deck_preset,
     })
 
     skip_gids = set(skip_gids or [])
@@ -77,7 +82,8 @@ def run_batch(game: str = "onuw", n_games: int = 20, seed_base: int = 9000,
     failed: list[int] = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
         fut_to_gid = {
-            ex.submit(_play_one, core_cls, specs, n_players, seed, gid, rot, discussion_rounds): gid
+            ex.submit(_play_one, core_cls, specs, n_players, seed, gid, rot,
+                      discussion_rounds, deck_preset): gid
             for (gid, seed, rot) in sched
         }
         done = len(skip_gids)

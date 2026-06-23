@@ -39,7 +39,7 @@ SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
   players INTEGER, seed_base INTEGER, created TEXT, agents_json TEXT,
-  submitter TEXT, created_utc TEXT
+  submitter TEXT, created_utc TEXT, deck_preset TEXT
 );
 CREATE TABLE IF NOT EXISTS games (
   run_id TEXT, gid INTEGER, seed INTEGER, winner_team TEXT, line TEXT,
@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, run_id TEXT UNIQUE, owner TEXT, status TEXT,
   game TEXT, n_games INTEGER, seed_base INTEGER, rounds INTEGER, players INTEGER,
   agents_json TEXT, created_utc TEXT, updated_utc TEXT,
-  lease_expires_utc TEXT, heartbeat_utc TEXT, worker_id TEXT, last_error TEXT
+  lease_expires_utc TEXT, heartbeat_utc TEXT, worker_id TEXT, last_error TEXT,
+  deck_preset TEXT
 );
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY, display_name TEXT, token_hash TEXT UNIQUE,
@@ -87,7 +88,7 @@ PG_SCHEMA_STMTS = [
     """CREATE TABLE IF NOT EXISTS runs (
          id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
          players INTEGER, seed_base BIGINT, created TEXT, agents_json TEXT,
-         submitter TEXT, created_utc TEXT
+         submitter TEXT, created_utc TEXT, deck_preset TEXT
        )""",
     """CREATE TABLE IF NOT EXISTS games (
          run_id TEXT, gid INTEGER, seed BIGINT, winner_team TEXT, line TEXT,
@@ -102,7 +103,8 @@ PG_SCHEMA_STMTS = [
          id TEXT PRIMARY KEY, run_id TEXT UNIQUE, owner TEXT, status TEXT,
          game TEXT, n_games INTEGER, seed_base BIGINT, rounds INTEGER, players INTEGER,
          agents_json TEXT, created_utc TEXT, updated_utc TEXT,
-         lease_expires_utc TEXT, heartbeat_utc TEXT, worker_id TEXT, last_error TEXT
+         lease_expires_utc TEXT, heartbeat_utc TEXT, worker_id TEXT, last_error TEXT,
+         deck_preset TEXT
        )""",
     """CREATE TABLE IF NOT EXISTS agents (
          id TEXT PRIMARY KEY, display_name TEXT, token_hash TEXT UNIQUE,
@@ -132,8 +134,14 @@ PG_SCHEMA_STMTS = [
 # Columns added after the original schema shipped; ALTER-added on open so old SQLite DBs upgrade.
 _MIGRATIONS = {
     "game_players": [("calls", "INTEGER DEFAULT 0"), ("forfeits", "INTEGER DEFAULT 0")],
-    "runs": [("submitter", "TEXT"), ("created_utc", "TEXT")],
+    "runs": [("submitter", "TEXT"), ("created_utc", "TEXT"), ("deck_preset", "TEXT")],
+    "jobs": [("deck_preset", "TEXT")],
 }
+
+PG_MIGRATION_STMTS = [
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
+]
 
 
 def _is_pg() -> bool:
@@ -224,6 +232,8 @@ def init_schema() -> None:
         with conn() as c:
             for stmt in PG_SCHEMA_STMTS:
                 c.execute(stmt)
+            for stmt in PG_MIGRATION_STMTS:
+                c.execute(stmt)
     else:
         with conn():
             pass
@@ -234,17 +244,18 @@ def save_run(meta: dict):
     ph = _ph()
     with conn() as c:
         c.execute(
-            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
+            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
             f"ON CONFLICT (id) DO UPDATE SET "
             f"  game=excluded.game, label=excluded.label, "
             f"  status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END, "
             f"  n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base, "
             f"  created=excluded.created, agents_json=excluded.agents_json, "
-            f"  submitter=excluded.submitter, created_utc=excluded.created_utc",
+            f"  submitter=excluded.submitter, created_utc=excluded.created_utc, "
+            f"  deck_preset=excluded.deck_preset",
             (meta["id"], meta["game"], meta["label"], meta["status"], meta["n_games"],
              meta["players"], meta["seed_base"], meta["created"], json.dumps(meta["agents"]),
-             meta.get("submitter"), meta.get("created_utc")),
+             meta.get("submitter"), meta.get("created_utc"), meta.get("deck_preset")),
         )
 
 
@@ -293,22 +304,23 @@ def enqueue_job(job: dict) -> dict:
         "id": job["run_id"], "game": job["game"], "label": job["label"], "status": "queued",
         "n_games": job["n_games"], "players": job["players"], "seed_base": job["seed_base"],
         "created": job.get("created") or now[:16].replace("T", " "), "created_utc": now,
-        "submitter": job["owner"], "agents": agents,
+        "submitter": job["owner"], "agents": agents, "deck_preset": job.get("deck_preset"),
     })
     ph = _ph()
     with conn() as c:
         c.execute(
             f"INSERT INTO jobs (id,run_id,owner,status,game,n_games,seed_base,rounds,players,"
-            f"agents_json,created_utc,updated_utc,lease_expires_utc,heartbeat_utc,worker_id,last_error) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
+            f"agents_json,created_utc,updated_utc,lease_expires_utc,heartbeat_utc,worker_id,last_error,deck_preset) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
             f"ON CONFLICT (run_id) DO UPDATE SET "
             f"  owner=excluded.owner, status=excluded.status, game=excluded.game, "
             f"  n_games=excluded.n_games, seed_base=excluded.seed_base, rounds=excluded.rounds, "
             f"  players=excluded.players, agents_json=excluded.agents_json, updated_utc=excluded.updated_utc, "
+            f"  deck_preset=excluded.deck_preset, "
             f"  lease_expires_utc=NULL, heartbeat_utc=NULL, worker_id=NULL, last_error=NULL",
             (job["id"], job["run_id"], job["owner"], "queued", job["game"], job["n_games"],
              job["seed_base"], job["rounds"], job["players"], json.dumps(agents), now, now,
-             None, None, None, None),
+             None, None, None, None, job.get("deck_preset")),
         )
     return get_job(job["id"])
 
@@ -602,6 +614,7 @@ def create_connected_run(meta: dict) -> dict:
         "created_utc": now,
         "submitter": meta.get("submitter", "connected"),
         "agents": meta.get("agents", []),
+        "deck_preset": meta.get("deck_preset"),
     })
     return get_run(run_id)
 

@@ -37,6 +37,7 @@ def _job(owner="alice", run_id="r1", job_id="j1"):
         "players": 5,
         "seed_base": 9000,
         "rounds": 1,
+        "deck_preset": "arena",
         "agents": _agents(),
     }
 
@@ -107,15 +108,17 @@ def test_api_submit_claim_ingest_complete(tmp_path, monkeypatch):
     with TestClient(app) as client:
         submitted = client.post("/api/runs", json={
             "owner": "alice", "game": "onuw", "games": 1, "rounds": 1,
-            "agents": _agents(),
+            "deck_preset": "tanner", "agents": _agents(),
         })
         assert submitted.status_code == 200
         run_id = submitted.json()["run_id"]
         job_id = submitted.json()["job_id"]
+        assert submitted.json()["deck_preset"] == "tanner"
 
         claimed = client.post("/api/jobs/claim", json={"owner": "alice", "worker_id": "w1"})
         assert claimed.status_code == 200
         assert claimed.json()["job"]["id"] == job_id
+        assert claimed.json()["job"]["deck_preset"] == "tanner"
 
         ingested = client.post("/api/ingest", json={
             "owner": "alice", "job_id": job_id, "run_id": run_id, "gid": 1,
@@ -138,6 +141,7 @@ def test_api_submit_claim_ingest_complete(tmp_path, monkeypatch):
 
         run = client.get(f"/api/runs/{run_id}").json()
         assert run["status"] == "done"
+        assert run["deckPreset"] == "tanner"
         assert len(run["games"]) == 1
 
 

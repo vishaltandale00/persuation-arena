@@ -54,7 +54,7 @@ def test_schedule_does_not_repeat_no_wolf_deal_across_cycle():
 
 
 # ---- batch resilience -------------------------------------------------------
-def _fake_play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds):
+def _fake_play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, deck_preset=None):
     if gid == 2:
         raise RuntimeError("boom")
     players = [{"seat": i, "dealt": "Villager", "end": "Villager", "team": "good",
