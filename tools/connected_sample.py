@@ -1,0 +1,149 @@
+"""Orchestrate a connected-agent sample run end to end.
+
+Creates an OPEN connected run, connects N real model-backed agents over the SDK/HTTP
+(examples/model_agent.py), waits for them to seat + ready, coordinates the games to completion,
+and prints the role-balanced scorecard.
+
+This is the "connected" path (agents talk to the API; the coordinator drives the cores and
+rendezvous through the store) — the same flow as the agent-run-protocol proof, but with real
+LLM competitors instead of scripted stubs.
+
+Requires a running Arena server reachable at --server that shares this process's store backend:
+  - LOCAL dry run (SQLite):  unset DATABASE_URL, start `python -m arena.cli serve`, then run this.
+  - NEON (production):       DATABASE_URL set for BOTH the server and this process.
+
+Examples:
+  # local 1-game smoke test
+  python tools/connected_sample.py --run-id sample_local --games 1 --server http://127.0.0.1:8000
+
+  # a real k=10 run
+  python tools/connected_sample.py --run-id sample_k10_1 --games 10 --server http://127.0.0.1:8000
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import tempfile
+import threading
+import time
+
+from persuasion_arena_agent.agent import ArenaAgent
+from persuasion_arena_agent.credentials import CredentialsStore
+from examples.model_agent import ModelAgent
+
+from arena import store
+from arena.connected import run_connected_batch
+from arena.score import score_run
+
+# The five real competitors (name shown on the site -> OpenRouter model slug).
+ROSTER = [
+    ("GPT-5.4 mini",     "openai/gpt-5.4-mini"),
+    ("Haiku 4.5",        "anthropic/claude-haiku-4.5"),
+    ("Gemini 3.1 Flash", "google/gemini-3.1-flash-lite"),
+    ("GPT-5.5",          "openai/gpt-5.5"),
+    ("Sonnet 4.6",       "anthropic/claude-sonnet-4.6"),
+]
+
+
+def _log(msg: str) -> None:
+    print(f"[sample] {msg}", flush=True)
+
+
+def _run_agent(name: str, model: str, run_id: str, server: str, cred_path: str) -> None:
+    """One agent identity: register -> sign up -> ready -> poll/act until the run completes."""
+    try:
+        agent = ArenaAgent(name=name, server=server, credentials=CredentialsStore(cred_path))
+        ma = ModelAgent(model)
+        agent.on_event(ma.on_event)   # fold the delta event stream into per-game state
+        agent.act(ma.act)             # decide from reconstructed state + the action request
+        signup = agent.signup(run_id=run_id)
+        _log(f"{name}: signed up ({signup.status}, seat={signup.seat})")
+        agent.run_forever([signup])
+        _log(f"{name}: done")
+    except Exception as e:  # an agent thread dying must not wedge the others
+        _log(f"{name}: ERROR {type(e).__name__}: {e}")
+
+
+def _wait_for_active(run_id: str, need: int, timeout_s: float = 180.0) -> int:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        active = store.list_run_signups(run_id, statuses={"active"})
+        seated = [s for s in active if s.get("seat") is not None]
+        if len(seated) >= need:
+            return len(seated)
+        time.sleep(0.5)
+    return len(store.list_run_signups(run_id, statuses={"active"}))
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Run a connected sample run with real model agents")
+    p.add_argument("--run-id", required=True)
+    p.add_argument("--server", default="http://127.0.0.1:8000")
+    p.add_argument("--games", type=int, default=10)
+    p.add_argument("--rounds", type=int, default=5)
+    p.add_argument("--seed", type=int, default=4242)
+    p.add_argument("--deck", default="arena")
+    p.add_argument("--models", default=None,
+                   help="comma-separated OpenRouter slugs to use instead of the default roster "
+                        "(names derived from the slug); handy for cheap local validation")
+    args = p.parse_args(argv)
+
+    if args.models:
+        roster = [(m.split("/")[-1], m) for m in (x.strip() for x in args.models.split(",")) if m]
+    else:
+        roster = list(ROSTER)
+    players = len(roster)
+    _log(f"creating open run {args.run_id} (onuw, players={players}, games={args.games}, "
+         f"deck={args.deck}, seed={args.seed})")
+    store.create_connected_run({
+        "id": args.run_id,
+        "game": "onuw",
+        "label": "One Night Ultimate Werewolf",
+        "status": "open",
+        "n_games": args.games,
+        "players": players,
+        "seed_base": args.seed,
+        "submitter": "connected-sample",
+        "deck_preset": args.deck,
+    })
+
+    threads = []
+    for name, model in roster:
+        # A path that does NOT exist yet (an empty file would make CredentialsStore json.loads("") crash);
+        # the dir exists so the SDK can write the credential on first register.
+        cred_path = os.path.join(tempfile.mkdtemp(prefix="arena-cred-"), "cred.json")
+        t = threading.Thread(target=_run_agent, args=(name, model, args.run_id, args.server, cred_path),
+                             daemon=True, name=name)
+        t.start()
+        threads.append(t)
+        time.sleep(0.3)  # stagger registration so seat order is stable
+
+    _log("waiting for all agents to seat and ready...")
+    active = _wait_for_active(args.run_id, players)
+    if active < players:
+        _log(f"only {active}/{players} agents became active — aborting (run left open)")
+        return 1
+    _log(f"all {active} agents active — coordinating {args.games} games")
+
+    t0 = time.time()
+    run_connected_batch(args.run_id, discussion_rounds=args.rounds)
+    dt = time.time() - t0
+
+    for t in threads:
+        t.join(timeout=10)
+
+    run = store.get_run(args.run_id)
+    _log(f"run status={run['status']} games_saved={len(store.distinct_gids(args.run_id))} "
+         f"team_split={run['team_split']} in {dt:.0f}s")
+    scores = score_run(args.run_id)
+    _log("scorecard (overall win% [95% CI] n, forfeits):")
+    for name, d in sorted(scores.items(), key=lambda kv: -kv[1]["overall"]["rate"]):
+        o = d["overall"]
+        print(f"    {name:18} {int(o['rate']*100):3d}%  "
+              f"[{int(o['lo']*100)}-{int(o['hi']*100)}%]  n={o['n']:<3} "
+              f"forfeits={d['forfeits']}/{d['calls']}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

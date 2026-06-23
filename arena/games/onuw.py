@@ -113,7 +113,8 @@ class ONUW:
     def __init__(self, names: dict[int, str], seed: int, discussion_rounds: int = 2,
                  deck: list[str] | None = None, deck_preset: str | None = None,
                  deal_override: list[str] | None = None,
-                 event_sink: Callable[..., None] | None = None):
+                 event_sink: Callable[..., None] | None = None,
+                 event_driven: bool = False):
         self.names = names
         self.n = len(names)
         self.seed = seed
@@ -130,6 +131,10 @@ class ONUW:
         self.public: list[str] = []
         self._reborn_insomniacs: list[int] = []  # doppel-insomniac to re-wake at end
         self.event_sink = event_sink
+        # Delta transport: when True the engine sends NO context in the per-turn prompt — a stateful
+        # harness must reconstruct it from the event stream. Off (default) keeps full-context turns
+        # for the in-process batch path.
+        self.event_driven = event_driven
 
     # ---- setup -------------------------------------------------------------
     def deal(self):
@@ -137,6 +142,7 @@ class ONUW:
         for i in range(self.n):
             self.dealt[i] = self.current[i] = self.believes[i] = cards[i]
         self.center = cards[self.n:]
+        self._emit_game_setup()
         for i in range(self.n):
             self._emit("role_info", {"seat": i, "role": self.dealt[i]},
                        phase="setup", visibility="private", target_seat=i)
@@ -162,6 +168,35 @@ class ONUW:
         if self.event_sink:
             self.event_sink(event_type, payload, phase=phase,
                             visibility=visibility, target_seat=target_seat)
+
+    def _observe(self, pid: int, text: str, *, believed: str | None = None, **extra: Any) -> None:
+        """Record a seat's private night knowledge: append to its obs log AND emit it as a private
+        event, so a seat's full night view is reconstructable from the event stream alone (pure
+        event-sourcing). `believed` updates what the seat thinks its current role is."""
+        self.obs[pid].append(text)
+        if believed is not None:
+            self.believes[pid] = believed
+        payload: dict[str, Any] = {"seat": pid, "text": text}
+        if believed is not None:
+            payload["believed_role"] = believed
+        payload.update(extra)
+        self._emit("night_observation", payload, phase="night", visibility="private", target_seat=pid)
+
+    def _emit_game_setup(self) -> None:
+        """One public event carrying the durable public facts every seat needs (table size, roster,
+        deck multiset, center count, win condition, and the ability text for each role in play), so
+        they live in the stream once the per-turn prompt is slimmed for delta transport."""
+        self._emit("game_setup", {
+            "n": self.n,
+            "roster": {i: self.names[i] for i in range(self.n)},
+            "deck": list(self.deck),
+            "center_count": len(self.center),
+            "win_condition": (
+                "Village wins if a Werewolf is eliminated (or, with no werewolf in play, if nobody "
+                "dies). The Werewolf team wins if no werewolf is eliminated. Tanner wins only by "
+                "getting itself eliminated."),
+            "roles": {role: ROLE_DESC.get(role, "") for role in sorted(set(self.deck))},
+        }, phase="setup", visibility="public")
 
     def _players_choice(self, seats: list[int]) -> list[dict[str, Any]]:
         return [{"seat": i, "name": self.names[i]} for i in seats]
@@ -197,6 +232,11 @@ class ONUW:
         return self._act(agent, observation, parse_action, default_action, **turn_meta)
 
     def base_prompt(self, pid: int) -> str:
+        # Under delta transport, send no context: the turn carries only the per-turn action
+        # instruction (appended by the caller). A stateful harness rebuilds context from the event
+        # stream; a stateless one plays blind — the point of the event contract.
+        if self.event_driven:
+            return ""
         believed = self.believes[pid]
         lines = [
             f"You are {self.names[pid]}, seat {pid}, in a {self.n}-player One Night Ultimate Werewolf game.",
@@ -230,12 +270,12 @@ class ONUW:
         wolves = [i for i in range(self.n) if self._is_wolf_awake(i)]
         for w in wolves:
             others = [self.names[o] for o in wolves if o != w]
-            self.obs[w].append(
+            self._observe(w,
                 f"You woke as a Werewolf and saw: {', '.join(others)}." if others else "You are the lone werewolf this night.")
         if len(wolves) == 1:
             w = wolves[0]
             ci = self.rng.randrange(len(self.center))
-            self.obs[w].append(f"As the lone wolf you peeked center #{ci+1}: {self.center[ci]}.")
+            self._observe(w, f"As the lone wolf you peeked center #{ci+1}: {self.center[ci]}.")
             events.append({"t": "act", "pid": w, "text": f"Werewolf (lone) peeks center #{ci+1} -> {self.center[ci]}"})
         elif wolves:
             events.append({"t": "act", "pid": wolves[0], "text": f"Werewolves recognize each other ({len(wolves)})"})
@@ -243,14 +283,14 @@ class ONUW:
         # 3) Minion learns the wolves (wolves do NOT learn the minion).
         for m in [i for i in range(self.n) if self._copies_or_is(i, "Minion")]:
             ws = [self.names[w] for w in wolves]
-            self.obs[m].append(f"As Minion you learned the werewolves: {', '.join(ws) if ws else 'none (all in center)'}.")
+            self._observe(m, f"As Minion you learned the werewolves: {', '.join(ws) if ws else 'none (all in center)'}.")
             events.append({"t": "act", "pid": m, "text": "Minion learns the werewolves"})
 
         # 4) Masons recognize each other.
         masons = [i for i in range(self.n) if self._copies_or_is(i, "Mason")]
         for ms in masons:
             others = [self.names[o] for o in masons if o != ms]
-            self.obs[ms].append(f"As Mason you saw the other Mason(s): {', '.join(others)}." if others else "You are the lone Mason.")
+            self._observe(ms, f"As Mason you saw the other Mason(s): {', '.join(others)}." if others else "You are the lone Mason.")
         if masons:
             events.append({"t": "act", "pid": masons[0], "text": f"Masons recognize each other ({len(masons)})"})
 
@@ -272,8 +312,8 @@ class ONUW:
             events.append({"t": "act", "pid": dk, "text": txt, "ms": ms})
         # 9) Insomniac (and any doppel-insomniac re-woken)
         for ins in self.players_with_dealt("Insomniac") + self._reborn_insomniacs:
-            self.obs[ins].append(f"As Insomniac you checked your own card at dawn: it is now {self.current[ins]}.")
-            self.believes[ins] = self.current[ins]
+            self._observe(ins, f"As Insomniac you checked your own card at dawn: it is now {self.current[ins]}.",
+                          believed=self.current[ins])
             events.append({"t": "act", "pid": ins, "text": f"Insomniac checks own card -> {self.current[ins]}"})
 
         events.append({"t": "sys", "text": "Dawn breaks. Everyone wakes."})
@@ -327,10 +367,8 @@ class ONUW:
         copied = self.current[t]
         self._doppel_role[pid] = copied
         self.current[pid] = copied  # becomes that role for win resolution
-        self.believes[pid] = copied
-        self.obs[pid].append(f"As Doppelganger you copied {self.names[t]} and became a {copied}.")
-        self._emit("role_info", {"seat": pid, "copied_seat": t, "role": copied},
-                   phase="night", visibility="private", target_seat=pid)
+        self._observe(pid, f"As Doppelganger you copied {self.names[t]} and became a {copied}.",
+                      believed=copied, copied_seat=t, role=copied)
         # perform the copied action immediately for the action roles
         extra = ""
         if copied == "Seer":
@@ -411,14 +449,12 @@ class ONUW:
         )
         mode, val = resp.action
         if mode == "player":
-            self.obs[pid].append(f"As Seer you looked at {self.names[val]}'s card: {self.current[val]}.")
-            self._emit("role_info", {"seat": pid, "target": val, "role": self.current[val]},
-                       phase="night", visibility="private", target_seat=pid)
+            self._observe(pid, f"As Seer you looked at {self.names[val]}'s card: {self.current[val]}.",
+                          target=val, role=self.current[val])
             return f"Seer views {self.names[val]} -> {self.current[val]}", resp.reasoning, resp.ms
         roles = [self.center[i] for i in val]
-        self.obs[pid].append(f"As Seer you looked at center #{val[0]+1},#{val[1]+1}: {roles[0]}, {roles[1]}.")
-        self._emit("role_info", {"seat": pid, "center_indices": val, "roles": roles},
-                   phase="night", visibility="private", target_seat=pid)
+        self._observe(pid, f"As Seer you looked at center #{val[0]+1},#{val[1]+1}: {roles[0]}, {roles[1]}.",
+                      center_indices=val, roles=roles)
         return f"Seer views center #{val[0]+1},#{val[1]+1} -> {roles[0]}, {roles[1]}", resp.reasoning, resp.ms
 
     def _robber_action(self, pid: int, agent: Agent):
@@ -452,14 +488,12 @@ class ONUW:
         )
         t = resp.action
         if t is None:
-            self.obs[pid].append("As Robber you declined to swap; you are still the Robber.")
+            self._observe(pid, "As Robber you declined to swap; you are still the Robber.")
             return "Robber declines", resp.reasoning, resp.ms
         self.current[pid], self.current[t] = self.current[t], self.current[pid]
         new_role = self.current[pid]
-        self.obs[pid].append(f"As Robber you swapped with {self.names[t]} and your new card is {new_role}.")
-        self.believes[pid] = new_role
-        self._emit("role_info", {"seat": pid, "swapped_with": t, "role": new_role},
-                   phase="night", visibility="private", target_seat=pid)
+        self._observe(pid, f"As Robber you swapped with {self.names[t]} and your new card is {new_role}.",
+                      believed=new_role, swapped_with=t, role=new_role)
         return f"Robber swaps with {self.names[t]} -> now {new_role}", resp.reasoning, resp.ms
 
     def _tm_action(self, pid: int, agent: Agent):
@@ -514,11 +548,12 @@ class ONUW:
         )
         pair = resp.action
         if pair is None:
-            self.obs[pid].append("As Troublemaker you declined to swap anyone.")
+            self._observe(pid, "As Troublemaker you declined to swap anyone.")
             return "Troublemaker declines", resp.reasoning, resp.ms
         x, y = pair
         self.current[x], self.current[y] = self.current[y], self.current[x]
-        self.obs[pid].append(f"As Troublemaker you swapped {self.names[x]} and {self.names[y]} (you did not see the cards).")
+        self._observe(pid, f"As Troublemaker you swapped {self.names[x]} and {self.names[y]} (you did not see the cards).",
+                      swapped=[x, y])
         return f"Troublemaker swaps {self.names[x]} and {self.names[y]}", resp.reasoning, resp.ms
 
     def _drunk_action(self, pid: int, agent: Agent):
@@ -549,7 +584,8 @@ class ONUW:
         )
         i = resp.action
         self.current[pid], self.center[i] = self.center[i], self.current[pid]
-        self.obs[pid].append(f"As Drunk you swapped your card with center #{i+1} (you did not see your new role).")
+        self._observe(pid, f"As Drunk you swapped your card with center #{i+1} (you did not see your new role).",
+                      center_index=i)
         # Drunk does NOT learn its new role; belief stays "Drunk"
         return f"Drunk swaps with center #{i+1}", resp.reasoning, resp.ms
 

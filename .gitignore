@@ -11,3 +11,6 @@ mocks/data/
 .DS_Store
 node_modules/
 proofs/
+build/
+dist/
+*.egg-info/

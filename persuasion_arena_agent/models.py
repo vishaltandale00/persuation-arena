@@ -15,6 +15,7 @@ class Signup:
     heartbeat_after_ms: int | None = None
     waiting_expires_at: str | None = None
     ready_deadline_at: str | None = None
+    coordinator_url: str | None = None  # per-run container URL; play ready/poll/reply here once set
 
     @classmethod
     def from_dict(cls, data: dict) -> "Signup":
@@ -28,6 +29,7 @@ class Signup:
             heartbeat_after_ms=data.get("heartbeat_after_ms"),
             waiting_expires_at=data.get("waiting_expires_at"),
             ready_deadline_at=data.get("ready_deadline_at"),
+            coordinator_url=data.get("coordinator_url"),
         )
 
 

@@ -178,6 +178,46 @@ def _queue_run(payload: dict, owner: str) -> dict:
             "game": game, "games": games, "rounds": rounds, "deck_preset": deck_preset}
 
 
+# --- Modal per-run coordinator (opt-in via ARENA_MODAL_COORDINATOR) ------------------------------
+# When enabled, creating a connected run fire-and-forgets a per-run Modal container (arena.modal_app)
+# that serves + coordinates the run; agents discover its tunnel URL via the signup response and
+# re-point ready/poll/reply at it. Best-effort: any Modal error leaves the run coordinatable the old
+# way (a worker invoking run_connected_batch). The central process needs Modal auth (MODAL_TOKEN_* or
+# ~/.modal.toml) to spawn / read the URL.
+_coord_url_cache: dict[str, str] = {}
+
+
+def _modal_coordinator_enabled() -> bool:
+    return os.environ.get("ARENA_MODAL_COORDINATOR", "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _spawn_coordinator(run_config: dict, rounds: int = 5) -> None:
+    if not _modal_coordinator_enabled():
+        return
+    try:
+        from .modal_app import spawn_run_server
+        call_id = spawn_run_server(run_config, rounds)
+        print(f"[modal] spawned coordinator for {run_config['id']} ({call_id})", flush=True)
+    except Exception as e:  # never let a coordinator-spawn failure break run creation
+        print(f"[modal] spawn failed for {run_config.get('id')}: {type(e).__name__}: {e}", flush=True)
+
+
+def _coordinator_url(run_id: str) -> str | None:
+    if not _modal_coordinator_enabled():
+        return None
+    cached = _coord_url_cache.get(run_id)
+    if cached:
+        return cached
+    try:
+        from .modal_app import coordinator_url
+        url = coordinator_url(run_id)
+        if url:
+            _coord_url_cache[run_id] = url
+        return url
+    except Exception:
+        return None
+
+
 def _create_connected_run(payload: dict) -> dict:
     game = payload.get("game", "onuw")
     if game not in GAME_LABELS:
@@ -191,7 +231,7 @@ def _create_connected_run(payload: dict) -> dict:
     seed = int(payload.get("seed") or (time.time() * 1000) % 1000000)
     run_id = (payload.get("run_id") or f"run_{seed}_{uuid.uuid4().hex[:6]}").strip()
     deck_preset = _deck_preset_from_payload(game, payload)
-    store.create_connected_run({
+    run_config = {
         "id": run_id,
         "game": game,
         "label": GAME_LABELS[game],
@@ -201,7 +241,9 @@ def _create_connected_run(payload: dict) -> dict:
         "seed_base": seed,
         "submitter": payload.get("owner") or payload.get("submitter") or "connected",
         "deck_preset": deck_preset,
-    })
+    }
+    store.create_connected_run(run_config)
+    _spawn_coordinator(run_config, int(payload.get("rounds") or 5))  # no-op unless ARENA_MODAL_COORDINATOR
     return {"run_id": run_id, "status": "open", "game": game, "games": games,
             "players": players, "deck_preset": deck_preset}
 
@@ -282,6 +324,7 @@ def _signup_response(signup: dict) -> dict:
         "heartbeat_after_ms": 15000,
         "waiting_expires_at": signup.get("waiting_expires_utc"),
         "ready_deadline_at": signup.get("ready_deadline_utc"),
+        "coordinator_url": _coordinator_url(signup["run_id"]),  # None unless the Modal coordinator is up
     }
     return out
 

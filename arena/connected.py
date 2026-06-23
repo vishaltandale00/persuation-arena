@@ -265,6 +265,7 @@ def run_connected_batch(run_id: str, workers: int = 1, discussion_rounds: int | 
                 seed=seed,
                 discussion_rounds=rounds,
                 event_sink=ConnectedEventSink(run_id, game_instance_id, seat_map),
+                event_driven=True,   # delta transport: turns carry no context; harness rebuilds from events
             ).play(agents)
             for p in transcript["players"]:
                 p["name"], p["model"] = names[p["seat"]], "connected-agent"
