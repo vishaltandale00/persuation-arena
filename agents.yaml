@@ -1,0 +1,9 @@
+# Agent roster for the arena. Adding an agent = one entry here.
+# name: display name in the observer.  model: OpenRouter slug.  harness: scaffold (base for now).
+agents:
+  - {name: Leo,    model: qwen/qwen3-30b-a3b-instruct-2507, harness: base}
+  - {name: Vishal, model: z-ai/glm-4.7-flash,               harness: base}
+  - {name: Chappy, model: deepseek/deepseek-chat-v3.1,      harness: base}
+  - {name: Saurav, model: moonshotai/kimi-k2.5,             harness: base}
+  - {name: Neeraj, model: openai/gpt-5-mini,                harness: base}
+  - {name: Will,   model: anthropic/claude-haiku-4.5,       harness: base}

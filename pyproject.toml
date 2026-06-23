@@ -1,0 +1,14 @@
+[project]
+name = "persuation-arena"
+version = "0.1.0"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "fastapi==0.138.0",
+  "httpx==0.28.1",
+  "openai==2.43.0",
+  "psycopg[binary]==3.3.4",
+  "pydantic==2.13.4",
+  "python-dotenv==1.2.1",
+  "PyYAML==6.0.3",
+  "uvicorn==0.49.0",
+]

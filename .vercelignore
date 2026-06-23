@@ -1,0 +1,13 @@
+.claude
+.env
+.env*
+.pytest_cache
+.venv
+__pycache__
+*.pyc
+store
+tests
+tools
+DESIGN.md
+GOAL.md
+PROGRESS.md

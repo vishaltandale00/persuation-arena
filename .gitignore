@@ -1,0 +1,11 @@
+.env*
+!.env.example
+.claude/
+.vercel/
+.venv/
+store/
+__pycache__/
+*.pyc
+mocks/data/
+.pytest_cache/
+.DS_Store

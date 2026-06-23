@@ -1,0 +1,473 @@
+"""One Night Ultimate Werewolf — full role set game core.
+
+Roles: Werewolf, Minion, Mason, Seer, Robber, Troublemaker, Drunk, Insomniac, Hunter, Tanner,
+Villager, Doppelganger. Night wake order (canonical):
+  Doppelganger -> Werewolves -> Minion -> Masons -> Seer -> Robber -> Troublemaker -> Drunk -> Insomniac.
+Then round-robin discussion, a simultaneous vote (all-tied-die, no-kill option), and end-of-night
+win resolution (Hunter chain, Tanner override) via base.compute_winners.
+
+Invariants: per-seat info = observation-log replay; original (dealt) vs current role tracked
+separately; atomic vote (frozen pre-vote state); win on end-of-night roles.
+The output is a transcript dict in the shape the observer renders.
+"""
+from __future__ import annotations
+
+import random
+from collections import Counter
+
+from .base import NO_KILL, Agent, agent_stats, compute_winners, player_won, tally_votes, team_of
+
+ROLE_DESC = {
+    "Werewolf": "You are a Werewolf. At night you wake with other werewolves. Win if no werewolf is voted out.",
+    "Minion": "You are the Minion (werewolf team). At night you learn who the werewolves are; they do NOT know you. Win if no werewolf is voted out — you may sacrifice yourself.",
+    "Mason": "You are a Mason. At night you wake and see the other Mason (if any). Win with the village by eliminating a werewolf.",
+    "Seer": "You are the Seer. At night you look at one player's card OR two center cards. Win by finding a werewolf.",
+    "Robber": "You are the Robber. At night you may swap your card with a player's and see your new role. Win with whatever team you end on.",
+    "Troublemaker": "You are the Troublemaker. At night you swap two OTHER players' cards without looking. Win with the village.",
+    "Drunk": "You are the Drunk. At night you swap your card with a center card without looking — you no longer know your role. Win with whatever you become.",
+    "Insomniac": "You are the Insomniac. At the end of the night you look at your own card to see if it changed. Win with the village.",
+    "Hunter": "You are the Hunter. If you are eliminated, the player you voted for is also eliminated. Win with the village.",
+    "Tanner": "You are the Tanner. You hate your life: you WIN only if you are eliminated. You are on no team.",
+    "Villager": "You are a Villager. You have no night action. Win by eliminating a werewolf.",
+    "Doppelganger": "You are the Doppelganger. At night you look at one player's card and become a copy of that role, performing its action immediately.",
+}
+
+WAKE = ["Doppelganger", "Werewolf", "Minion", "Mason", "Seer", "Robber", "Troublemaker", "Drunk", "Insomniac"]
+
+DEFAULT_DECK = ["Werewolf", "Werewolf", "Seer", "Robber", "Troublemaker", "Minion", "Villager", "Villager"]
+
+# Fixed roster of action/evil roles; villagers pad the deck out to n_players + 3 (always 3 center cards).
+_DECK_BASE = ["Werewolf", "Werewolf", "Minion", "Seer", "Robber", "Troublemaker"]
+
+
+def default_deck(n_players: int) -> list[str]:
+    """Deck for an n-player game: n_players + 3 cards so exactly 3 stay in the center (canonical ONUW).
+
+    n_players == 5 returns the canonical DEFAULT_DECK unchanged (same multiset and order) so seeded
+    deals are byte-identical to before; larger tables just add Villagers.
+    """
+    if n_players == 5:
+        return list(DEFAULT_DECK)
+    return list(_DECK_BASE) + ["Villager"] * (n_players + 3 - len(_DECK_BASE))
+
+
+class ONUW:
+    GAME = "onuw"
+    TITLE = "One Night Ultimate Werewolf"
+    MIN_PLAYERS, MAX_PLAYERS = 5, 7
+
+    def __init__(self, names: dict[int, str], seed: int, discussion_rounds: int = 2,
+                 deck: list[str] | None = None, deal_override: list[str] | None = None):
+        self.names = names
+        self.n = len(names)
+        self.seed = seed
+        self.rng = random.Random(seed)
+        self.discussion_rounds = discussion_rounds
+        self.deck = deck or default_deck(len(names))
+        self.deal_override = deal_override  # explicit 8-card layout for tests (players then center)
+        self.dealt: dict[int, str] = {}
+        self.current: dict[int, str] = {}
+        self.center: list[str] = []
+        self.believes: dict[int, str] = {}
+        self.obs: dict[int, list[str]] = {i: [] for i in range(self.n)}
+        self.public: list[str] = []
+        self._reborn_insomniacs: list[int] = []  # doppel-insomniac to re-wake at end
+
+    # ---- setup -------------------------------------------------------------
+    def deal(self):
+        cards = list(self.deal_override) if self.deal_override else self._shuffled()
+        for i in range(self.n):
+            self.dealt[i] = self.current[i] = self.believes[i] = cards[i]
+        self.center = cards[self.n:]
+
+    def _shuffled(self):
+        cards = list(self.deck)
+        self.rng.shuffle(cards)
+        return cards
+
+    def players_with_dealt(self, role: str) -> list[int]:
+        return [i for i in range(self.n) if self.dealt[i] == role]
+
+    # ---- prompt building (information-filtered per seat) -------------------
+    def _roster_line(self) -> str:
+        return ", ".join(f"{self.names[i]}(seat {i})" for i in range(self.n))
+
+    def _deck_line(self) -> str:
+        return ", ".join(f"{k} x{v}" for k, v in Counter(self.deck).items())
+
+    def base_prompt(self, pid: int) -> str:
+        believed = self.believes[pid]
+        lines = [
+            f"You are {self.names[pid]}, seat {pid}, in a {self.n}-player One Night Ultimate Werewolf game.",
+            f"Your role right now (as far as you know): {believed}. {ROLE_DESC.get(believed,'')}",
+            f"The {len(self.deck)} cards in play (public): {self._deck_line()}.",
+            f"There are {len(self.center)} face-down center cards nobody was dealt.",
+            f"Players: {self._roster_line()}.",
+            "Roles can be secretly swapped at night, so what you were dealt may not be what you are now.",
+        ]
+        if self.obs[pid]:
+            lines.append("What you learned during the night:")
+            lines += [f"  - {o}" for o in self.obs[pid]]
+        if self.public:
+            lines.append("Conversation and events so far:")
+            lines += [f"  {p}" for p in self.public]
+        return "\n".join(lines)
+
+    # ---- night -------------------------------------------------------------
+    def run_night(self, agents: dict[int, Agent]):
+        events: list[dict] = [{"t": "sys", "text": "Roles dealt; 3 cards placed in the center; night begins."}]
+        reason: dict[int, str] = {}
+
+        # 1) Doppelganger copies a player and performs that role's action now.
+        for d in self.players_with_dealt("Doppelganger"):
+            txt, r, ms = self._doppelganger(d, agents[d])
+            reason[d] = r
+            events.append({"t": "act", "pid": d, "text": txt, "ms": ms})
+
+        # 2) Werewolves recognize each other (by current identity: dealt wolves + doppel-wolves).
+        wolves = [i for i in range(self.n) if self._is_wolf_awake(i)]
+        for w in wolves:
+            others = [self.names[o] for o in wolves if o != w]
+            self.obs[w].append(
+                f"You woke as a Werewolf and saw: {', '.join(others)}." if others else "You are the lone werewolf this night.")
+        if len(wolves) == 1:
+            w = wolves[0]
+            ci = self.rng.randrange(len(self.center))
+            self.obs[w].append(f"As the lone wolf you peeked center #{ci+1}: {self.center[ci]}.")
+            events.append({"t": "act", "pid": w, "text": f"Werewolf (lone) peeks center #{ci+1} -> {self.center[ci]}"})
+        elif wolves:
+            events.append({"t": "act", "pid": wolves[0], "text": f"Werewolves recognize each other ({len(wolves)})"})
+
+        # 3) Minion learns the wolves (wolves do NOT learn the minion).
+        for m in [i for i in range(self.n) if self._copies_or_is(i, "Minion")]:
+            ws = [self.names[w] for w in wolves]
+            self.obs[m].append(f"As Minion you learned the werewolves: {', '.join(ws) if ws else 'none (all in center)'}.")
+            events.append({"t": "act", "pid": m, "text": "Minion learns the werewolves"})
+
+        # 4) Masons recognize each other.
+        masons = [i for i in range(self.n) if self._copies_or_is(i, "Mason")]
+        for ms in masons:
+            others = [self.names[o] for o in masons if o != ms]
+            self.obs[ms].append(f"As Mason you saw the other Mason(s): {', '.join(others)}." if others else "You are the lone Mason.")
+        if masons:
+            events.append({"t": "act", "pid": masons[0], "text": f"Masons recognize each other ({len(masons)})"})
+
+        # 5) Seer
+        for s in self.players_with_dealt("Seer"):
+            txt, r, ms = self._seer_action(s, agents[s]); reason[s] = r
+            events.append({"t": "act", "pid": s, "text": txt, "ms": ms})
+        # 6) Robber
+        for rb in self.players_with_dealt("Robber"):
+            txt, r, ms = self._robber_action(rb, agents[rb]); reason[rb] = r
+            events.append({"t": "act", "pid": rb, "text": txt, "ms": ms})
+        # 7) Troublemaker
+        for tm in self.players_with_dealt("Troublemaker"):
+            txt, r, ms = self._tm_action(tm, agents[tm]); reason[tm] = r
+            events.append({"t": "act", "pid": tm, "text": txt, "ms": ms})
+        # 8) Drunk
+        for dk in self.players_with_dealt("Drunk"):
+            txt, r, ms = self._drunk_action(dk, agents[dk]); reason[dk] = r
+            events.append({"t": "act", "pid": dk, "text": txt, "ms": ms})
+        # 9) Insomniac (and any doppel-insomniac re-woken)
+        for ins in self.players_with_dealt("Insomniac") + self._reborn_insomniacs:
+            self.obs[ins].append(f"As Insomniac you checked your own card at dawn: it is now {self.current[ins]}.")
+            self.believes[ins] = self.current[ins]
+            events.append({"t": "act", "pid": ins, "text": f"Insomniac checks own card -> {self.current[ins]}"})
+
+        events.append({"t": "sys", "text": "Dawn breaks. Everyone wakes."})
+        synth = {
+            "state": "Roles dealt; night actions resolved in wake order on each role's wake-time view.",
+            "key": "Cards may have moved (Robber/Troublemaker/Drunk/Doppelganger). Players act on what they saw, which later swaps can invalidate.",
+            "note": "End-of-night roles can differ from what each agent believes.",
+        }
+        return {"name": "Night", "kind": "night", "events": events, "reason": reason, "synth": synth}
+
+    # role-identity helpers (a doppelganger takes on its copied role for recognition)
+    def _copied(self, pid: int) -> str | None:
+        return getattr(self, "_doppel_role", {}).get(pid)
+
+    def _is_wolf_awake(self, pid: int) -> bool:
+        return self.dealt[pid] == "Werewolf" or self._copied(pid) == "Werewolf"
+
+    def _copies_or_is(self, pid: int, role: str) -> bool:
+        return self.dealt[pid] == role or self._copied(pid) == role
+
+    def _doppelganger(self, pid: int, agent: Agent):
+        if not hasattr(self, "_doppel_role"):
+            self._doppel_role = {}
+        targets = [i for i in range(self.n) if i != pid]
+        prompt = self.base_prompt(pid) + (
+            "\n\nNIGHT ACTION (Doppelganger): look at one player's card and become a copy of that role.\n"
+            'Reply JSON {"reasoning":"...","action":{"target":<seat>}}.'
+        )
+
+        def parse(a, raw):
+            t = int(a["target"])
+            if t not in targets:
+                raise ValueError("bad target")
+            return t
+
+        resp = agent.act(prompt, parse, default_action=targets[0])
+        t = resp.action
+        copied = self.current[t]
+        self._doppel_role[pid] = copied
+        self.current[pid] = copied  # becomes that role for win resolution
+        self.believes[pid] = copied
+        self.obs[pid].append(f"As Doppelganger you copied {self.names[t]} and became a {copied}.")
+        # perform the copied action immediately for the action roles
+        extra = ""
+        if copied == "Seer":
+            txt, _, _ = self._seer_action(pid, agent); extra = " then " + txt
+        elif copied == "Robber":
+            txt, _, _ = self._robber_action(pid, agent); extra = " then " + txt
+        elif copied == "Troublemaker":
+            txt, _, _ = self._tm_action(pid, agent); extra = " then " + txt
+        elif copied == "Drunk":
+            txt, _, _ = self._drunk_action(pid, agent); extra = " then " + txt
+        elif copied == "Insomniac":
+            self._reborn_insomniacs.append(pid)
+        return f"Doppelganger copies {self.names[t]} -> {copied}{extra}", resp.reasoning, resp.ms
+
+    def _seer_action(self, pid: int, agent: Agent):
+        alive_targets = [i for i in range(self.n) if i != pid]
+        prompt = self.base_prompt(pid) + (
+            "\n\nNIGHT ACTION (Seer): choose ONE:\n"
+            '  {"mode":"player","target":<seat>}  view one other player\'s card, OR\n'
+            '  {"mode":"center","indices":[a,b]}  view two of the three center cards (0-based).\n'
+            'Reply JSON {"reasoning":"...","action":{...}}.'
+        )
+
+        def parse(a, raw):
+            if a.get("mode") == "player":
+                t = int(a["target"])
+                if t not in alive_targets:
+                    raise ValueError("bad target")
+                return ("player", t)
+            if a.get("mode") == "center":
+                idx = [int(x) for x in a["indices"]][:2]
+                if len(idx) != 2 or idx[0] == idx[1] or any(x < 0 or x >= len(self.center) for x in idx):
+                    raise ValueError("bad idx")
+                return ("center", idx)
+            raise ValueError("bad mode")
+
+        resp = agent.act(prompt, parse, default_action=("center", [0, 1]))
+        mode, val = resp.action
+        if mode == "player":
+            self.obs[pid].append(f"As Seer you looked at {self.names[val]}'s card: {self.current[val]}.")
+            return f"Seer views {self.names[val]} -> {self.current[val]}", resp.reasoning, resp.ms
+        roles = [self.center[i] for i in val]
+        self.obs[pid].append(f"As Seer you looked at center #{val[0]+1},#{val[1]+1}: {roles[0]}, {roles[1]}.")
+        return f"Seer views center #{val[0]+1},#{val[1]+1} -> {roles[0]}, {roles[1]}", resp.reasoning, resp.ms
+
+    def _robber_action(self, pid: int, agent: Agent):
+        targets = [i for i in range(self.n) if i != pid]
+        prompt = self.base_prompt(pid) + (
+            "\n\nNIGHT ACTION (Robber): swap your card with a player's and see your new role, or decline.\n"
+            'Reply JSON {"reasoning":"...","action":{"target":<seat or null>}}.'
+        )
+
+        def parse(a, raw):
+            t = a.get("target")
+            if t is None:
+                return None
+            t = int(t)
+            if t not in targets:
+                raise ValueError("bad target")
+            return t
+
+        resp = agent.act(prompt, parse, default_action=targets[0])
+        t = resp.action
+        if t is None:
+            self.obs[pid].append("As Robber you declined to swap; you are still the Robber.")
+            return "Robber declines", resp.reasoning, resp.ms
+        self.current[pid], self.current[t] = self.current[t], self.current[pid]
+        new_role = self.current[pid]
+        self.obs[pid].append(f"As Robber you swapped with {self.names[t]} and your new card is {new_role}.")
+        self.believes[pid] = new_role
+        return f"Robber swaps with {self.names[t]} -> now {new_role}", resp.reasoning, resp.ms
+
+    def _tm_action(self, pid: int, agent: Agent):
+        others = [i for i in range(self.n) if i != pid]
+        prompt = self.base_prompt(pid) + (
+            "\n\nNIGHT ACTION (Troublemaker): swap two OTHER players' cards (you don't see them), or decline.\n"
+            'Reply JSON {"reasoning":"...","action":{"a":<seat or null>,"b":<seat or null>}}.'
+        )
+
+        def parse(a, raw):
+            if a.get("a") is None or a.get("b") is None:
+                return None
+            x, y = int(a["a"]), int(a["b"])
+            if x == y or x not in others or y not in others:
+                raise ValueError("bad pair")
+            return (x, y)
+
+        resp = agent.act(prompt, parse, default_action=(others[0], others[1]))
+        pair = resp.action
+        if pair is None:
+            self.obs[pid].append("As Troublemaker you declined to swap anyone.")
+            return "Troublemaker declines", resp.reasoning, resp.ms
+        x, y = pair
+        self.current[x], self.current[y] = self.current[y], self.current[x]
+        self.obs[pid].append(f"As Troublemaker you swapped {self.names[x]} and {self.names[y]} (you did not see the cards).")
+        return f"Troublemaker swaps {self.names[x]} and {self.names[y]}", resp.reasoning, resp.ms
+
+    def _drunk_action(self, pid: int, agent: Agent):
+        prompt = self.base_prompt(pid) + (
+            "\n\nNIGHT ACTION (Drunk): swap your card with a center card (0-based) without looking.\n"
+            'Reply JSON {"reasoning":"...","action":{"index":<0,1,2>}}.'
+        )
+
+        def parse(a, raw):
+            i = int(a["index"])
+            if i < 0 or i >= len(self.center):
+                raise ValueError("bad index")
+            return i
+
+        resp = agent.act(prompt, parse, default_action=0)
+        i = resp.action
+        self.current[pid], self.center[i] = self.center[i], self.current[pid]
+        self.obs[pid].append(f"As Drunk you swapped your card with center #{i+1} (you did not see your new role).")
+        # Drunk does NOT learn its new role; belief stays "Drunk"
+        return f"Drunk swaps with center #{i+1}", resp.reasoning, resp.ms
+
+    # ---- discussion --------------------------------------------------------
+    def run_discussion(self, agents: dict[int, Agent]):
+        # discussion_rounds is a CAP: discussion runs round-robin until a full round is all-passes
+        # (conversation died) or the cap is reached. So lively games run long, dead ones end early.
+        max_rounds = self.discussion_rounds
+        events: list[dict] = [{"t": "sys", "text": f"Day breaks. Round-robin discussion (up to {max_rounds} rounds; ends once a full round passes in silence)."}]
+        reason: dict[int, str] = {}
+        order = list(range(self.n))
+        self.rng.shuffle(order)
+        msgs = 0
+        rnd = 0
+        for rnd in range(max_rounds):
+            events.append({"t": "round", "text": f"Round {rnd+1}"})
+            spoke = 0
+            for pid in order:
+                txt, r, passed, ms = self._speak(pid, agents[pid]); reason[pid] = r
+                if passed:
+                    events.append({"t": "pass", "pid": pid, "ms": ms}); self.public.append(f"{self.names[pid]} passes.")
+                else:
+                    events.append({"t": "say", "pid": pid, "text": txt, "ms": ms}); self.public.append(f"{self.names[pid]}: {txt}"); msgs += 1; spoke += 1
+            if spoke == 0:
+                events.append({"t": "sys", "text": "A full round passed in silence — discussion ends."})
+                break
+        events.append({"t": "sys", "text": f"Discussion closes ({msgs} messages over {rnd+1} round(s)). Moving to the vote."})
+        synth = {
+            "state": f"Round-robin discussion ran {rnd+1} round(s) (cap {max_rounds}); agents claim roles and accuse.",
+            "key": "Claims are cheap once cards can move; players weigh hard night-info against unverifiable stories.",
+            "note": "Watch who anchors on real information vs who deflects.",
+        }
+        return {"name": "Discussion", "kind": "talk", "events": events, "reason": reason, "synth": synth}
+
+    def _speak(self, pid: int, agent: Agent):
+        prompt = self.base_prompt(pid) + (
+            "\n\nIt is your turn to speak to the whole table. Say something persuasive that helps your team — "
+            "claim a role, share (or fake) information, accuse, or defend yourself. You may stay silent.\n"
+            'Reply JSON {"reasoning":"...","action":"<what you say>"} or {"action":"pass"} to stay silent.'
+        )
+
+        def parse(a, raw):
+            s = str(a).strip()
+            if not s:
+                raise ValueError("empty")
+            return s
+
+        resp = agent.act(prompt, parse, default_action="pass")
+        s = resp.action
+        if s.lower() in ("pass", "(pass)", "stay silent", "silent"):
+            return "", resp.reasoning, True, resp.ms
+        return s, resp.reasoning, False, resp.ms
+
+    # ---- vote --------------------------------------------------------------
+    def run_vote(self, agents: dict[int, Agent]):
+        events: list[dict] = [{"t": "sys", "text": "Vote: everyone points at one player simultaneously (or 'no one')."}]
+        reason: dict[int, str] = {}
+        frozen_public = list(self.public)  # freeze pre-vote state; all voters see the same thing
+        votes: dict[int, int] = {}
+        vote_ms: dict[int, float] = {}
+        for pid in range(self.n):
+            tgt, r, ms = self._vote(pid, agents[pid], frozen_public); reason[pid] = r
+            votes[pid] = tgt; vote_ms[pid] = ms
+        for pid in range(self.n):
+            t = votes[pid]
+            events.append({"t": "vote", "pid": pid, "tgt": t, "text": "votes", "ms": vote_ms[pid]})
+        deaths = tally_votes(votes, list(range(self.n)))
+        counts: dict[int, int] = {}
+        for t in votes.values():
+            counts[t] = counts.get(t, 0) + 1
+        tally = sorted([{"pid": p, "n": c} for p, c in counts.items() if p != NO_KILL], key=lambda x: -x["n"])
+        if deaths:
+            events.append({"t": "sys", "text": "Eliminated: " + ", ".join(self.names[d] for d in deaths) + "."})
+        else:
+            events.append({"t": "sys", "text": "No consensus — nobody is eliminated."})
+        synth = {
+            "state": "Simultaneous vote; pre-vote state frozen, votes collected hidden, revealed together.",
+            "key": ("Eliminated: " + ", ".join(self.names[d] for d in deaths)) if deaths else "No one eliminated.",
+            "note": "Outcome judged on end-of-night roles next (Hunter chain, Tanner apply).",
+        }
+        self._deaths = deaths
+        self._votes = votes
+        return {"name": "Vote", "kind": "vote", "events": events, "reason": reason, "synth": synth,
+                "votes": [{"pid": p, "tgt": t} for p, t in votes.items()], "tally": tally, "deaths": deaths}
+
+    def _vote(self, pid: int, agent: Agent, frozen_public: list[str]):
+        targets = [i for i in range(self.n) if i != pid]
+        prompt = self.base_prompt(pid) + (
+            "\n\nFINAL VOTE: point at the player you believe should be eliminated, or vote for no one. "
+            "You cannot vote for yourself.\n"
+            'Reply JSON {"reasoning":"...","action":<seat number, or -1 for no one>}.'
+        )
+
+        def parse(a, raw):
+            t = int(a)
+            if t == NO_KILL:
+                return NO_KILL
+            if t not in targets:
+                raise ValueError("bad target")
+            return t
+
+        resp = agent.act(prompt, parse, default_action=self.rng.choice(targets))
+        return resp.action, resp.reasoning, resp.ms
+
+    # ---- resolution --------------------------------------------------------
+    def resolve(self):
+        wins = compute_winners(self.current, self._deaths, self._votes)
+        deaths = wins["deaths"]
+        if wins["village"]:
+            winner, text = "good", "VILLAGE WINS — a werewolf was eliminated." if any(
+                self.current[d] == "Werewolf" for d in deaths) else "VILLAGE WINS — no werewolf was in play and nobody died."
+        elif wins["tanner"] and not wins["werewolf"]:
+            winner, text = "evil", "TANNER WINS — the Tanner got itself eliminated."
+        elif wins["werewolf"]:
+            winner, text = "evil", "WEREWOLVES WIN — no werewolf was eliminated."
+        else:
+            winner, text = "evil", "VILLAGE LOSES."
+        self._wins = wins
+        events = [{"t": "result", "team": winner, "text": text}]
+        synth = {"state": text, "key": "Win evaluated on END-OF-NIGHT roles (Hunter chain + Tanner applied).",
+                 "note": "Per-seat decision quality varies — retained for offline scoring."}
+        return {"name": "Result", "kind": "result", "events": events, "reason": {}, "synth": synth,
+                "outcome": {"team": winner, "text": text}}
+
+    # ---- orchestration -----------------------------------------------------
+    def play(self, agents: dict[int, Agent]) -> dict:
+        self.deal()
+        phases = [self.run_night(agents), self.run_discussion(agents), self.run_vote(agents), self.resolve()]
+        winner = phases[-1]["outcome"]["team"]
+        wins = self._wins
+        players = [{
+            "seat": i, "dealt": self.dealt[i], "end": self.current[i],
+            "team": team_of(self.current[i]), "believes": self.believes[i],
+            "won": player_won(self.current[i], wins),
+            **agent_stats(agents[i]),
+        } for i in range(self.n)]
+        return {
+            "game": self.GAME, "title": self.TITLE, "seed": self.seed,
+            "meta": f"{self.n} agents · {len(self.deck)} cards · 1 night, 1 vote · seed {self.seed}",
+            "players": players,
+            "cardsInPlay": [[c, team_of(c)] for c in self.deck],
+            "center": [[c, team_of(c)] for c in self.center],
+            "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,
+        }
