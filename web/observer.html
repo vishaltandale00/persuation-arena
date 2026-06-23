@@ -429,6 +429,7 @@ let screen="index", curRun=null, curGame=null, step=0, selected=null, timer=null
 function T(){ return TRANSCRIPTS[curRun.id+"/"+curGame.gid]; }
 function hasT(){ return curGame && curGame.full && !!T(); }
 function nm(pid){ return T().players[pid].name; }
+function voteName(pid){ return pid===-1 ? "no one" : (T().players[pid] ? nm(pid) : "seat "+pid); }
 function tag(pid){ return tagOf(T().players[pid].name); }
 function modelOf(pid){ return T().players[pid].model; }
 function teamCls(t){ return t==="evil"?"evil":"good"; }
@@ -717,7 +718,7 @@ function convoItem(m,e){
   const head='<div class="h"><span class="nm">'+nm(e.pid)+'</span><span class="role">'+pl.end+'</span>'+tms+'</div>';
   if(e.t==="pass"){ el.className="turn pass"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">— holds, says nothing —</div></div>'; return el; }
   if(e.t==="act"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="actline">'+e.text+'</div></div>'; return el; }
-  if(e.t==="vote"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="voteline"><span class="arr">votes</span> <span class="t">'+nm(e.tgt)+'</span> <span class="role">· '+e.text+'</span></div></div>'; return el; }
+  if(e.t==="vote"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="voteline"><span class="arr">votes</span> <span class="t">'+voteName(e.tgt)+'</span> <span class="role">· '+e.text+'</span></div></div>'; return el; }
   el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">'+e.text+'</div></div>'; return el;
 }
 function block(title,inner){ return '<div class="sblock"><h4>'+title+'</h4>'+inner+'</div>'; }
