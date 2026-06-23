@@ -345,7 +345,7 @@
 /* name pool + models/harnesses for the new-run picker */
 const NAME_POOL=["Leo","Vishal","Chappy","Saurav","Neeraj","Shreyan","Scott","Nikhil","Jacob","Will"];
 /* models that seed newly-added agents; the live OpenRouter catalog (MODEL_CATALOG) backs the picker */
-const DEFAULT_MODELS=["qwen/qwen3-30b-a3b-instruct-2507","z-ai/glm-4.7-flash","deepseek/deepseek-chat-v3.1","moonshotai/kimi-k2.5","openai/gpt-5-mini","anthropic/claude-haiku-4.5"];
+const DEFAULT_MODELS=["microsoft/phi-4-mini-instruct","mistralai/mistral-small-2603","google/gemini-3.1-flash-lite","meta-llama/llama-3.1-8b-instruct","openai/gpt-4o-mini","deepseek/deepseek-v4-flash"];
 let MODEL_CATALOG=DEFAULT_MODELS.map(id=>({id,name:id}));  // [{id,name}] — replaced by /api/models on the new-run page
 const HARNESS_OPTS=["base"];  // only the base harness is implemented; others were removed
 function tagOf(n){ return (n[0]+(n[1]||"")).toUpperCase(); }

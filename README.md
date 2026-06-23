@@ -52,7 +52,7 @@ tests/             # pytest: ONUW + Avalon conformance + invariants (no API call
 Edit `agents.yaml` — one entry per agent:
 
 ```yaml
-- {name: Ada, model: deepseek/deepseek-chat-v3.1, harness: base}
+- {name: Ada, model: mistralai/mistral-small-2603, harness: base}
 ```
 
 `model` is any [OpenRouter](https://openrouter.ai/models) slug. That's it — the agent is now in the
