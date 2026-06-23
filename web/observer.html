@@ -727,12 +727,15 @@ async function renderKeys(){
   catch(e){ el.innerHTML='<div class="keycard"><div class="kc-result no">Server not reachable. Start it with <span style="font-family:var(--mono)">python -m arena.cli serve</span>, then reload this page.</div></div>'; return; }
   const cfg=st.configured;
   if(st.server_key_management===false){
+    const hostedMsg=cfg
+      ? 'The hosted server has an OpenRouter key configured from Vercel environment secrets. Browser key entry is disabled, and account usage details are not exposed on the public site.'
+      : 'No server-side OpenRouter key is configured. Add <span style="font-family:var(--mono)">OPENROUTER_API_KEY</span> in Vercel project environment variables, or run games through a local worker with its own local <span style="font-family:var(--mono)">.env</span>.';
     el.innerHTML=
       '<div class="keycard">'+
-        '<div class="kc-top"><div class="kc-name"><span class="kc-dot no"></span>OpenRouter</div>'+
-          '<span class="kc-status">worker-side keys</span></div>'+
+        '<div class="kc-top"><div class="kc-name"><span class="kc-dot '+(cfg?'ok':'no')+'"></span>OpenRouter</div>'+
+          '<span class="kc-status">'+(cfg?'server env key configured':'no server key')+'</span></div>'+
         '<div class="kc-sub">'+st.base_url+'</div>'+
-        '<div class="kc-result">Hosted runs are executed by laptop workers. Put the OpenRouter key in the local worker <span style="font-family:var(--mono)">.env</span>; the shared site does not store or test model keys.</div>'+
+        '<div class="kc-result '+(cfg?'ok':'')+'">'+hostedMsg+'</div>'+
         '<div class="kc-models">Models routed via OpenRouter:<div class="teamline" style="margin-top:6px">'+
           st.models.map(m=>'<span class="card">'+m+'</span>').join("")+'</div></div>'+
       '</div>';

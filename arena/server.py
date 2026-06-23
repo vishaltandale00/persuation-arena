@@ -197,7 +197,13 @@ def _roster_models() -> list[str]:
 _models_cache: dict = {"at": 0.0, "data": []}
 
 
-def _server_keys_enabled() -> bool:
+def _hosted() -> bool:
+    return bool(os.environ.get("VERCEL"))
+
+
+def _browser_key_management_enabled() -> bool:
+    """Local dev may save/test a browser-submitted key. Hosted deployments may only use
+    server-side env secrets and must not accept browser-submitted keys."""
     return not os.environ.get("VERCEL")
 
 
@@ -211,7 +217,7 @@ def _fetch_models() -> list[dict]:
     if _models_cache["data"] and now - _models_cache["at"] < 600:
         return _models_cache["data"]
     headers = {}
-    if _server_keys_enabled() and config.has_api_key():
+    if config.has_api_key():
         headers["Authorization"] = f"Bearer {config.get_api_key()}"
     try:
         r = httpx.get(OPENROUTER_BASE_URL + "/models", headers=headers, timeout=15)
@@ -226,15 +232,19 @@ def _fetch_models() -> list[dict]:
 
 
 def _test_openrouter() -> dict:
-    """Live-validate the configured key against OpenRouter (never echoes the key)."""
-    if not _server_keys_enabled():
-        return {"ok": False, "error": "server key management is disabled on hosted deployments"}
+    """Live-validate the configured key against OpenRouter.
+
+    Hosted deployments intentionally redact account metadata (usage/limit/label) because
+    this endpoint is public. Local dev keeps the richer response for convenience.
+    """
     if not config.has_api_key():
         return {"ok": False, "error": "no key configured"}
     try:
         r = httpx.get(OPENROUTER_BASE_URL + "/key",
                       headers={"Authorization": f"Bearer {config.get_api_key()}"}, timeout=10)
         if r.status_code == 200:
+            if _hosted():
+                return {"ok": True, "configured": True, "source": "server_env"}
             d = r.json().get("data", {})
             return {"ok": True, "label": d.get("label"),
                     "usage": d.get("usage"), "limit": d.get("limit"),
@@ -248,9 +258,11 @@ def _test_openrouter() -> dict:
 
 @app.get("/api/keys")
 def api_keys():
+    configured = config.has_api_key()
     return {"provider": "openrouter", "base_url": OPENROUTER_BASE_URL,
-            "configured": _server_keys_enabled() and config.has_api_key(), "models": _roster_models(),
-            "server_key_management": _server_keys_enabled()}
+            "configured": configured, "models": _roster_models(),
+            "server_key_management": _browser_key_management_enabled(),
+            "key_source": "server_env" if _hosted() and configured else "local_env" if configured else None}
 
 
 @app.get("/api/models")
@@ -270,8 +282,8 @@ def api_keys_test():
 
 @app.post("/api/keys")
 def api_keys_set(payload: dict):
-    if not _server_keys_enabled():
-        raise HTTPException(403, "server key management is disabled on hosted deployments")
+    if not _browser_key_management_enabled():
+        raise HTTPException(403, "browser-submitted keys are disabled on hosted deployments")
     key = (payload.get("api_key") or "").strip()
     if not key:
         raise HTTPException(400, "empty key")
