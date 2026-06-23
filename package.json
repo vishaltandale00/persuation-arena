@@ -1,6 +1,12 @@
 {
   "private": true,
+  "scripts": {
+    "audit:pretext": ".venv/bin/python tools/pretext_responsive_audit.py"
+  },
   "engines": {
     "node": "22.x"
+  },
+  "devDependencies": {
+    "@chenglou/pretext": "^0.0.8"
   }
 }

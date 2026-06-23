@@ -9,4 +9,5 @@ __pycache__/
 mocks/data/
 .pytest_cache/
 .DS_Store
+node_modules/
 proofs/

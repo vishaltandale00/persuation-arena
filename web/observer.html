@@ -196,6 +196,10 @@
   .form label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
   select,input[type=number],input[type=text]{font-family:var(--sans);font-size:13px;padding:8px 11px;border:1px solid var(--line-2);border-radius:7px;background:var(--panel);color:var(--ink)}
   select:focus,input:focus{outline:2px solid var(--accent);outline-offset:0;border-color:var(--accent)}
+  .run-settings{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1.1fr) minmax(0,.9fr) minmax(0,.75fr) minmax(0,.7fr) minmax(0,1fr);gap:14px;align-items:end}
+  .run-settings .control{min-width:0}
+  .run-settings select,.run-settings input{width:100%}
+  .run-actions{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap}
   .seglist{display:flex;flex-direction:column;gap:8px}
   .seg{display:grid;grid-template-columns:168px 1fr 104px 28px;gap:10px;align-items:center;border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--panel)}
   .seg .pn{display:flex;align-items:center;gap:8px;font-weight:600}
@@ -235,6 +239,7 @@
     .rt-head,.rt-row{grid-template-columns:16px 88px 1fr 96px;gap:10px} .rt-head span:nth-child(n+4),.rt-ng,.rt-when{display:none}
     .gh,.grow2{grid-template-columns:16px 70px 1fr 96px;gap:10px} .gh span:nth-child(n+5),.grow2 .gseed,.replay{display:none}
     .keyrow{grid-template-columns:1fr}
+    .run-settings{grid-template-columns:repeat(3,minmax(0,1fr))}
   }
   @media (max-width:600px){
     .topbar{height:auto;min-height:50px;flex-wrap:wrap;gap:8px;padding:8px 10px}
@@ -242,6 +247,13 @@
     .nav{margin-left:0}
     .nav button,.btn{font-size:12px;padding:6px 9px}
     .wrap{padding:18px 14px 50px}
+    .detail .crumb{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 8px;align-items:center;padding:10px 12px}
+    .detail .crumb .back{grid-column:1}
+    .detail .crumb .rid{grid-column:2;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .detail .crumb .title,.detail .crumb .meta,.detail .crumb .transport{grid-column:1/-1}
+    .detail .crumb .grow{display:none}
+    .detail .crumb .transport{flex-wrap:wrap}
+    .detail .crumb .stepc{min-width:0;text-align:left}
     .ovgrid,.ovgrid>*{min-width:0}
     .panel,.panel .body{min-width:0}
     .agrow{grid-template-columns:1fr;gap:4px}
@@ -254,6 +266,9 @@
     .ev .pay{grid-column:1/-1}
     .gh,.grow2{grid-template-columns:16px 1fr;gap:10px}
     .gh span:nth-child(n+3),.grow2 .gline,.grow2 .wtag{display:none}
+    .run-settings{grid-template-columns:1fr}
+    .seg{grid-template-columns:minmax(0,1fr);gap:8px}
+    .run-actions .btn{flex:1 1 120px;text-align:center}
   }
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -335,34 +350,34 @@
   <div class="wrap" style="max-width:720px">
     <div class="pagehead"><h1>New run</h1><p>Configure a batch of games, the agents, and the model harness each agent runs.</p></div>
     <div class="form">
-      <div class="field" style="display:flex;gap:24px">
-        <div><label>Game</label>
+      <div class="field run-settings">
+        <div class="control"><label>Game</label>
           <select id="nf-game">
             <option>One Night Ultimate Werewolf</option>
             <option>The Resistance: Avalon</option>
             <option>Secret Mafia</option>
           </select></div>
-        <div id="nf-deck-field"><label>ONUW deck</label>
+        <div class="control" id="nf-deck-field"><label>ONUW deck</label>
           <select id="nf-deck">
             <option value="arena">Arena pressure</option>
             <option value="classic">Classic</option>
             <option value="tanner">Tanner puzzle</option>
           </select></div>
-        <div><label>Games to play</label>
-          <input type="number" id="nf-n" value="8" min="1" max="2000" style="width:100px"></div>
-        <div><label>Rounds</label>
-          <input type="number" id="nf-rounds" value="5" min="1" max="10" style="width:90px"></div>
-        <div><label>Players</label>
+        <div class="control"><label>Games to play</label>
+          <input type="number" id="nf-n" value="8" min="1" max="2000"></div>
+        <div class="control"><label>Rounds</label>
+          <input type="number" id="nf-rounds" value="5" min="1" max="10"></div>
+        <div class="control"><label>Players</label>
           <select id="nf-p"><option>5</option><option>6</option><option>7</option></select></div>
-        <div><label>Worker owner</label>
-          <input type="text" id="nf-owner" value="default" spellcheck="false" style="width:126px"></div>
+        <div class="control"><label>Worker owner</label>
+          <input type="text" id="nf-owner" value="default" spellcheck="false"></div>
       </div>
       <div class="field">
         <label>Agents · model + harness</label>
         <div class="seglist" id="nf-agents"></div>
         <button class="btn" id="nf-add" type="button">+ Add agent</button>
       </div>
-      <div style="display:flex;gap:10px;margin-top:20px">
+      <div class="run-actions">
         <button class="btn primary" id="nf-launch">Launch run</button>
         <button class="btn" id="nf-cancel">Cancel</button>
       </div>
