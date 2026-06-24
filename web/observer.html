@@ -171,6 +171,7 @@
   .think-ms{font-family:var(--mono);font-size:11px;color:var(--faint);margin-left:auto;white-space:nowrap}
   .turn .h{justify-content:flex-start}
   .turn .say{font-size:13.5px;color:var(--ink)} .turn.pass .say{color:var(--faint);font-style:italic}
+  .mention{display:inline-flex;align-items:center;max-width:180px;vertical-align:baseline;font-family:var(--mono);font-size:12px;line-height:1.4;padding:0 5px;border:1px solid var(--line-2);border-radius:5px;background:var(--sel);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .actline{font-family:var(--mono);font-size:12px;color:var(--ink-2);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 9px;display:inline-block}
   .voteline{font-size:13px} .voteline .arr{font-family:var(--mono);color:var(--faint)} .voteline .t{font-weight:600}
   .sysline{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:center;padding:7px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:13px 0}
@@ -452,6 +453,23 @@ const DECK_LABELS={arena:"Arena pressure",classic:"Classic",tanner:"Tanner puzzl
 function tagOf(n){ return (n[0]+(n[1]||"")).toUpperCase(); }
 function escAttr(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function publicRef(name){
+  const h=String(name||"").trim().normalize("NFKD").replace(/[^\x00-\x7F]/g,"").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
+  return h?"@"+h:"";
+}
+function mentionMap(m){
+  const out={};
+  (m.players||[]).forEach(p=>{ const ref=publicRef(p.name); if(ref) out[ref]=p; });
+  return out;
+}
+function renderMentions(text,m){
+  const refs=mentionMap(m);
+  return esc(text).replace(/(^|[^\w@.-])(@[a-z0-9][a-z0-9-]*)\b/g,(all,prefix,ref)=>{
+    const p=refs[ref.toLowerCase()];
+    if(!p) return all;
+    return prefix+'<span class="mention" title="'+escAttr(p.name+' '+ref)+'">'+esc(ref)+'</span>';
+  });
+}
 
 /* ===== RUNS — each has its own agent roster (same agents only within the run) ===== */
 const API="/api";  // same-origin Vercel serverless functions under /api
@@ -857,11 +875,11 @@ function convoItem(m,e){
   if(e.t==="result"){ el.className="resline "+teamCls(e.team); el.textContent=e.text; return el; }
   const pl=m.players[e.pid];
   const tms=e.ms?'<span class="think-ms" title="time the agent took to decide">⏱ '+fmtMs(e.ms)+'</span>':'';
-  const head='<div class="h"><span class="nm">'+nm(e.pid)+'</span><span class="role">'+pl.end+'</span>'+tms+'</div>';
+  const head='<div class="h"><span class="nm">'+esc(nm(e.pid))+'</span><span class="role">'+esc(pl.end)+'</span>'+tms+'</div>';
   if(e.t==="pass"){ el.className="turn pass"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">— holds, says nothing —</div></div>'; return el; }
-  if(e.t==="act"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="actline">'+e.text+'</div></div>'; return el; }
-  if(e.t==="vote"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="voteline"><span class="arr">votes</span> <span class="t">'+voteName(e.tgt)+'</span> <span class="role">· '+e.text+'</span></div></div>'; return el; }
-  el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">'+e.text+'</div></div>'; return el;
+  if(e.t==="act"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="actline">'+renderMentions(e.text,m)+'</div></div>'; return el; }
+  if(e.t==="vote"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="voteline"><span class="arr">votes</span> <span class="t">'+esc(voteName(e.tgt))+'</span> <span class="role">· '+renderMentions(e.text,m)+'</span></div></div>'; return el; }
+  el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">'+renderMentions(e.text,m)+'</div></div>'; return el;
 }
 function block(title,inner){ return '<div class="sblock"><h4>'+title+'</h4>'+inner+'</div>'; }
 function renderState(){

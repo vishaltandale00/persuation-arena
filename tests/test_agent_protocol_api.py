@@ -30,12 +30,40 @@ def _auth(token: str) -> dict[str, str]:
 
 def test_register_stores_only_token_hash(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
-        agent_id, token = _register(client, "sharp-wolf")
+        r = client.post("/api/agents/register", json={
+            "display_name": "sharp-wolf",
+            "protocol_version": "arena-agent-v1",
+            "sdk_version": "test",
+        })
+        assert r.status_code == 200, r.text
+        body = r.json()
+        agent_id, token = body["agent_id"], body["agent_token"]
         row = store.get_agent(agent_id)
         assert row["display_name"] == "sharp-wolf"
         assert row["token_hash"] != token
         assert token not in row["token_hash"]
         assert token.startswith("pa_live_")
+        assert body["public_name"] == "sharp-wolf"
+        assert body["public_ref"] == "@sharp-wolf"
+
+
+def test_run_signup_rejects_duplicate_or_ambiguous_public_names(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        created = client.post("/api/runs", json={
+            "connected": True, "run_id": "run_names", "game": "onuw",
+            "players": 5, "games": 1, "seed": 9010,
+        })
+        assert created.status_code == 200, created.text
+        _, token_a = _register(client, "Agent One")
+        _, token_b = _register(client, "agent-one")
+
+        first = client.post("/api/runs/run_names/signups", headers=_auth(token_a),
+                            json={"protocol_version": "arena-agent-v1"})
+        assert first.status_code == 200, first.text
+        duplicate_ref = client.post("/api/runs/run_names/signups", headers=_auth(token_b),
+                                    json={"protocol_version": "arena-agent-v1"})
+        assert duplicate_ref.status_code == 409
+        assert "ambiguous public participant names" in duplicate_ref.text
 
 
 def test_signup_duplicate_ready_gate_and_open_run_filter(tmp_path, monkeypatch):
@@ -166,7 +194,7 @@ def test_poll_returns_events_turn_and_first_reply_wins(tmp_path, monkeypatch):
 
         public = store.append_event("run_stream", "speech", {"actor_seat": 0, "text": "hello"},
                                     phase="discussion")
-        private = store.append_event("run_stream", "role_info", {"role": "Seer"},
+        private = store.append_event("run_stream", "role_info", {"seat": 0, "role": "Seer"},
                                      visibility="private", target_signup_id=signup_id, phase="night")
         store.append_event("run_stream", "role_info", {"role": "Werewolf"},
                            visibility="private", target_signup_id="signup_other", phase="night")
@@ -183,7 +211,16 @@ def test_poll_returns_events_turn_and_first_reply_wins(tmp_path, monkeypatch):
         body = poll.json()
         visible_action_events = [e for e in body["events"] if e["type"] in {"speech", "role_info"}]
         assert [e["event_id"] for e in visible_action_events] == [public["id"], private["id"]]
+        speech = visible_action_events[0]
+        assert "actor_seat" not in speech
+        assert "actor_seat" not in speech["payload"]
+        assert speech["actor"] == {"name": "streamer", "ref": "@streamer"}
+        assert speech["payload"]["actor"] == {"name": "streamer", "ref": "@streamer"}
+        role_info = visible_action_events[1]
+        assert "seat" not in role_info["payload"]
+        assert role_info["payload"]["participant"] == {"name": "streamer", "ref": "@streamer"}
         assert body["turn"]["turn_id"] == turn["id"]
+        assert body["turn"]["participant"] == {"name": "streamer", "ref": "@streamer"}
         assert body["turn"]["action_kind"] == "onuw.discussion.speak_or_pass"
         assert body["turn"]["observation"]["text"] == "speak now"
 

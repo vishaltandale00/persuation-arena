@@ -17,6 +17,15 @@ import random
 from collections import Counter
 from typing import Any, Callable
 
+from arena.identity import (
+    NO_ONE_REF,
+    participant,
+    participant_choices,
+    participant_label,
+    participant_refs,
+    roster_line,
+    seat_for_participant_ref,
+)
 from .base import NO_KILL, Agent, agent_stats, compute_winners, player_won, tally_votes, team_of
 
 ROLE_DESC = {
@@ -172,7 +181,7 @@ class ONUW:
 
     # ---- prompt building (information-filtered per seat) -------------------
     def _roster_line(self) -> str:
-        return ", ".join(f"{self.names[i]}(seat {i})" for i in range(self.n))
+        return roster_line(self.names)
 
     def _deck_line(self) -> str:
         return ", ".join(f"{k} x{v}" for k, v in Counter(self.deck).items())
@@ -191,7 +200,7 @@ class ONUW:
         self.obs[pid].append(text)
         if believed is not None:
             self.believes[pid] = believed
-        payload: dict[str, Any] = {"seat": pid, "text": text}
+        payload: dict[str, Any] = {"seat": pid, "participant": participant(self.names[pid]), "text": text}
         if believed is not None:
             payload["believed_role"] = believed
         payload.update(extra)
@@ -204,6 +213,7 @@ class ONUW:
         self._emit("game_setup", {
             "n": self.n,
             "roster": {i: self.names[i] for i in range(self.n)},
+            "participants": [participant(self.names[i]) for i in range(self.n)],
             "deck": list(self.deck),
             "center_count": len(self.center),
             "win_condition": (
@@ -214,18 +224,26 @@ class ONUW:
         }, phase="setup", visibility="public")
 
     def _players_choice(self, seats: list[int]) -> list[dict[str, Any]]:
-        return [{"seat": i, "name": self.names[i]} for i in seats]
+        return participant_choices(self.names, seats)
 
-    def _target_schema(self, field: str, seats: list[int], nullable: bool = False) -> dict:
-        enum = list(seats)
-        typ: str | list[str] = "integer"
+    def _participant_target_schema(self, field: str, seats: list[int], nullable: bool = False) -> dict:
+        enum = participant_refs(self.names, seats)
+        typ: str | list[str] = "string"
         if nullable:
             enum.append(None)
-            typ = ["integer", "null"]
+            typ = ["string", "null"]
         return {
             "type": "object",
             "required": [field],
             "properties": {field: {"type": typ, "enum": enum}},
+            "additionalProperties": False,
+        }
+
+    def _index_schema(self, field: str, indices: list[int]) -> dict:
+        return {
+            "type": "object",
+            "required": [field],
+            "properties": {field: {"type": "integer", "enum": list(indices)}},
             "additionalProperties": False,
         }
 
@@ -254,12 +272,13 @@ class ONUW:
             return ""
         believed = self.believes[pid]
         lines = [
-            f"You are {self.names[pid]}, seat {pid}, in a {self.n}-player One Night Ultimate Werewolf game.",
+            f"You are {participant_label(self.names, pid)} in a {self.n}-player One Night Ultimate Werewolf game.",
             f"Your role right now (as far as you know): {believed}. {ROLE_DESC.get(believed,'')}",
             f"The {len(self.deck)} cards in play (public): {self._deck_line()}.",
             f"There are {len(self.center)} face-down center cards nobody was dealt.",
             f"Players: {self._roster_line()}.",
             "Roles can be secretly swapped at night, so what you were dealt may not be what you are now.",
+            "When naming another participant in speech, use their @handle so references stay unambiguous.",
         ]
         if self.obs[pid]:
             lines.append("What you learned during the night:")
@@ -356,11 +375,11 @@ class ONUW:
         targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid) + (
             "\n\nNIGHT ACTION (Doppelganger): look at one player's card and become a copy of that role.\n"
-            'Reply JSON {"reasoning":"...","action":{"target":<seat>}}.'
+            'Reply JSON {"reasoning":"...","action":{"target":"@participant"}}.'
         )
 
         def parse(a, raw):
-            t = int(a["target"])
+            t = seat_for_participant_ref(a["target"], self.names, targets)
             if t not in targets:
                 raise ValueError("bad target")
             return t
@@ -373,10 +392,10 @@ class ONUW:
             phase="night",
             action_kind="onuw.doppelganger.copy_player",
             legal_action={
-                "schema": self._target_schema("target", targets),
+                "schema": self._participant_target_schema("target", targets),
                 "choices": {"players": self._players_choice(targets)},
             },
-            default_wire_action={"target": targets[0]},
+            default_wire_action={"target": participant(self.names[targets[0]])["ref"]},
         )
         t = resp.action
         copied = self.current[t]
@@ -402,14 +421,14 @@ class ONUW:
         alive_targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid) + (
             "\n\nNIGHT ACTION (Seer): choose ONE:\n"
-            '  {"mode":"player","target":<seat>}  view one other player\'s card, OR\n'
+            '  {"mode":"player","target":"@participant"}  view one other player\'s card, OR\n'
             '  {"mode":"center","indices":[a,b]}  view two of the three center cards (0-based).\n'
             'Reply JSON {"reasoning":"...","action":{...}}.'
         )
 
         def parse(a, raw):
             if a.get("mode") == "player":
-                t = int(a["target"])
+                t = seat_for_participant_ref(a["target"], self.names, alive_targets)
                 if t not in alive_targets:
                     raise ValueError("bad target")
                 return ("player", t)
@@ -436,7 +455,7 @@ class ONUW:
                             "required": ["mode", "target"],
                             "properties": {
                                 "mode": {"enum": ["player"]},
-                                "target": {"type": "integer", "enum": alive_targets},
+                                "target": {"type": "string", "enum": participant_refs(self.names, alive_targets)},
                             },
                             "additionalProperties": False,
                         },
@@ -476,14 +495,14 @@ class ONUW:
         targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid) + (
             "\n\nNIGHT ACTION (Robber): swap your card with a player's and see your new role, or decline.\n"
-            'Reply JSON {"reasoning":"...","action":{"target":<seat or null>}}.'
+            'Reply JSON {"reasoning":"...","action":{"target":"@participant or null"}}.'
         )
 
         def parse(a, raw):
             t = a.get("target")
             if t is None:
                 return None
-            t = int(t)
+            t = seat_for_participant_ref(t, self.names, targets)
             if t not in targets:
                 raise ValueError("bad target")
             return t
@@ -496,10 +515,10 @@ class ONUW:
             phase="night",
             action_kind="onuw.robber.swap_or_decline",
             legal_action={
-                "schema": self._target_schema("target", targets, nullable=True),
+                "schema": self._participant_target_schema("target", targets, nullable=True),
                 "choices": {"players": self._players_choice(targets), "decline": True},
             },
-            default_wire_action={"target": targets[0]},
+            default_wire_action={"target": participant(self.names[targets[0]])["ref"]},
         )
         t = resp.action
         if t is None:
@@ -515,13 +534,14 @@ class ONUW:
         others = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid) + (
             "\n\nNIGHT ACTION (Troublemaker): swap two OTHER players' cards (you don't see them), or decline.\n"
-            'Reply JSON {"reasoning":"...","action":{"a":<seat or null>,"b":<seat or null>}}.'
+            'Reply JSON {"reasoning":"...","action":{"a":"@participant or null","b":"@participant or null"}}.'
         )
 
         def parse(a, raw):
             if a.get("a") is None or a.get("b") is None:
                 return None
-            x, y = int(a["a"]), int(a["b"])
+            x = seat_for_participant_ref(a["a"], self.names, others)
+            y = seat_for_participant_ref(a["b"], self.names, others)
             if x == y or x not in others or y not in others:
                 raise ValueError("bad pair")
             return (x, y)
@@ -540,8 +560,8 @@ class ONUW:
                             "type": "object",
                             "required": ["a", "b"],
                             "properties": {
-                                "a": {"type": "integer", "enum": others},
-                                "b": {"type": "integer", "enum": others},
+                                "a": {"type": "string", "enum": participant_refs(self.names, others)},
+                                "b": {"type": "string", "enum": participant_refs(self.names, others)},
                             },
                             "additionalProperties": False,
                         },
@@ -559,7 +579,10 @@ class ONUW:
                 "choices": {"players": self._players_choice(others), "decline": True},
                 "rules": {"distinct": [["a", "b"]]},
             },
-            default_wire_action={"a": others[0], "b": others[1]},
+            default_wire_action={
+                "a": participant(self.names[others[0]])["ref"],
+                "b": participant(self.names[others[1]])["ref"],
+            },
         )
         pair = resp.action
         if pair is None:
@@ -592,7 +615,7 @@ class ONUW:
             phase="night",
             action_kind="onuw.drunk.swap_center",
             legal_action={
-                "schema": self._target_schema("index", indices),
+                "schema": self._index_schema("index", indices),
                 "choices": {"center": indices},
             },
             default_wire_action={"index": 0},
@@ -645,6 +668,7 @@ class ONUW:
         prompt = self.base_prompt(pid) + (
             "\n\nIt is your turn to speak to the whole table. Say something persuasive that helps your team — "
             "claim a role, share (or fake) information, accuse, or defend yourself. You may stay silent.\n"
+            "Use @handles when referring to participants.\n"
             'Reply JSON {"reasoning":"...","action":"<what you say>"} or {"action":"pass"} to stay silent.'
         )
 
@@ -744,13 +768,13 @@ class ONUW:
         prompt = self.base_prompt(pid) + (
             "\n\nFINAL VOTE: point at the player you believe should be eliminated, or vote for no one. "
             "You cannot vote for yourself.\n"
-            'Reply JSON {"reasoning":"...","action":<seat number, or -1 for no one>}.'
+            f'Reply JSON {{"reasoning":"...","action":{{"target":"@participant"}}}} or {{"action":{{"target":"{NO_ONE_REF}"}}}} for no one.'
         )
 
         def parse(a, raw):
             if isinstance(a, dict):
                 a = a["target"]
-            t = int(a)
+            t = seat_for_participant_ref(a, self.names, targets, allow_no_one=True)
             if t == NO_KILL:
                 return NO_KILL
             if t not in targets:
@@ -766,10 +790,17 @@ class ONUW:
             phase="vote",
             action_kind="onuw.vote",
             legal_action={
-                "schema": self._target_schema("target", targets + [NO_KILL]),
-                "choices": {"players": self._players_choice(targets), "no_one": NO_KILL},
+                "schema": {
+                    "type": "object",
+                    "required": ["target"],
+                    "properties": {
+                        "target": {"type": "string", "enum": participant_refs(self.names, targets) + [NO_ONE_REF]},
+                    },
+                    "additionalProperties": False,
+                },
+                "choices": {"players": self._players_choice(targets), "no_one": NO_ONE_REF},
             },
-            default_wire_action={"target": default_target},
+            default_wire_action={"target": participant(self.names[default_target])["ref"]},
         )
         resp = req_or_resp.wait() if wait and hasattr(req_or_resp, "wait") else req_or_resp
         if hasattr(resp, "action"):

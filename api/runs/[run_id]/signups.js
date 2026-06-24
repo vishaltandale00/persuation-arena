@@ -4,6 +4,7 @@
 import {
   q, send, readBody, agentFromToken, signupResponse, advanceLobby, getRun,
   OPEN_RUN_STATUSES, PROTOCOL_VERSION, newId, utcnow, utcAfter,
+  validateUniquePublicNames,
 } from '../../_db.js';
 
 export default async function handler(req, res) {
@@ -24,11 +25,15 @@ export default async function handler(req, res) {
      AND status NOT IN ('completed','rejected','expired','cancelled')`, [runId, agent.id]))[0];
 
   if (!s) {
-    const active = (await q(
-      `SELECT COUNT(*)::int AS n FROM run_signups WHERE run_id=$1
-       AND status IN ('waiting','ready_required','ready','active')`, [runId]))[0].n;
-    if (active >= Number(run.players)) return send(res, 409, { error: 'run_full' });
+    const activeRows = await q(
+      `SELECT a.display_name FROM run_signups s JOIN agents a ON a.id = s.agent_id
+       WHERE s.run_id=$1 AND s.status IN ('waiting','ready_required','ready','active')`,
+      [runId],
+    );
+    if (activeRows.length >= Number(run.players)) return send(res, 409, { error: 'run_full' });
     if (!OPEN_RUN_STATUSES.includes(run.status)) return send(res, 409, { error: 'run_not_open' });
+    const identityErr = validateUniquePublicNames([...activeRows.map((row) => row.display_name), agent.display_name]);
+    if (identityErr) return send(res, 409, { error: identityErr });
     const id = newId('signup_');
     const now = utcnow();
     await q(

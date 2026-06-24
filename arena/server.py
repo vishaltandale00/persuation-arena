@@ -31,6 +31,7 @@ from . import openrouter as _or
 from . import store
 from .batch import GAME_CORES
 from .games.onuw import DEFAULT_DECK_PRESET, deck_for_preset, deck_preset_options, normalize_deck_preset
+from .identity import NO_ONE_REF, participant, validate_public_name, validate_unique_public_names
 from .score import score_run
 
 WEB = ROOT / "web"
@@ -158,6 +159,9 @@ def _queue_run(payload: dict, owner: str) -> dict:
     seed = int(payload.get("seed") or (time.time() * 1000) % 1000000)
     run_id = (payload.get("run_id") or f"run_{seed}_{uuid.uuid4().hex[:6]}").strip()
     agents = _roster_from_payload(payload)
+    identity_err = validate_unique_public_names([a["name"] for a in agents])
+    if identity_err:
+        raise HTTPException(400, identity_err)
     core = GAME_CORES[game]
     n_players = len(agents)  # the roster IS the table — no fixed player count
     if not (core.MIN_PLAYERS <= n_players <= core.MAX_PLAYERS):
@@ -289,9 +293,10 @@ def api_open_runs(game: str | None = None):
 
 @app.post("/api/agents/register")
 def api_register_agent(payload: dict):
-    display_name = (payload.get("display_name") or payload.get("name") or "").strip()
-    if not display_name:
-        raise HTTPException(400, "display_name required")
+    display_name, name_err = validate_public_name(payload.get("display_name") or payload.get("name"))
+    if name_err:
+        raise HTTPException(400, name_err)
+    assert display_name is not None
     protocol_version = (payload.get("protocol_version") or PROTOCOL_VERSION).strip()
     if protocol_version != PROTOCOL_VERSION:
         raise HTTPException(400, "unsupported protocol_version")
@@ -304,7 +309,13 @@ def api_register_agent(payload: dict):
                                  sdk_version=payload.get("sdk_version"),
                                  declared_model=declared_model,
                                  declared_harness=declared_harness)
-    return {"agent_id": agent["id"], "agent_token": token, "protocol_version": PROTOCOL_VERSION}
+    return {
+        "agent_id": agent["id"],
+        "agent_token": token,
+        "protocol_version": PROTOCOL_VERSION,
+        "public_name": display_name,
+        "public_ref": participant(display_name)["ref"],
+    }
 
 
 @app.get("/api/leaderboard")
@@ -391,27 +402,92 @@ def api_signup_ready(signup_id: str, payload: dict, authorization: str | None = 
     return {"ok": True, **_signup_response(signup)}
 
 
-def _api_event(event: dict) -> dict:
-    return {
+def _fallback_participant(seat: int | None) -> dict:
+    idx = 0 if seat is None else int(seat) + 1
+    return participant(f"Participant {idx}")
+
+
+def _participant_maps(run_id: str) -> dict[str | None, dict[int, dict]]:
+    rosters = store.list_game_rosters(run_id)
+    out: dict[str | None, dict[int, dict]] = {
+        gid: {seat: participant(name) for seat, name in roster.items()}
+        for gid, roster in rosters.items()
+    }
+    signups = store.list_run_signups(run_id)
+    lobby = {
+        int(s["seat"]): participant(s["display_name"])
+        for s in signups if s.get("seat") is not None
+    }
+    if lobby:
+        out[None] = lobby
+    return out
+
+
+def _participant_at(participants: dict[int, dict], seat: int | None) -> dict:
+    if seat is None:
+        return _fallback_participant(None)
+    return participants.get(int(seat)) or _fallback_participant(int(seat))
+
+
+def _project_event_payload(payload: dict, participants: dict[int, dict]) -> dict:
+    out: dict = {}
+    for key, value in payload.items():
+        if key == "roster":
+            out["participants"] = [_participant_at(participants, int(seat))
+                                   for seat in sorted(value, key=lambda s: int(s))]
+        elif key == "actor_seat":
+            out["actor"] = _participant_at(participants, value)
+        elif key == "target_seat":
+            out["target"] = _participant_at(participants, value)
+        elif key == "seat":
+            out["participant"] = _participant_at(participants, value)
+        elif key == "target" and isinstance(value, int) and not isinstance(value, bool):
+            out["target"] = {"name": "No one", "ref": NO_ONE_REF} if value < 0 else _participant_at(participants, value)
+        elif key in {"copied_seat", "swapped_with"} and isinstance(value, int):
+            out[key.replace("_seat", "")] = _participant_at(participants, value)
+        elif key in {"swapped", "deaths"} and isinstance(value, list):
+            out[key] = [
+                _participant_at(participants, v) if isinstance(v, int) and not isinstance(v, bool) else v
+                for v in value
+            ]
+        else:
+            out[key] = value
+    return out
+
+
+def _api_event(event: dict, participant_maps: dict[str | None, dict[int, dict]] | None = None,
+               *, agent_visible: bool = False) -> dict:
+    payload = event["payload"] if isinstance(event.get("payload"), dict) else {}
+    participants = (participant_maps or {}).get(event.get("game_instance_id")) or (participant_maps or {}).get(None) or {}
+    projected_payload = _project_event_payload(payload, participants) if agent_visible else event["payload"]
+    actor = payload.get("actor_seat") if isinstance(payload, dict) else None
+    out = {
         "event_id": event["event_id"],
         "game_instance_id": event.get("game_instance_id"),
         "seq": event["seq"],
         "visibility": event["visibility"],
         "phase": event.get("phase"),
         "type": event["type"],
-        "actor_seat": event["payload"].get("actor_seat") if isinstance(event.get("payload"), dict) else None,
-        "payload": event["payload"],
+        "payload": projected_payload,
     }
+    if actor is not None:
+        out["actor"] = _participant_at(participants, actor)
+    if not agent_visible:
+        out["actor_seat"] = actor
+    return out
 
 
-def _api_turn(turn: dict | None) -> dict | None:
+def _api_turn(turn: dict | None,
+              participant_maps: dict[str | None, dict[int, dict]] | None = None) -> dict | None:
     if not turn:
         return None
+    participants = (participant_maps or {}).get(turn.get("game_instance_id")) or (participant_maps or {}).get(None) or {}
     return {
         "turn_id": turn["id"],
         "game_instance_id": turn["game_instance_id"],
         "game": store.get_run(turn["run_id"])["game"],
         "seat": turn["seat"],
+        "participant": _participant_at(participants, turn["seat"]),
         "phase": turn["phase"],
         "action_kind": turn["action_kind"],
         "deadline_at": turn["deadline_utc"],
@@ -429,12 +505,13 @@ def api_signup_poll(signup_id: str, payload: dict, authorization: str | None = H
     events = store.list_events_for_signup(signup_id, payload.get("after_event_id"),
                                           int(payload.get("max_events") or 50))
     turn = store.pending_turn_for_signup(signup_id) if signup["status"] == "active" else None
+    participant_maps = _participant_maps(signup["run_id"])
     return {
         "signup_id": signup_id,
         "run_id": signup["run_id"],
         "run_status": signup["status"],
-        "events": [_api_event(e) for e in events],
-        "turn": _api_turn(turn),
+        "events": [_api_event(e, participant_maps, agent_visible=True) for e in events],
+        "turn": _api_turn(turn, participant_maps),
         "poll_after_ms": 100 if turn else 250 if signup["status"] == "active" else 1000,
     }
 
