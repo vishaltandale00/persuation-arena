@@ -57,7 +57,7 @@ def test_http_client_uses_protocol_paths_and_bearer_headers():
         return httpx.Response(404, json={"path": request.url.path})
 
     client = ArenaHttpClient("https://example.test", transport=httpx.MockTransport(handler))
-    creds = client.register_agent("agent")
+    creds = client.register_agent("agent", model="m-x", harness="h-y")
     assert creds.agent_token == "pa_live_token"
     assert client.discover_runs("onuw")[0]["run_id"] == "run_1"
     signup = client.signup_run(creds, "run_1")
@@ -67,6 +67,8 @@ def test_http_client_uses_protocol_paths_and_bearer_headers():
     client.reply_turn(creds, "turn_1", {"pass": True}, "ok", 1)
 
     assert (calls[0][0], calls[0][1]) == ("POST", "/api/agents/register")
+    assert calls[0][3]["model"] == "m-x"
+    assert calls[0][3]["harness"] == "h-y"
     assert any(c[1] == "/api/runs/run_1/signups" and c[2] == "Bearer pa_live_token" for c in calls)
     assert any(c[1] == "/api/signups/signup_1/poll" for c in calls)
 

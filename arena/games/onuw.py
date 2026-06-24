@@ -17,7 +17,7 @@ import random
 from collections import Counter
 from typing import Any, Callable
 
-from .base import NO_KILL, Agent, agent_stats, compute_winners, player_won, tally_votes, team_of
+from .base import NO_KILL, Agent, agent_call_log, agent_stats, compute_winners, player_won, tally_votes, team_of
 
 ROLE_DESC = {
     "Werewolf": "You are a Werewolf. At night you wake with other werewolves. Win if no werewolf is voted out.",
@@ -816,6 +816,7 @@ class ONUW:
             "meta": f"{self.n} agents · {len(self.deck)} cards · 1 night, 1 vote · seed {self.seed}",
             "deckPreset": self.deck_preset,
             "players": players,
+            "agentCallLog": agent_call_log(agents),
             "cardsInPlay": [[c, team_of(c)] for c in self.deck],
             "center": [[c, team_of(c)] for c in self.center],
             "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,

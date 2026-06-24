@@ -29,6 +29,18 @@ def _now() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+def _agent_meta(spec) -> dict:
+    return {
+        "name": spec.name,
+        "model": spec.model,
+        "harness": spec.harness,
+        "provider": "openrouter",
+        "reasoning_effort": SETTINGS.caps.reasoning_effort,
+        "max_tokens": SETTINGS.caps.max_tokens_per_turn,
+        "sessionful": False,
+    }
+
+
 def fresh_deal_schedule(n_games: int, n_players: int, seed_base: int) -> list[tuple[int, int, int]]:
     """Return [(gid, seed, rot)] for a run.
 
@@ -53,7 +65,7 @@ def _play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, dec
     for p in t["players"]:
         s = seat_to_spec[p["seat"]]
         p["name"], p["model"] = s.name, s.model
-    meta = [{"name": seat_to_spec[i].name, "model": seat_to_spec[i].model} for i in range(n_players)]
+    meta = [_agent_meta(seat_to_spec[i]) for i in range(n_players)]
     return gid, t, meta
 
 
@@ -69,7 +81,7 @@ def run_batch(game: str = "onuw", n_games: int = 20, seed_base: int = 9000,
         raise ValueError(f"{core_cls.TITLE} supports {lo}–{hi} players, got {n_players}")
     deck_preset = normalize_deck_preset(deck_preset) if game == "onuw" else None
     run_id = run_id or f"run_{seed_base}"
-    agents_meta = [{"name": s.name, "model": s.model, "harness": s.harness} for s in specs]
+    agents_meta = [_agent_meta(s) for s in specs]
     store.save_run({
         "id": run_id, "game": game, "label": core_cls.TITLE, "status": "running",
         "n_games": n_games, "players": n_players, "seed_base": seed_base,

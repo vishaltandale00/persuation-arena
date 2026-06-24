@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 from collections import Counter
 
-from .base import Agent, agent_stats, team_of
+from .base import Agent, agent_call_log, agent_stats, team_of
 
 ROLE_DESC = {
     "Mafia": "You secretly kill one player each night. Win when the Mafia equals the number of remaining villagers.",
@@ -247,6 +247,7 @@ class SecretMafia:
             "game": self.GAME, "title": self.TITLE, "seed": self.seed,
             "meta": f"{self.n} agents · {self._composition()} · seed {self.seed}",
             "players": players,
+            "agentCallLog": agent_call_log(agents),
             "cardsInPlay": [[self.role[i], team_of(self.role[i])] for i in range(self.n)],
             "center": None, "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,
         }

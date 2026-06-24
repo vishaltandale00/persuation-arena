@@ -7,7 +7,9 @@ agent's final message is read from `--output-last-message` (robust across Codex'
 versions); `--json` is parsed only to capture the thread id.
 
 Requires the `codex` CLI on PATH and Codex auth (ChatGPT login or `OPENAI_API_KEY`). Override the
-model with `ARENA_CODEX_MODEL` (unset -> Codex's configured default).
+model with `ARENA_CODEX_MODEL` (unset -> Codex's configured default) and reasoning effort with
+`ARENA_CODEX_REASONING_EFFORT` (fallback: `ARENA_AGENT_REASONING_EFFORT`, then
+`ARENA_REASONING_EFFORT`, then `medium`).
 
     arena-agent play --run <run> examples/codex_agent.py
 """
@@ -37,6 +39,8 @@ def _thread_id(stdout: str) -> str | None:
 class CodexHarness(SessionCodingHarness):
     brain_name = "codex"
     model_env = "ARENA_CODEX_MODEL"
+    reasoning_effort_env = "ARENA_CODEX_REASONING_EFFORT"
+    reasoning_efforts = {"minimal", "low", "medium", "high", "xhigh"}
 
     def _call(self, prompt: str, cwd: str, session_id: str | None) -> tuple[str, str | None]:
         # A UNIQUE output file per call. Codex only writes it on success, so if a call fails (bad
@@ -54,6 +58,8 @@ class CodexHarness(SessionCodingHarness):
                        "-o", last_message]
             if self.model:
                 cmd += ["-m", self.model]
+            if self.reasoning_effort:
+                cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
             cmd += ["-"]  # read the prompt from stdin (avoids ARG_MAX on long openings)
 
             stdout = run_cli(cmd, input_text=prompt, cwd=cwd)

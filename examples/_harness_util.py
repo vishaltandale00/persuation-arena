@@ -5,7 +5,7 @@ and the server never re-serves old ones, so a harness that keeps nothing plays b
 are the boring parts every harness shares — rendering an event to text, and turning the messages a
 harness assembled (from its own memory) into a validated action.
 
-decide(model, messages, turn) -> (action, reasoning, assistant_text):
+decide(model, messages, turn) -> (action, reasoning, assistant_message):
   call the LLM with the messages you built from YOUR memory, parse {reasoning, action}, validate
   against the turn's legal_action, repair once, else fall back to a legal action so a seat never
   forfeits on bad output. (The server validates authoritatively too.)
@@ -21,6 +21,13 @@ from openai import OpenAI
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
+REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+DEFAULT_MAX_TOKENS = int(os.environ.get("ARENA_AGENT_MAX_TOKENS", os.environ.get("ARENA_MAX_TOKENS_PER_TURN", "4000")))
+DEFAULT_TEMPERATURE = float(os.environ.get("ARENA_AGENT_TEMPERATURE", os.environ.get("ARENA_TEMPERATURE", "0.8")))
+DEFAULT_TIMEOUT = float(os.environ.get("ARENA_AGENT_REQUEST_TIMEOUT_S", os.environ.get("ARENA_REQUEST_TIMEOUT_S", "60")))
+DEFAULT_REASONING_EFFORT = os.environ.get("ARENA_AGENT_REASONING_EFFORT", os.environ.get("ARENA_REASONING_EFFORT", "medium")).strip().lower()
+if DEFAULT_REASONING_EFFORT not in REASONING_EFFORTS:
+    DEFAULT_REASONING_EFFORT = "medium"
 
 SYSTEM = (
     "You are a sharp, competitive player of a hidden-role social-deduction game (One Night Ultimate "
@@ -52,8 +59,31 @@ ACTION_INSTRUCTIONS = {
 _client: OpenAI | None = None
 
 
-def _llm(model: str, messages: list[dict], *, max_tokens: int = 600,
-         temperature: float = 0.8, timeout: float = 60.0) -> str:
+def _message_field(message: Any, field: str) -> Any:
+    if isinstance(message, dict):
+        return message.get(field)
+    return getattr(message, field, None)
+
+
+def _assistant_message(raw: str, message: Any = None) -> dict[str, Any]:
+    out: dict[str, Any] = {"role": "assistant", "content": raw}
+    reasoning_details = _message_field(message, "reasoning_details") if message is not None else None
+    reasoning = _message_field(message, "reasoning") if message is not None else None
+    if reasoning_details is not None:
+        out["reasoning_details"] = reasoning_details
+    elif reasoning is not None:
+        out["reasoning"] = reasoning
+    return out
+
+
+def _llm(
+    model: str,
+    messages: list[dict],
+    *,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    temperature: float = DEFAULT_TEMPERATURE,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict[str, Any]:
     global _client
     if _client is None:
         key = os.environ.get("OPENROUTER_API_KEY", "").strip()
@@ -61,11 +91,21 @@ def _llm(model: str, messages: list[dict], *, max_tokens: int = 600,
             raise RuntimeError("OPENROUTER_API_KEY not set in the harness's environment")
         _client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key)
     try:
-        r = _client.chat.completions.create(model=model, messages=messages, max_tokens=max_tokens,
-                                            temperature=temperature, timeout=timeout)
-        return (r.choices[0].message.content or "").strip()
+        r = _client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+            extra_body={
+                "reasoning": {"effort": DEFAULT_REASONING_EFFORT, "exclude": False},
+            },
+        )
+        message = r.choices[0].message
+        raw = (_message_field(message, "content") or "").strip()
+        return _assistant_message(raw, message)
     except Exception as e:
-        return f"<error: {type(e).__name__}>"
+        return _assistant_message(f"<error: {type(e).__name__}>")
 
 
 def _extract_json(text: str) -> dict | None:
@@ -192,17 +232,18 @@ def fallback_action(turn) -> dict:
     return _fallback_action(turn)
 
 
-def decide(model: str, messages: list[dict], turn) -> tuple[Any, str, str]:
+def decide(model: str, messages: list[dict], turn) -> tuple[Any, str, dict[str, Any]]:
     """LLM call + validate + one repair + legal fallback. `messages` is whatever the harness built
     from its own memory; this never mutates it."""
-    raw = _llm(model, messages)
+    assistant = _llm(model, messages)
+    raw = str(assistant.get("content") or "")
     action, reasoning, legal = interpret(turn, raw)
     if legal:
-        return action, reasoning, raw
-    repair = list(messages) + [{"role": "assistant", "content": raw},
-                               {"role": "user", "content": REPAIR_MESSAGE}]
-    raw2 = _llm(model, repair)
+        return action, reasoning, assistant
+    repair = list(messages) + [assistant, {"role": "user", "content": REPAIR_MESSAGE}]
+    assistant2 = _llm(model, repair)
+    raw2 = str(assistant2.get("content") or "")
     action2, reasoning2, legal2 = interpret(turn, raw2)
     if legal2:
-        return action2, reasoning2, raw2
-    return fallback_action(turn), reasoning or "(fallback: no legal action produced)", raw
+        return action2, reasoning2, assistant2
+    return fallback_action(turn), reasoning or "(fallback: no legal action produced)", assistant

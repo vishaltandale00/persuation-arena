@@ -59,12 +59,18 @@ class ArenaHttpClient:
         raise last_error
 
     def register_agent(self, display_name: str, protocol_version: str = "arena-agent-v1",
-                       sdk_version: str = "0.1.0") -> AgentCredentials:
-        r = self._request("POST", "/api/agents/register", json={
+                       sdk_version: str = "0.1.0", model: str | None = None,
+                       harness: str | None = None) -> AgentCredentials:
+        payload = {
             "display_name": display_name,
             "protocol_version": protocol_version,
             "sdk_version": sdk_version,
-        })
+        }
+        if model:
+            payload["model"] = model
+        if harness:
+            payload["harness"] = harness
+        r = self._request("POST", "/api/agents/register", json=payload)
         d = r.json()
         return AgentCredentials(
             server=self.server,

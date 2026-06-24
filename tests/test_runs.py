@@ -129,9 +129,18 @@ def test_score_run_reports_per_role_and_forfeit_rate(tmp_path, monkeypatch):
 
 
 # ---- agent forfeit telemetry ------------------------------------------------
-def _client_returning(content):
+def _client_returning(content, *, provider_reasoning=None):
     create = lambda **k: SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        choices=[SimpleNamespace(
+            finish_reason="stop",
+            message=SimpleNamespace(
+                content=content,
+                reasoning=provider_reasoning,
+                reasoning_details=[{"type": "summary", "text": provider_reasoning}] if provider_reasoning else None,
+            ),
+        )],
+        usage={"prompt_tokens": 1, "completion_tokens": 2},
+    )
     return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
 
 
@@ -162,8 +171,87 @@ def test_agent_defaults_when_parser_rejects_null_action(monkeypatch):
 def test_agent_records_ok_on_valid_response(monkeypatch):
     from arena import openrouter
     monkeypatch.setattr(openrouter, "client",
-                        lambda: _client_returning('{"reasoning":"r","action":3}'))
+                        lambda: _client_returning('{"reasoning":"r","action":3}',
+                                                  provider_reasoning="native trace"))
     a = openrouter.OpenRouterAgent("X", "m")
     resp = a.act("obs", lambda action, raw: int(action), default_action=0)
     assert resp.ok is True and resp.action == 3
     assert len(a.calls) == 1 and a.calls[0]["ok"] is True
+    assert resp.reasoning == "r"
+    assert resp.declared_reasoning == "r"
+    assert resp.provider_reasoning == "native trace"
+    assert a.calls[0]["declared_reasoning"] == "r"
+    assert a.calls[0]["provider_reasoning"] == "native trace"
+    assert a.calls[0]["reasoning_effort"] == openrouter.SETTINGS.caps.reasoning_effort
+    assert a.calls[0]["max_tokens"] == openrouter.SETTINGS.caps.max_tokens_per_turn
+    assert a.calls[0]["finish_reason"] == "stop"
+    assert a.calls[0]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}
+
+
+def test_agent_requests_provider_reasoning(monkeypatch):
+    from arena import openrouter
+
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":3}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "m")
+    a.act("obs", lambda action, raw: int(action), default_action=0)
+
+    assert captured["extra_body"]["reasoning"] == {
+        "effort": openrouter.SETTINGS.caps.reasoning_effort,
+        "exclude": False,
+    }
+    assert captured["max_tokens"] == openrouter.SETTINGS.caps.max_tokens_per_turn
+
+
+def test_agent_passes_prior_provider_reasoning_as_assistant_message_fields(monkeypatch):
+    from arena import openrouter
+
+    messages_by_call = []
+    responses = [
+        '{"reasoning":"keep pressure on seat 2","action":3}',
+        '{"reasoning":"continue the plan","action":4}',
+    ]
+
+    def create(**kwargs):
+        messages_by_call.append(kwargs["messages"])
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(
+                    content=responses.pop(0),
+                    reasoning="provider plan",
+                    reasoning_details=[{"type": "reasoning.summary", "summary": "provider plan"}],
+                ),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "m")
+    a.act("first obs", lambda action, raw: int(action), default_action=0, action_kind="vote")
+    a.act("second obs", lambda action, raw: int(action), default_action=0, action_kind="vote")
+
+    assert messages_by_call[0] == [
+        {"role": "system", "content": openrouter.SYSTEM},
+        {"role": "user", "content": "first obs"},
+    ]
+    assert messages_by_call[1][1] == {"role": "user", "content": "first obs"}
+    assert messages_by_call[1][2]["role"] == "assistant"
+    assert messages_by_call[1][2]["content"] == '{"reasoning":"keep pressure on seat 2","action":3}'
+    assert messages_by_call[1][2]["reasoning_details"] == [
+        {"type": "reasoning.summary", "summary": "provider plan"}
+    ]
+    assert messages_by_call[1][3] == {"role": "user", "content": "second obs"}

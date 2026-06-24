@@ -26,6 +26,7 @@ def _load_harness(path: str):
 
 def _cmd_play(args) -> int:
     agent = ArenaAgent(name=args.name, server=args.server,
+                       model=args.model, harness=args.harness,
                        credentials=CredentialsStore(args.credentials) if args.credentials else None)
     mod = _load_harness(args.file)
     agent.act(mod.act)
@@ -76,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     target.add_argument("--game", help="discover and join the first open run for a game")
     play.add_argument("--server", default=DEFAULT_SERVER)
     play.add_argument("--name", default="local-agent")
+    play.add_argument("--model", help="declared model identity for leaderboard metadata")
+    play.add_argument("--harness", help="declared harness identity for leaderboard metadata")
     play.add_argument("--credentials", help="credential store path for this local agent identity")
     play.add_argument("--once", action="store_true", help="perform one SDK loop step and exit")
     play.add_argument("file", help="Python file defining act(turn)")

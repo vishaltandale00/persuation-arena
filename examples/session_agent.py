@@ -42,7 +42,7 @@ class SessionAgent:
         s = self._session(turn.game_instance_id)
         s.append({"role": "user", "content": action_request(turn)})
         action, reasoning, assistant = decide(self.model, s, turn)
-        s.append({"role": "assistant", "content": assistant})  # keep our own reasoning as memory
+        s.append(assistant)  # keep provider-native reasoning fields when OpenRouter returns them
         return {"action": action, "reasoning": reasoning}
 
 

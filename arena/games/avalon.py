@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import random
 
-from .base import Agent, agent_stats, team_of
+from .base import Agent, agent_call_log, agent_stats, team_of
 
 ROLE_DESC = {
     "Merlin": "You know who the evil players are, but if the Assassin identifies you at the end, evil wins. Stay hidden.",
@@ -299,6 +299,7 @@ class Avalon:
             "game": self.GAME, "title": self.TITLE, "seed": self.seed,
             "meta": f"{self.n} agents · 3 good / 2 evil · 5 quests · seed {self.seed}",
             "players": players,
+            "agentCallLog": agent_call_log(agents),
             "cardsInPlay": [[self.role[i], team_of(self.role[i])] for i in range(self.n)],
             "center": None,
             "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,

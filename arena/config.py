@@ -21,6 +21,26 @@ if not os.environ.get("VERCEL"):
     load_dotenv(ROOT / ".env")
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_reasoning_effort(name: str, default: str) -> str:
+    value = os.environ.get(name, default).strip().lower()
+    return value if value in REASONING_EFFORTS else default
 
 
 def get_api_key() -> str:
@@ -60,11 +80,13 @@ def set_api_key(key: str) -> None:
 @dataclass(frozen=True)
 class Caps:
     """Bounds that keep a game finite and cheap."""
-    discussion_rounds: int = 5        # MAX round-robin passes; discussion ends early when a round is all-passes
-    max_tokens_per_turn: int = 600    # cap on a single model response
-    request_timeout_s: float = 60.0
-    retries: int = 1                  # 1 retry on invalid/timeout, then default/forfeit
-    temperature: float = float(os.environ.get("ARENA_TEMPERATURE", "0.8"))
+    discussion_rounds: int = _env_int("ARENA_DISCUSSION_ROUNDS", 5)
+    max_tokens_per_turn: int = _env_int("ARENA_MAX_TOKENS_PER_TURN", 4000)
+    request_timeout_s: float = _env_float("ARENA_REQUEST_TIMEOUT_S", 60.0)
+    retries: int = _env_int("ARENA_RETRIES", 1)
+    temperature: float = _env_float("ARENA_TEMPERATURE", 0.8)
+    reasoning_effort: str = _env_reasoning_effort("ARENA_REASONING_EFFORT", "medium")
+    prior_message_turns: int = _env_int("ARENA_PRIOR_MESSAGE_TURNS", 8)
 
 
 @dataclass(frozen=True)
