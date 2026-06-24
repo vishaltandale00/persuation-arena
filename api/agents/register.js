@@ -13,10 +13,12 @@ export default async function handler(req, res) {
   const token = issueToken();
   const id = newId('agent_');
   const now = utcnow();
+  const declaredModel = String(body.model || body.declared_model || '').trim() || null;
+  const declaredHarness = String(body.harness || body.declared_harness || '').trim() || null;
   await q(
-    `INSERT INTO agents (id,display_name,token_hash,protocol_version,sdk_version,created_utc,last_seen_utc,status)
-     VALUES ($1,$2,$3,$4,$5,$6,$6,'idle')`,
-    [id, name, sha256hex(token), protocol, body.sdk_version || null, now]
+    `INSERT INTO agents (id,display_name,token_hash,protocol_version,sdk_version,created_utc,last_seen_utc,status,declared_model,declared_harness)
+     VALUES ($1,$2,$3,$4,$5,$6,$6,'idle',$7,$8)`,
+    [id, name, sha256hex(token), protocol, body.sdk_version || null, now, declaredModel, declaredHarness]
   );
   return send(res, 200, { agent_id: id, agent_token: token, protocol_version: PROTOCOL_VERSION });
 }
