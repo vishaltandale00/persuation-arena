@@ -37,6 +37,7 @@ from persuasion_arena_agent.credentials import CredentialsStore
 from examples.codex_agent import CodexHarness
 from examples.claude_agent_sdk_agent import ClaudeAgentSdkHarness
 from examples.opencode_agent import OpencodeHarness
+from examples.pi_agent import PiHarness
 from examples.session_agent import SessionAgent
 from examples.file_memory_agent import FileMemoryAgent
 
@@ -48,16 +49,15 @@ from arena.score import score_run
 # (display name -> a factory that builds a fresh harness instance). The three coding brains take their
 # tool's default model (model=None); the two reference seats run named OpenRouter slugs. Factories so
 # each seat's memory is isolated and nothing is shared across the run.
-# opencode is omitted for now: it hangs on every turn (forfeits 3/3 even at a 240s deadline) — a
-# default-model / non-interactive config issue, not auth. Re-add once ARENA_OPENCODE_MODEL is sorted.
-# Ordered so the LAST seats are the ones reserved by --external N (host launches SEATS[:players-N]).
-# Codex is last so a human participant can run the coding agent themselves while the host runs the rest.
+# Frontier-tier suite: similar-intelligence models across agentic harnesses. gpt-5.5 appears via BOTH
+# codex and pi, isolating the harness effect at a fixed model. codex/claude-code are subsidized (Max/
+# ChatGPT); the three pi seats route through paid OpenRouter. Reserved-last ordering for --external N.
 SEATS = [
-    ("Claude Code",    lambda: ClaudeAgentSdkHarness()),                            # Claude Agent SDK (coding)
-    ("Session·GPT",    lambda: SessionAgent("openai/gpt-5.4-mini")),               # reference LLM-session
-    ("FileMem·Haiku",  lambda: FileMemoryAgent("anthropic/claude-haiku-4.5")),     # reference file-memory
-    ("Session·Gemini", lambda: SessionAgent("google/gemini-3.1-flash-lite")),      # reference LLM-session
-    ("Codex",          lambda: CodexHarness()),                                     # codex exec (reserved last)
+    ("ClaudeCode·Opus4.8", lambda: ClaudeAgentSdkHarness("claude-opus-4-8")),         # claude-code harness, Opus 4.8 (subsidized)
+    ("Pi·Gemini3.5Flash",  lambda: PiHarness("openrouter/google/gemini-3.5-flash")),  # pi harness, Gemini 3.5 Flash
+    ("Pi·GLM5.2",          lambda: PiHarness("openrouter/z-ai/glm-5.2")),             # pi harness, GLM 5.2 (OpenRouter)
+    ("Pi·GPT5.5",          lambda: PiHarness("openrouter/openai/gpt-5.5")),           # pi harness, GPT-5.5 (harness control)
+    ("Codex·GPT5.5",       lambda: CodexHarness("gpt-5.5")),                          # codex harness, GPT-5.5 (subsidized)
 ]
 
 
