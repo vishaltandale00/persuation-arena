@@ -64,7 +64,7 @@ class Caps:
     max_tokens_per_turn: int = 600    # cap on a single model response
     request_timeout_s: float = 60.0
     retries: int = 1                  # 1 retry on invalid/timeout, then default/forfeit
-    temperature: float = 0.8
+    temperature: float = float(os.environ.get("ARENA_TEMPERATURE", "0.8"))
 
 
 @dataclass(frozen=True)
@@ -79,7 +79,9 @@ class Settings:
     caps: Caps = field(default_factory=Caps)
 
     def roster(self) -> list[AgentSpec]:
-        with open(ROOT / "agents.yaml") as f:
+        configured = Path(os.environ.get("ARENA_AGENTS_FILE", "agents.yaml"))
+        roster_path = configured if configured.is_absolute() else ROOT / configured
+        with open(roster_path) as f:
             data = yaml.safe_load(f)
         return [AgentSpec(**a) for a in data["agents"]]
 

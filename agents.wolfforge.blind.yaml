@@ -1,0 +1,13 @@
+# Private mapping:
+# Cedar  = bayes
+# Quartz = charisma
+# Indigo = chaos
+# Maple  = base control
+# Slate  = base control
+
+agents:
+  - {name: Cedar,  model: openai/gpt-4o-mini, harness: bayes}
+  - {name: Quartz, model: openai/gpt-4o-mini, harness: charisma}
+  - {name: Indigo, model: openai/gpt-4o-mini, harness: chaos}
+  - {name: Maple,  model: openai/gpt-4o-mini, harness: base}
+  - {name: Slate,  model: openai/gpt-4o-mini, harness: base}
