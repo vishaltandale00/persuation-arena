@@ -22,6 +22,7 @@ if not os.environ.get("VERCEL"):
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+STRUCTURED_OUTPUT_MODES = {"off", "auto", "json_object", "json_schema"}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -41,6 +42,11 @@ def _env_float(name: str, default: float) -> float:
 def _env_reasoning_effort(name: str, default: str) -> str:
     value = os.environ.get(name, default).strip().lower()
     return value if value in REASONING_EFFORTS else default
+
+
+def _env_structured_output(name: str, default: str) -> str:
+    value = os.environ.get(name, default).strip().lower()
+    return value if value in STRUCTURED_OUTPUT_MODES else default
 
 
 def get_api_key() -> str:
@@ -87,6 +93,10 @@ class Caps:
     temperature: float = _env_float("ARENA_TEMPERATURE", 0.8)
     reasoning_effort: str = _env_reasoning_effort("ARENA_REASONING_EFFORT", "medium")
     prior_message_turns: int = _env_int("ARENA_PRIOR_MESSAGE_TURNS", 8)
+    openrouter_structured_output: str = _env_structured_output(
+        "ARENA_OPENROUTER_STRUCTURED_OUTPUT",
+        "off",
+    )
 
 
 @dataclass(frozen=True)

@@ -32,6 +32,15 @@ def client() -> OpenAI:
 # Compatibility alias for code or tests that import SYSTEM directly.
 SYSTEM = prompt_for("base")
 
+_STRUCTURED_SCHEMA_PROVIDERS = {
+    "anthropic",
+    "google",
+    "mistralai",
+    "openai",
+    "x-ai",
+    "z-ai",
+}
+
 
 class AgentResponse:
     def __init__(
@@ -81,6 +90,55 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
+def _model_provider(model: str) -> str:
+    return model.split("/", 1)[0].strip().lower()
+
+
+def _action_schema_from_turn_meta(turn_meta: dict[str, Any]) -> dict[str, Any] | None:
+    action_schema = turn_meta.get("action_schema")
+    if isinstance(action_schema, dict):
+        return action_schema
+    legal_action = turn_meta.get("legal_action")
+    if isinstance(legal_action, dict) and isinstance(legal_action.get("schema"), dict):
+        return legal_action["schema"]
+    return None
+
+
+def _structured_schema_name(action_kind: str | None) -> str:
+    base = re.sub(r"[^a-zA-Z0-9_]+", "_", action_kind or "arena_action").strip("_")
+    if not base:
+        base = "arena_action"
+    if not re.match(r"^[a-zA-Z]", base):
+        base = f"arena_{base}"
+    return base[:64]
+
+
+def _response_schema(action_schema: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["reasoning", "action"],
+        "properties": {
+            "reasoning": {"type": "string"},
+            "action": action_schema or {},
+        },
+        "additionalProperties": False,
+    }
+
+
+def _looks_like_structured_rejection(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    needles = (
+        "response_format",
+        "json_schema",
+        "json_object",
+        "structured output",
+        "structured outputs",
+        "unsupported parameter",
+        "unexpected keyword argument",
+    )
+    return any(needle in text for needle in needles)
+
+
 class OpenRouterAgent:
     def __init__(self, name: str, model: str, harness: str = "base"):
         self.name = name
@@ -127,6 +185,46 @@ class OpenRouterAgent:
             },
         }
 
+    def _response_format(self, action_kind: str | None, action_schema: dict[str, Any] | None) -> dict[str, Any] | None:
+        mode = getattr(SETTINGS.caps, "openrouter_structured_output", "off")
+        if mode == "off":
+            return None
+        if mode == "auto":
+            if _model_provider(self.model) not in _STRUCTURED_SCHEMA_PROVIDERS:
+                return None
+            mode = "json_schema" if action_schema else "json_object"
+        if mode == "json_schema" and action_schema:
+            return {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": _structured_schema_name(action_kind),
+                    "strict": True,
+                    "schema": _response_schema(action_schema),
+                },
+            }
+        if mode in {"json_object", "json_schema"}:
+            return {"type": "json_object"}
+        return None
+
+    def _create_completion(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        response_format: dict[str, Any] | None,
+    ) -> Any:
+        caps = SETTINGS.caps
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": caps.max_tokens_per_turn,
+            "temperature": caps.temperature,
+            "timeout": caps.request_timeout_s,
+            "extra_body": self._request_extra_body(),
+        }
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        return client().chat.completions.create(**kwargs)
+
     @staticmethod
     def _message_field(message: Any, field: str) -> Any:
         if isinstance(message, dict):
@@ -153,18 +251,35 @@ class OpenRouterAgent:
         finish_reason = None
         usage: dict[str, Any] = {}
         action_kind = _.get("action_kind")
+        action_schema = _action_schema_from_turn_meta(_)
+        response_format = self._response_format(action_kind, action_schema)
+        requested_response_format_type = (
+            response_format.get("type") if isinstance(response_format, dict) else None
+        )
+        structured_output_config = getattr(caps, "openrouter_structured_output", "off")
+        structured_fallback = False
         messages = self._messages_for_turn(observation)
         t0 = time.perf_counter()
         for attempt in range(caps.retries + 1):
             try:
-                resp = client().chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    max_tokens=caps.max_tokens_per_turn,
-                    temperature=caps.temperature,
-                    timeout=caps.request_timeout_s,
-                    extra_body=self._request_extra_body(),
-                )
+                resp = self._create_completion(messages=messages, response_format=response_format)
+            except Exception as e:  # network/timeout/api error
+                if response_format is not None and _looks_like_structured_rejection(e):
+                    last_validation_error = f"structured output rejected ({type(e).__name__}: {e})"
+                    structured_fallback = True
+                    response_format = None
+                    try:
+                        resp = self._create_completion(messages=messages, response_format=None)
+                    except Exception as fallback_e:
+                        last_raw = f"<error: {type(fallback_e).__name__}>"
+                        last_error = f"{type(fallback_e).__name__}: {fallback_e}"
+                        continue
+                else:
+                    last_raw = f"<error: {type(e).__name__}>"
+                    last_error = f"{type(e).__name__}: {e}"
+                    continue
+
+            try:
                 choice = resp.choices[0]
                 message = choice.message
                 last_raw = (self._message_field(message, "content") or "").strip()
@@ -177,7 +292,7 @@ class OpenRouterAgent:
                     if hasattr(usage_obj, "model_dump")
                     else dict(usage_obj) if isinstance(usage_obj, dict) else {}
                 )
-            except Exception as e:  # network/timeout/api error
+            except Exception as e:
                 last_raw = f"<error: {type(e).__name__}>"
                 last_error = f"{type(e).__name__}: {e}"
                 continue
@@ -206,6 +321,12 @@ class OpenRouterAgent:
                 "finish_reason": finish_reason,
                 "usage": usage,
                 "validation_error": last_validation_error,
+                "structured_output": {
+                    "configured": structured_output_config,
+                    "requested": requested_response_format_type,
+                    "used": response_format.get("type") if isinstance(response_format, dict) else None,
+                    "fallback": structured_fallback,
+                },
             }
             self.calls.append(record)
             self._remember_turn(
@@ -240,6 +361,12 @@ class OpenRouterAgent:
             "finish_reason": finish_reason,
             "usage": usage,
             "validation_error": last_validation_error or last_error,
+            "structured_output": {
+                "configured": structured_output_config,
+                "requested": requested_response_format_type,
+                "used": response_format.get("type") if isinstance(response_format, dict) else None,
+                "fallback": structured_fallback,
+            },
         }
         self.calls.append(record)
         return AgentResponse(

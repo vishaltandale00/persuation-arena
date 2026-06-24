@@ -2,6 +2,7 @@
 and agent forfeit telemetry. No API calls (the model client / _play_one are stubbed)."""
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 from arena import batch, store
@@ -144,6 +145,14 @@ def _client_returning(content, *, provider_reasoning=None):
     return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
 
 
+def _set_structured_output(monkeypatch, openrouter, mode):
+    monkeypatch.setattr(
+        openrouter.SETTINGS,
+        "caps",
+        replace(openrouter.SETTINGS.caps, openrouter_structured_output=mode),
+    )
+
+
 def test_agent_records_forfeit_on_api_failure(monkeypatch):
     from arena import openrouter
 
@@ -213,6 +222,177 @@ def test_agent_requests_provider_reasoning(monkeypatch):
         "exclude": False,
     }
     assert captured["max_tokens"] == openrouter.SETTINGS.caps.max_tokens_per_turn
+
+
+def test_agent_does_not_request_structured_output_when_disabled(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "off")
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":{"target":2}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "openai/gpt-4o")
+    resp = a.act(
+        "obs",
+        lambda action, raw: int(action["target"]),
+        default_action=0,
+        action_kind="onuw.vote",
+        legal_action={"schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "integer", "enum": [1, 2]}},
+            "additionalProperties": False,
+        }},
+    )
+
+    assert resp.ok is True and resp.action == 2
+    assert "response_format" not in captured
+    assert a.calls[0]["structured_output"] == {
+        "configured": "off",
+        "requested": None,
+        "used": None,
+        "fallback": False,
+    }
+
+
+def test_agent_requests_json_schema_structured_output_when_enabled(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":{"target":2}}'),
+            )],
+            usage={},
+        )
+
+    action_schema = {
+        "type": "object",
+        "required": ["target"],
+        "properties": {"target": {"type": "integer", "enum": [1, 2]}},
+        "additionalProperties": False,
+    }
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "openai/gpt-4o")
+    resp = a.act(
+        "obs",
+        lambda action, raw: int(action["target"]),
+        default_action=0,
+        action_kind="onuw.vote",
+        legal_action={"schema": action_schema},
+    )
+
+    assert resp.ok is True and resp.action == 2
+    assert captured["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "onuw_vote",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "required": ["reasoning", "action"],
+                "properties": {
+                    "reasoning": {"type": "string"},
+                    "action": action_schema,
+                },
+                "additionalProperties": False,
+            },
+        },
+    }
+    assert a.calls[0]["structured_output"] == {
+        "configured": "json_schema",
+        "requested": "json_schema",
+        "used": "json_schema",
+        "fallback": False,
+    }
+
+
+def test_agent_falls_back_when_structured_output_is_rejected(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    response_formats = []
+
+    def create(**kwargs):
+        response_formats.append(kwargs.get("response_format"))
+        if kwargs.get("response_format") is not None:
+            raise ValueError("response_format json_schema is not supported by this provider")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"legacy","action":{"target":1}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "unknown/model")
+    resp = a.act(
+        "obs",
+        lambda action, raw: int(action["target"]),
+        default_action=0,
+        action_kind="onuw.vote",
+        legal_action={"schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "integer", "enum": [1, 2]}},
+            "additionalProperties": False,
+        }},
+    )
+
+    assert resp.ok is True and resp.action == 1
+    assert response_formats[0]["type"] == "json_schema"
+    assert response_formats[1] is None
+    assert "structured output rejected" in a.calls[0]["validation_error"]
+    assert a.calls[0]["structured_output"] == {
+        "configured": "json_schema",
+        "requested": "json_schema",
+        "used": None,
+        "fallback": True,
+    }
+
+
+def test_agent_uses_json_object_when_schema_is_unavailable(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":"approve"}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "openai/gpt-4o")
+    resp = a.act("obs", lambda action, raw: str(action), default_action="reject")
+
+    assert resp.ok is True and resp.action == "approve"
+    assert captured["response_format"] == {"type": "json_object"}
 
 
 def test_agent_passes_prior_provider_reasoning_as_assistant_message_fields(monkeypatch):
