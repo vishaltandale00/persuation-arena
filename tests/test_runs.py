@@ -42,7 +42,10 @@ def test_schedule_rotation_gives_each_agent_each_seat_once_per_cycle():
     assert all(seats == {0, 1, 2, 3, 4} for seats in seats_for_agent.values())
 
 
-def test_schedule_does_not_repeat_no_wolf_deal_across_cycle():
+def test_every_scheduled_deal_has_a_wolf_in_play():
+    # require_wolf_in_play guarantees at least one Werewolf is dealt (never all benched in the
+    # center), so no scheduled game is an unrateable no-wolf round. This seed_base previously led
+    # with a zero-wolf deal; the guarantee now precludes it across the whole cycle.
     from arena.games.onuw import ONUW
 
     counts = []
@@ -50,7 +53,7 @@ def test_schedule_does_not_repeat_no_wolf_deal_across_cycle():
         core = ONUW({i: f"P{i}" for i in range(5)}, seed=seed)
         core.deal()
         counts.append(list(core.dealt.values()).count("Werewolf"))
-    assert counts == [0, 2, 2, 1, 2]
+    assert all(c >= 1 for c in counts), counts
 
 
 # ---- batch resilience -------------------------------------------------------

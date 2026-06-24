@@ -136,33 +136,36 @@ export function apiEvent(eventRow) {
 
 export const DEFAULT_DECK_PRESET = 'arena';
 
-// Ported faithfully from arena/games/onuw.py _DECK_PRESETS. Presets are ordered by inclusion as the
-// player count rises; deckForApi slices the first (n_players + 3) cards so exactly 3 stay in the
-// center. label/description are retained for parity though deckForApi only uses `roles`.
+// Ported faithfully from arena/games/onuw.py _DECK_PRESETS. Each preset defines an explicit deck
+// per table size (5/6/7), exactly (n_players + 3) cards so 3 stay in the center. label/description
+// are retained for parity though deckForApi only uses the deck.
 const _DECK_PRESETS = {
   arena: {
     label: 'Arena pressure',
-    description: 'Default. Adds Minion, Drunk, Tanner, then Insomniac/Hunter as tables grow.',
-    roles: [
-      'Werewolf', 'Werewolf', 'Minion', 'Seer', 'Robber', 'Troublemaker',
-      'Drunk', 'Tanner', 'Insomniac', 'Hunter',
-    ],
+    description: 'Verifiable Mason pair as a trust nucleus + Tanner; a third werewolf and the Drunk join as the table grows.',
+    decks: {
+      5: ['Werewolf', 'Werewolf', 'Minion', 'Seer', 'Tanner', 'Robber', 'Mason', 'Mason'],
+      6: ['Werewolf', 'Werewolf', 'Minion', 'Seer', 'Tanner', 'Robber', 'Drunk', 'Mason', 'Mason'],
+      7: ['Werewolf', 'Werewolf', 'Werewolf', 'Minion', 'Seer', 'Tanner', 'Robber', 'Drunk', 'Mason', 'Mason'],
+    },
   },
   classic: {
     label: 'Classic',
     description: 'Original simple scaffold: wolves, Minion, core information roles, Villager cover.',
-    roles: [
-      'Werewolf', 'Werewolf', 'Seer', 'Robber', 'Troublemaker', 'Minion',
-      'Villager', 'Villager', 'Villager', 'Villager',
-    ],
+    decks: {
+      5: ['Werewolf', 'Werewolf', 'Seer', 'Robber', 'Troublemaker', 'Minion', 'Villager', 'Villager'],
+      6: ['Werewolf', 'Werewolf', 'Seer', 'Robber', 'Troublemaker', 'Minion', 'Villager', 'Villager', 'Villager'],
+      7: ['Werewolf', 'Werewolf', 'Seer', 'Robber', 'Troublemaker', 'Minion', 'Villager', 'Villager', 'Villager', 'Villager'],
+    },
   },
   tanner: {
     label: 'Tanner puzzle',
     description: 'High-uncertainty Tanner/Drunk/Insomniac setup; Minion/Hunter join larger tables.',
-    roles: [
-      'Werewolf', 'Werewolf', 'Troublemaker', 'Robber', 'Insomniac', 'Drunk',
-      'Seer', 'Tanner', 'Minion', 'Hunter',
-    ],
+    decks: {
+      5: ['Werewolf', 'Werewolf', 'Troublemaker', 'Robber', 'Insomniac', 'Drunk', 'Seer', 'Tanner'],
+      6: ['Werewolf', 'Werewolf', 'Troublemaker', 'Robber', 'Insomniac', 'Drunk', 'Seer', 'Tanner', 'Minion'],
+      7: ['Werewolf', 'Werewolf', 'Troublemaker', 'Robber', 'Insomniac', 'Drunk', 'Seer', 'Tanner', 'Minion', 'Hunter'],
+    },
   },
 };
 
@@ -175,21 +178,25 @@ export function normalizeDeckPreset(preset) {
   return key;
 }
 
-/** Port of onuw.deck_for_preset: first (n_players + 3) roles of the preset. */
+/** Port of onuw.deck_for_preset: the preset's explicit deck for this table size. */
 export function deckForPreset(nPlayers, preset = null) {
   const key = normalizeDeckPreset(preset);
-  const nCards = nPlayers + 3;
-  const roles = _DECK_PRESETS[key].roles;
-  if (nCards > roles.length) {
+  const deck = _DECK_PRESETS[key].decks[nPlayers];
+  if (!deck) {
     throw new Error(`ONUW deck preset ${key} does not support ${nPlayers} players`);
   }
-  return roles.slice(0, nCards);
+  return deck.slice();
 }
 
-/** Port of server._deck_for_api: null unless game === 'onuw', else the preset's role list. */
+/** Port of server._deck_for_api: null unless game === 'onuw', else the preset's deck for this size.
+ * An out-of-range player count (e.g. a partially-configured run) degrades to null, not a throw. */
 export function deckForApi(game, players, deckPreset) {
   if (game !== 'onuw') return null;
-  return deckForPreset(players, deckPreset || DEFAULT_DECK_PRESET);
+  try {
+    return deckForPreset(players, deckPreset || DEFAULT_DECK_PRESET);
+  } catch {
+    return null;
+  }
 }
 
 // === 4. fetchModels — port of arena/server.py _fetch_models + arena/config.py ====================

@@ -143,7 +143,10 @@ def _deck_preset_from_payload(game: str, payload: dict) -> str | None:
 def _deck_for_api(game: str, players: int, deck_preset: str | None) -> list[str] | None:
     if game != "onuw":
         return None
-    return deck_for_preset(players, deck_preset or DEFAULT_DECK_PRESET)
+    try:
+        return deck_for_preset(players, deck_preset or DEFAULT_DECK_PRESET)
+    except ValueError:
+        return None  # out-of-range player count (e.g. a partially-configured run) -> no deck preview
 
 
 def _queue_run(payload: dict, owner: str) -> dict:

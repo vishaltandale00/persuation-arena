@@ -38,36 +38,41 @@ WAKE = ["Doppelganger", "Werewolf", "Minion", "Mason", "Seer", "Robber", "Troubl
 
 DEFAULT_DECK_PRESET = "arena"
 
-# Presets are ordered by inclusion as player count rises. A 5-player ONUW game uses the first
-# 8 cards, 6-player uses the first 9, and 7-player uses all 10.
+# Each preset defines an EXPLICIT deck per table size (5/6/7) rather than slicing one ordered list,
+# so evil count, anchors, and chaos are tuned deliberately per table. Every deck is exactly N+3
+# cards, so three stay face-down in the center.
 _DECK_PRESETS = {
     "arena": {
         "label": "Arena pressure",
-        "description": "Default. Adds Minion, Drunk, Tanner, then Insomniac/Hunter as tables grow.",
-        "roles": [
-            "Werewolf", "Werewolf", "Minion", "Seer", "Robber", "Troublemaker",
-            "Drunk", "Tanner", "Insomniac", "Hunter",
-        ],
+        "description": "Verifiable Mason pair as a trust nucleus + Tanner; a third werewolf and the "
+                       "Drunk join as the table grows.",
+        "decks": {
+            5: ["Werewolf", "Werewolf", "Minion", "Seer", "Tanner", "Robber", "Mason", "Mason"],
+            6: ["Werewolf", "Werewolf", "Minion", "Seer", "Tanner", "Robber", "Drunk", "Mason", "Mason"],
+            7: ["Werewolf", "Werewolf", "Werewolf", "Minion", "Seer", "Tanner", "Robber", "Drunk", "Mason", "Mason"],
+        },
     },
     "classic": {
         "label": "Classic",
         "description": "Original simple scaffold: wolves, Minion, core information roles, Villager cover.",
-        "roles": [
-            "Werewolf", "Werewolf", "Seer", "Robber", "Troublemaker", "Minion",
-            "Villager", "Villager", "Villager", "Villager",
-        ],
+        "decks": {
+            5: ["Werewolf", "Werewolf", "Seer", "Robber", "Troublemaker", "Minion", "Villager", "Villager"],
+            6: ["Werewolf", "Werewolf", "Seer", "Robber", "Troublemaker", "Minion", "Villager", "Villager", "Villager"],
+            7: ["Werewolf", "Werewolf", "Seer", "Robber", "Troublemaker", "Minion", "Villager", "Villager", "Villager", "Villager"],
+        },
     },
     "tanner": {
         "label": "Tanner puzzle",
         "description": "High-uncertainty Tanner/Drunk/Insomniac setup; Minion/Hunter join larger tables.",
-        "roles": [
-            "Werewolf", "Werewolf", "Troublemaker", "Robber", "Insomniac", "Drunk",
-            "Seer", "Tanner", "Minion", "Hunter",
-        ],
+        "decks": {
+            5: ["Werewolf", "Werewolf", "Troublemaker", "Robber", "Insomniac", "Drunk", "Seer", "Tanner"],
+            6: ["Werewolf", "Werewolf", "Troublemaker", "Robber", "Insomniac", "Drunk", "Seer", "Tanner", "Minion"],
+            7: ["Werewolf", "Werewolf", "Troublemaker", "Robber", "Insomniac", "Drunk", "Seer", "Tanner", "Minion", "Hunter"],
+        },
     },
 }
 
-DEFAULT_DECK = list(_DECK_PRESETS[DEFAULT_DECK_PRESET]["roles"][:8])
+DEFAULT_DECK = list(_DECK_PRESETS[DEFAULT_DECK_PRESET]["decks"][5])
 
 
 def normalize_deck_preset(preset: str | None) -> str:
@@ -78,13 +83,15 @@ def normalize_deck_preset(preset: str | None) -> str:
 
 
 def deck_for_preset(n_players: int, preset: str | None = None) -> list[str]:
-    """Deck for an n-player game: n_players + 3 cards so exactly 3 stay in the center."""
+    """Deck for an n-player game: a per-size composition of exactly n_players + 3 cards so three
+    stay in the center."""
     key = normalize_deck_preset(preset)
-    n_cards = n_players + 3
-    roles = _DECK_PRESETS[key]["roles"]
-    if n_cards > len(roles):
+    decks = _DECK_PRESETS[key]["decks"]
+    if n_players not in decks:
         raise ValueError(f"ONUW deck preset {key} does not support {n_players} players")
-    return list(roles[:n_cards])
+    deck = list(decks[n_players])
+    assert len(deck) == n_players + 3, f"{key} deck for {n_players}p must be {n_players + 3} cards"
+    return deck
 
 
 def default_deck(n_players: int, preset: str | None = None) -> list[str]:
@@ -92,15 +99,15 @@ def default_deck(n_players: int, preset: str | None = None) -> list[str]:
 
 
 def deck_preset_options(n_players: int | None = None) -> list[dict]:
+    n = n_players or 5  # representative table size when none is specified (the UI passes the real one)
     opts = []
     for key, data in _DECK_PRESETS.items():
-        roles = deck_for_preset(n_players, key) if n_players else list(data["roles"])
         opts.append({
             "id": key,
             "label": data["label"],
             "description": data["description"],
             "default": key == DEFAULT_DECK_PRESET,
-            "roles": roles,
+            "roles": deck_for_preset(n, key),
         })
     return opts
 
@@ -114,7 +121,8 @@ class ONUW:
                  deck: list[str] | None = None, deck_preset: str | None = None,
                  deal_override: list[str] | None = None,
                  event_sink: Callable[..., None] | None = None,
-                 event_driven: bool = False):
+                 event_driven: bool = False,
+                 require_wolf_in_play: bool = True):
         self.names = names
         self.n = len(names)
         self.seed = seed
@@ -123,6 +131,9 @@ class ONUW:
         self.deck_preset = normalize_deck_preset(deck_preset)
         self.deck = deck or default_deck(len(names), self.deck_preset)
         self.deal_override = deal_override  # explicit 8-card layout for tests (players then center)
+        # Re-deal until at least one Werewolf is among the dealt seats, so no game wastes a round
+        # with every wolf benched in the center (an unrateable no-contest). deal_override bypasses.
+        self.require_wolf_in_play = require_wolf_in_play
         self.dealt: dict[int, str] = {}
         self.current: dict[int, str] = {}
         self.center: list[str] = []
@@ -149,7 +160,11 @@ class ONUW:
 
     def _shuffled(self):
         cards = list(self.deck)
-        self.rng.shuffle(cards)
+        guard = self.require_wolf_in_play and "Werewolf" in cards
+        for _ in range(200):  # cap is a backstop; a wolf-bearing N+3 deck dealt to N hits this fast
+            self.rng.shuffle(cards)
+            if not guard or "Werewolf" in cards[: self.n]:
+                return cards
         return cards
 
     def players_with_dealt(self, role: str) -> list[int]:

@@ -33,17 +33,20 @@ def test_game_plays_to_a_winner_at_each_table_size(cls, n):
 def test_onuw_deck_keeps_three_center_cards(n):
     deck = default_deck(n)
     assert len(deck) == n + 3 and len(deck) - n == 3      # canonical ONUW: exactly 3 center cards
-    assert deck.count("Werewolf") == 2 and deck.count("Minion") == 1
-    assert "Tanner" in deck
+    assert deck.count("Werewolf") == (3 if n == 7 else 2)  # arena scales to a third wolf at 7p
+    assert deck.count("Minion") == 1 and deck.count("Mason") == 2 and "Tanner" in deck
     core = ONUW({i: f"P{i}" for i in range(n)}, seed=1)
     core.deal()
     assert len(core.center) == 3
+    assert any(core.dealt[i] == "Werewolf" for i in range(n))  # guarantee: a wolf is always in play
 
 
 def test_onuw_deck_presets_are_tunable():
     assert deck_for_preset(5, "arena") == [
-        "Werewolf", "Werewolf", "Minion", "Seer", "Robber", "Troublemaker", "Drunk", "Tanner",
+        "Werewolf", "Werewolf", "Minion", "Seer", "Tanner", "Robber", "Mason", "Mason",
     ]
+    assert deck_for_preset(7, "arena").count("Werewolf") == 3   # evil scales at 7p
+    assert deck_for_preset(5, "arena").count("Mason") == 2      # verifiable anchor pair
     assert deck_for_preset(5, "classic") == [
         "Werewolf", "Werewolf", "Seer", "Robber", "Troublemaker", "Minion", "Villager", "Villager",
     ]
