@@ -15,6 +15,7 @@ from typing import Any, Callable
 from openai import OpenAI
 
 from .config import OPENROUTER_BASE_URL, SETTINGS, get_api_key
+from .wolf_profiles import prompt_for
 
 _client: OpenAI | None = None
 
@@ -26,13 +27,8 @@ def client() -> OpenAI:
     return _client
 
 
-SYSTEM = (
-    "You are a sharp, competitive player of a hidden-role social-deduction game. "
-    "Read the situation, reason about who is lying and what serves your team, then act. "
-    "Always reply with a single JSON object and nothing else: "
-    '{"reasoning": "<your private thinking, never shown to others>", "action": <the action>}. '
-    "Keep reasoning to a few sentences. Follow the action format the prompt specifies exactly."
-)
+# Compatibility alias for code or tests that import SYSTEM directly.
+SYSTEM = prompt_for("base")
 
 
 @dataclass
@@ -90,7 +86,7 @@ class OpenRouterAgent:
                 resp = client().chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": SYSTEM},
+                        {"role": "system", "content": prompt_for(self.harness)},
                         {"role": "user", "content": observation},
                     ],
                     max_tokens=caps.max_tokens_per_turn,

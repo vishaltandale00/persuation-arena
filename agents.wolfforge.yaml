@@ -1,0 +1,8 @@
+# WolfForge mixed-table experiment.
+# Keep model and decoding settings identical; only harness changes.
+agents:
+  - {name: BayesWolf, model: openai/gpt-4o-mini, harness: bayes}
+  - {name: CharmWolf, model: openai/gpt-4o-mini, harness: charisma}
+  - {name: ChaosWolf, model: openai/gpt-4o-mini, harness: chaos}
+  - {name: Control-A, model: openai/gpt-4o-mini, harness: base}
+  - {name: Control-B, model: openai/gpt-4o-mini, harness: base}
