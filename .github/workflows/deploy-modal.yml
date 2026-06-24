@@ -1,0 +1,84 @@
+# .github/workflows/deploy-modal.yml
+#
+# Keeps the Modal half of production in sync with main.
+#
+# Topology: a push to main already auto-deploys web/* + api/*.js via Vercel's
+# own GitHub integration. Modal does NOT auto-update — the coordinator app
+# ("persuasion-arena-coordinator", defined in arena/modal_app.py) only changes
+# when someone runs `modal deploy`. This workflow closes that gap: it re-runs
+# `modal deploy arena/modal_app.py` on the same pushes, so the container image
+# definition tracks the repo automatically. There is no Vercel step here.
+#
+# One-time setup (see repo docs / the PR that added this file):
+#   - Create a Modal CI token (a dashboard "Service User" is best for CI).
+#   - Add it as two GitHub repo secrets: MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
+# The Modal secret "neon-database-url" must already exist in the workspace; this
+# deploy only references it (Secret.from_name), it does not create it.
+name: Deploy Modal
+
+on:
+  push:
+    branches: [main]
+    # The Modal image is built from these inputs only, so a push that touches
+    # *just* api/*.js or *.md leaves the image identical and is skipped.
+    # Under `push`, branches AND paths must BOTH match for the job to run.
+    paths:
+      - 'arena/**'          # add_local_python_source("arena", ...) + the app itself
+      - 'web/**'            # add_local_dir("web", "/root/web")
+      - 'agents.yaml'       # add_local_file("agents.yaml", ...)
+      - 'pyproject.toml'    # pip_install_from_pyproject(...) — the remotely-installed dep set
+      - 'uv.lock'           # belt-and-suspenders: pip_install_from_pyproject reads pyproject,
+                            # NOT uv.lock, so a lock-only bump yields an identical image (a
+                            # harmless no-op deploy) — kept so a resolution change never
+                            # silently desyncs intent from what is deployed.
+      - '.github/workflows/deploy-modal.yml'  # changes to this pipeline itself
+  # Manual override: path filters do NOT apply to workflow_dispatch, so this
+  # forces a redeploy even when no image-affecting files changed.
+  workflow_dispatch:
+
+# Serialize deploys per branch. Keyed to workflow + ref so two quick pushes to
+# main can't race each other into the same Modal app.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never abort an in-flight deploy — let it finish and queue the newer run
+  # behind it, so the Modal app is never left half-registered.
+  cancel-in-progress: false
+
+# The deploy only reads the checked-out source.
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20   # bound a hung image build so it can't hold the concurrency lock forever
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          # Match pyproject's requires-python (>=3.12,<3.15) and the image's
+          # python_version="3.12". The runner only imports the app module to
+          # register it — heavy deps are installed remotely in the Modal image,
+          # not here (verified: `modal deploy` imports fine with only the client).
+          python-version: '3.12'
+
+      - name: Install Modal client
+        # Pin the CLI to the version locked in uv.lock for reproducible
+        # registration. Runtime deps in the container come from pyproject,
+        # independently of this pin. Bump this line alongside the lockfile.
+        run: |
+          python -m pip install --upgrade pip
+          pip install modal==1.5.1
+          modal --version
+
+      - name: Deploy Modal app
+        # No `modal token` step is needed: the client reads these two env vars
+        # directly and they take precedence over ~/.modal.toml. The image is
+        # built remotely; this step just registers the app definition.
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: modal deploy arena/modal_app.py
