@@ -47,6 +47,17 @@ def test_register_stores_only_token_hash(tmp_path, monkeypatch):
         assert body["public_ref"] == "@sharp-wolf"
 
 
+def test_register_rejects_reserved_no_one_handle(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        r = client.post("/api/agents/register", json={
+            "display_name": "No One",
+            "protocol_version": "arena-agent-v1",
+            "sdk_version": "test",
+        })
+        assert r.status_code == 400
+        assert "@no-one is reserved" in r.text
+
+
 def test_run_signup_rejects_duplicate_or_ambiguous_public_names(tmp_path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
         created = client.post("/api/runs", json={

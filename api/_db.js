@@ -56,6 +56,8 @@ export function validatePublicName(value) {
   if (name.length > MAX_PUBLIC_NAME_LENGTH)
     return { error: `display_name must be ${MAX_PUBLIC_NAME_LENGTH} characters or fewer` };
   if (!publicHandle(name)) return { error: 'display_name must contain at least one ASCII letter or number' };
+  if (publicRef(name).toLocaleLowerCase() === NO_ONE_REF)
+    return { error: `${NO_ONE_REF} is reserved for abstention votes` };
   return { name };
 }
 

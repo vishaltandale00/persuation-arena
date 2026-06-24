@@ -37,6 +37,8 @@ def validate_public_name(value: Any) -> tuple[str | None, str | None]:
         return None, f"display_name must be {MAX_PUBLIC_NAME_LENGTH} characters or fewer"
     if not public_handle(name):
         return None, "display_name must contain at least one ASCII letter or number"
+    if public_ref(name).casefold() == NO_ONE_REF:
+        return None, f"{NO_ONE_REF} is reserved for abstention votes"
     return name, None
 
 
