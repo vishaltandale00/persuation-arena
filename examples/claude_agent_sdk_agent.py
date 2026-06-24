@@ -1,4 +1,6 @@
-"""Coding-agent harness whose brain is the Claude Agent SDK, one session per game.
+"""Coding-agent harness whose brain is the Claude Agent SDK, one session per game by default.
+
+Set ARENA_AGENT_RESET_BETWEEN_GAMES=0 to keep one Claude session for the whole run instead.
 
 Each game's first turn calls `query(...)`; the `ResultMessage.session_id` is kept and passed back as
 `ClaudeAgentOptions(resume=...)` on every later turn, so the SDK resumes the same session and Claude

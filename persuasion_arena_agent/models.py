@@ -38,6 +38,7 @@ class Event:
     event_id: str
     type: str
     payload: dict[str, Any]
+    run_id: str | None = None
     seq: int | None = None
     game_instance_id: str | None = None
     visibility: str | None = None
@@ -49,6 +50,7 @@ class Event:
             event_id=data["event_id"],
             type=data["type"],
             payload=data.get("payload") or {},
+            run_id=data.get("run_id"),
             seq=data.get("seq"),
             game_instance_id=data.get("game_instance_id"),
             visibility=data.get("visibility"),
@@ -67,6 +69,7 @@ class Turn:
     deadline_at: str
     observation: dict[str, Any]
     legal_action: dict[str, Any]
+    run_id: str | None = None
 
     @property
     def legal_actions(self) -> dict[str, Any]:
@@ -84,6 +87,7 @@ class Turn:
             deadline_at=data["deadline_at"],
             observation=data.get("observation") or {},
             legal_action=data.get("legal_action") or {},
+            run_id=data.get("run_id"),
         )
 
 
@@ -98,11 +102,19 @@ class PollResponse:
 
     @classmethod
     def from_dict(cls, data: dict) -> "PollResponse":
+        run_id = data["run_id"]
+        events = [
+            Event.from_dict({**e, "run_id": e.get("run_id") or run_id})
+            for e in data.get("events", [])
+        ]
+        turn_data = data.get("turn")
+        if turn_data:
+            turn_data = {**turn_data, "run_id": turn_data.get("run_id") or run_id}
         return cls(
             signup_id=data["signup_id"],
-            run_id=data["run_id"],
+            run_id=run_id,
             run_status=data["run_status"],
-            events=[Event.from_dict(e) for e in data.get("events", [])],
-            turn=Turn.from_dict(data["turn"]) if data.get("turn") else None,
+            events=events,
+            turn=Turn.from_dict(turn_data) if turn_data else None,
             poll_after_ms=int(data.get("poll_after_ms") or 1000),
         )

@@ -4,6 +4,9 @@
 back as its memory, asks the LLM to choose, and returns the action. That's it — the harness builds
 its own memory by writing the event stream to a file and re-reading the file it wrote.
 
+Set ARENA_AGENT_RESET_BETWEEN_GAMES=0 to use one run-scoped memory file instead of resetting
+between games.
+
 This is the "anyone can build a harness" reference: no clever state, just append-to-file and
 read-the-file. (It is NOT the SDK or server giving back history — it's the harness persisting its
 own memory from the deltas it was delivered once.)
@@ -13,33 +16,40 @@ from __future__ import annotations
 import os
 import tempfile
 
-from examples._harness_util import SYSTEM, DEFAULT_MODEL, render_event, action_request, decide
+from examples._harness_util import (
+    SYSTEM, DEFAULT_MODEL, render_event, action_request, decide,
+    reset_between_games_from_env, state_key, state_path_name,
+)
 
 
 class FileMemoryAgent:
-    def __init__(self, model: str = DEFAULT_MODEL, memory_dir: str | None = None):
+    def __init__(self, model: str = DEFAULT_MODEL, memory_dir: str | None = None,
+                 reset_between_games: bool | None = None):
         self.model = model
+        self.reset_between_games = (reset_between_games if reset_between_games is not None
+                                    else reset_between_games_from_env())
         self.dir = memory_dir or tempfile.mkdtemp(prefix="arena-mem-")
-        self.files: dict[str, str] = {}   # game_instance_id -> .md path
+        self.files: dict[str, str] = {}   # state key -> .md path
 
-    def _path(self, gid: str) -> str:
-        p = self.files.get(gid)
+    def _path(self, key: str) -> str:
+        p = self.files.get(key)
         if p is None:
-            p = os.path.join(self.dir, f"{gid}.md")
-            self.files[gid] = p
+            p = os.path.join(self.dir, f"{state_path_name(key)}.md")
+            self.files[key] = p
             with open(p, "w") as f:
-                f.write(f"# Game {gid} — what I have observed\n\n")
+                f.write(f"# State {key} — what I have observed\n\n")
         return p
 
     def on_event(self, event) -> None:
-        gid = getattr(event, "game_instance_id", None)
-        if gid is None:
+        key = state_key(event, self.reset_between_games)
+        if key is None:
             return
-        with open(self._path(gid), "a") as f:
+        with open(self._path(key), "a") as f:
             f.write(f"- {render_event(event)}\n")
 
     def act(self, turn) -> dict:
-        with open(self._path(turn.game_instance_id)) as f:
+        key = state_key(turn, self.reset_between_games) or turn.game_instance_id
+        with open(self._path(key)) as f:
             memory = f.read()
         messages = [
             {"role": "system", "content": SYSTEM},

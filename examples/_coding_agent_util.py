@@ -4,18 +4,18 @@ These harnesses differ from the chat harnesses (`session_agent`, `file_memory_ag
 brain: instead of a single OpenRouter chat call, each turn is decided by a real coding agent —
 codex, opencode, or the Claude Agent SDK — driving a model inside its own persistent session.
 
-Memory = the agent's own session, kept alive across the whole game (the `session_agent` model, not
-the `file_memory_agent` fresh-read model). The mechanics:
+Memory = the agent's own session. By default it is kept alive across one game, and
+ARENA_AGENT_RESET_BETWEEN_GAMES=0 switches it to one session across the whole run. Either way, a new
+run gets a fresh state key when the SDK supplies run_id. The mechanics:
 
   - These tools are request->response: you cannot push a message and get no reply, so we cannot
     forward each event the instant it arrives. Instead `on_event` ACCUMULATES rendered deltas into a
     per-game buffer.
   - `act` flushes that buffer as the turn's single message and sends it into the RESUMED session for
-    that game. The first turn opens the session (with a system preamble + everything observed so
-    far); every later turn resumes it and forwards only the new deltas. The agent therefore carries
-    its own reasoning, prior turns, and any scratch files across the entire game — it is never handed
-    a fresh, amnesiac session mid-game.
-  - Each game also gets its own working directory containing a running `transcript.md`. The coding
+    that state key. The first turn opens the session (with a system preamble + everything observed
+    so far); every later turn resumes it and forwards only the new deltas. The agent therefore
+    carries its own reasoning, prior turns, and any scratch files across the configured scope.
+  - Each state key also gets its own working directory containing a running `transcript.md`. The coding
     agent runs with that directory as its cwd, so it may read those files for reference — these are
     coding agents, after all — but the prompt itself only ever carries the deltas, never a full
     re-dump. (Codex runs read-only and the Claude SDK brain runs with no tools, so the file is
@@ -35,6 +35,7 @@ import tempfile
 
 from examples._harness_util import (
     SYSTEM, REPAIR_MESSAGE, action_request, fallback_action, interpret, render_event,
+    reset_between_games_from_env, state_key, state_path_name,
 )
 
 # Coding agents can think and call tools, so a turn may take a while. The arena has its own turn
@@ -50,7 +51,7 @@ _WORKSPACE_NOTE = (
 
 
 def opening_prompt(history_text: str, turn) -> str:
-    """First message of a game's session: system framing + everything observed before this turn."""
+    """First message of a state session: system framing + everything observed before this turn."""
     return (
         f"{SYSTEM}\n\n{_WORKSPACE_NOTE}\n\n"
         f"The game so far (most recent last):\n{history_text or '(no events yet)'}\n\n"
@@ -111,7 +112,7 @@ def collect_jsonl_text(stdout: str, *, type_key: str, text_path: tuple[str, ...]
 
 
 class SessionCodingHarness:
-    """Base for a coding-agent harness that keeps one persistent session per game.
+    """Base for a coding-agent harness that keeps one persistent session per configured state scope.
 
     Subclass and implement `_call`. Set `brain_name` (used for the workspace prefix) and `model_env`
     (the env var that overrides the model; unset -> the tool's own default model)."""
@@ -119,50 +120,55 @@ class SessionCodingHarness:
     brain_name = "coding-agent"
     model_env: str | None = None
 
-    def __init__(self, model: str | None = None, workdir: str | None = None):
+    def __init__(self, model: str | None = None, workdir: str | None = None,
+                 reset_between_games: bool | None = None):
         env_model = os.environ.get(self.model_env) if self.model_env else None
         self.model = model or env_model or None
+        self.reset_between_games = (reset_between_games if reset_between_games is not None
+                                    else reset_between_games_from_env())
         self.root = workdir or tempfile.mkdtemp(prefix=f"arena-{self.brain_name}-")
-        self._pending: dict[str, list[str]] = {}      # game_instance_id -> rendered events not yet sent
-        self._sessions: dict[str, str] = {}           # game_instance_id -> tool-native session id
-        self._dirs: dict[str, str] = {}               # game_instance_id -> working directory
+        self._pending: dict[str, list[str]] = {}      # state key -> rendered events not yet sent
+        self._sessions: dict[str, str] = {}           # state key -> tool-native session id
+        self._dirs: dict[str, str] = {}               # state key -> working directory
 
     # -- workspace -----------------------------------------------------------------------------
-    def _game_dir(self, gid: str) -> str:
-        path = self._dirs.get(gid)
+    def _state_dir(self, key: str) -> str:
+        path = self._dirs.get(key)
         if path is None:
-            path = os.path.join(self.root, gid)
+            path = os.path.join(self.root, state_path_name(key))
             os.makedirs(path, exist_ok=True)
             with open(os.path.join(path, "transcript.md"), "w") as f:
-                f.write(f"# Game {gid} — running log of what I have observed\n\n")
-            self._dirs[gid] = path
+                f.write(f"# State {key} — running log of what I have observed\n\n")
+            self._dirs[key] = path
         return path
 
     # -- SDK handlers --------------------------------------------------------------------------
     def on_event(self, event) -> None:
-        gid = getattr(event, "game_instance_id", None)
-        if gid is None:
-            return  # run-level event, not part of any game's memory
+        key = state_key(event, self.reset_between_games)
+        if key is None:
+            return  # run-level event with no run-scoped state key
         line = render_event(event)
-        self._pending.setdefault(gid, []).append(line)  # the buffer is the real memory; must not be lost
+        self._pending.setdefault(key, []).append(line)  # the buffer is the real memory; must not be lost
         # transcript.md is only scratch/reference, so a write failure (disk full, permissions) must
         # never propagate out of the SDK's poll loop and abort the seat — best-effort only.
         try:
-            with open(os.path.join(self._game_dir(gid), "transcript.md"), "a") as f:
+            with open(os.path.join(self._state_dir(key), "transcript.md"), "a") as f:
                 f.write(f"- {line}\n")
         except OSError:
             pass
 
     def act(self, turn) -> dict:
-        gid = turn.game_instance_id
-        cwd = self._game_dir(gid)
-        new_events = "\n".join(self._pending.pop(gid, []))
-        if gid in self._sessions:
+        key = state_key(turn, self.reset_between_games)
+        if key is None:
+            key = turn.game_instance_id
+        cwd = self._state_dir(key)
+        new_events = "\n".join(self._pending.pop(key, []))
+        if key in self._sessions:
             prompt = delta_prompt(new_events, turn)
         else:
             prompt = opening_prompt(new_events, turn)
 
-        raw = self._run(prompt, cwd, gid)
+        raw = self._run(prompt, cwd, key)
         action, reasoning, legal = interpret(turn, raw)
         if not legal:
             # One repair attempt. If the first call established a session, resume it with a bare
@@ -170,8 +176,8 @@ class SessionCodingHarness:
             # so no session id was captured), a bare nudge would open a fresh, context-free session
             # that cannot produce a legal action; re-send the whole prompt instead, so that fresh
             # session is properly seeded (and later delta-resumes still have the context).
-            repair = REPAIR_MESSAGE if gid in self._sessions else f"{prompt}\n\n{REPAIR_MESSAGE}"
-            raw2 = self._run(repair, cwd, gid)
+            repair = REPAIR_MESSAGE if key in self._sessions else f"{prompt}\n\n{REPAIR_MESSAGE}"
+            raw2 = self._run(repair, cwd, key)
             action2, reasoning2, legal2 = interpret(turn, raw2)
             if legal2:
                 action, reasoning = action2, reasoning2
@@ -181,14 +187,14 @@ class SessionCodingHarness:
         return {"action": action, "reasoning": reasoning}
 
     # -- brain ---------------------------------------------------------------------------------
-    def _run(self, prompt: str, cwd: str, gid: str) -> str:
-        session_id = self._sessions.get(gid)
+    def _run(self, prompt: str, cwd: str, key: str) -> str:
+        session_id = self._sessions.get(key)
         try:
             text, new_session_id = self._call(prompt, cwd, session_id)
         except Exception as e:  # any tool/SDK failure degrades to a legal fallback, never a forfeit
             return f"<brain error: {type(e).__name__}: {e}>"
         if new_session_id:
-            self._sessions[gid] = new_session_id
+            self._sessions[key] = new_session_id
         return text or ""
 
     def _call(self, prompt: str, cwd: str, session_id: str | None) -> tuple[str, str | None]:

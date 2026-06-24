@@ -394,6 +394,7 @@ def api_signup_ready(signup_id: str, payload: dict, authorization: str | None = 
 def _api_event(event: dict) -> dict:
     return {
         "event_id": event["event_id"],
+        "run_id": event["run_id"],
         "game_instance_id": event.get("game_instance_id"),
         "seq": event["seq"],
         "visibility": event["visibility"],
@@ -409,6 +410,7 @@ def _api_turn(turn: dict | None) -> dict | None:
         return None
     return {
         "turn_id": turn["id"],
+        "run_id": turn["run_id"],
         "game_instance_id": turn["game_instance_id"],
         "game": store.get_run(turn["run_id"])["game"],
         "seat": turn["seat"],

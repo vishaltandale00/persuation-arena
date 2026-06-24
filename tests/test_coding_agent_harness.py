@@ -17,14 +17,15 @@ from persuasion_arena_agent.models import Event, Turn
 GID = "game_1"
 
 
-def _event(etype: str, payload: dict, gid: str | None = GID, eid: str = "e") -> Event:
+def _event(etype: str, payload: dict, gid: str | None = GID, eid: str = "e",
+           run_id: str | None = None) -> Event:
     return Event.from_dict({"event_id": eid, "type": etype, "payload": payload,
-                            "game_instance_id": gid})
+                            "game_instance_id": gid, "run_id": run_id})
 
 
-def _speak_turn() -> Turn:
+def _speak_turn(gid: str = GID, run_id: str | None = None) -> Turn:
     return Turn.from_dict({
-        "turn_id": "t1", "game_instance_id": GID, "game": "onuw", "seat": 0,
+        "turn_id": "t1", "game_instance_id": gid, "run_id": run_id, "game": "onuw", "seat": 0,
         "phase": "discussion", "action_kind": "onuw.discussion.speak_or_pass",
         "deadline_at": "2026-06-23T17:00:00Z",
         "observation": {"format": "text", "text": "speak"},
@@ -73,6 +74,51 @@ def test_first_turn_opens_session_later_turns_resume_with_only_deltas(tmp_path):
     assert "I am the Robber" in second_prompt         # the new delta is forwarded
     assert "Seer" not in second_prompt                # prior context is NOT re-dumped (session holds it)
     assert h._pending.get(GID, []) == []              # buffer drained after flushing
+
+
+def test_default_state_scope_resets_between_games_in_a_run(tmp_path):
+    h = FakeBrain([
+        json.dumps({"action": {"speak": "game one"}, "reasoning": "open1"}),
+        json.dumps({"action": {"speak": "game two"}, "reasoning": "open2"}),
+    ], workdir=str(tmp_path))
+
+    h.on_event(_event("role_info", {"seat": 0, "role": "Seer"},
+                      gid="run_a_game_001", run_id="run_a"))
+    h.act(_speak_turn("run_a_game_001", "run_a"))
+    h.on_event(_event("role_info", {"seat": 0, "role": "Robber"},
+                      gid="run_a_game_002", run_id="run_a"))
+    h.act(_speak_turn("run_a_game_002", "run_a"))
+
+    first_prompt, first_session = h.calls[0]
+    second_prompt, second_session = h.calls[1]
+    assert first_session is None and second_session is None
+    assert "The game so far" in first_prompt
+    assert "The game so far" in second_prompt
+    assert "Robber" in second_prompt
+    assert "Seer" not in second_prompt
+
+
+def test_toggle_can_keep_one_state_session_for_the_whole_run(tmp_path):
+    h = FakeBrain([
+        json.dumps({"action": {"speak": "game one"}, "reasoning": "open"}),
+        json.dumps({"action": {"speak": "game two"}, "reasoning": "resume"}),
+    ], workdir=str(tmp_path), reset_between_games=False)
+
+    h.on_event(_event("role_info", {"seat": 0, "role": "Seer"},
+                      gid="run_a_game_001", run_id="run_a"))
+    h.act(_speak_turn("run_a_game_001", "run_a"))
+    h.on_event(_event("role_info", {"seat": 0, "role": "Robber"},
+                      gid="run_a_game_002", run_id="run_a"))
+    h.act(_speak_turn("run_a_game_002", "run_a"))
+
+    first_prompt, first_session = h.calls[0]
+    second_prompt, second_session = h.calls[1]
+    assert first_session is None
+    assert second_session == "sess-xyz"
+    assert "The game so far" in first_prompt
+    assert "New events since your last turn" in second_prompt
+    assert "Robber" in second_prompt
+    assert "Seer" not in second_prompt
 
 
 def test_illegal_first_reply_is_repaired_in_the_same_session(tmp_path):

@@ -93,7 +93,7 @@ def test_http_client_retries_transient_status_with_retry_after(monkeypatch):
 
 def test_arena_agent_ready_poll_act_and_event_cursor(tmp_path):
     path = tmp_path / "credentials.json"
-    calls = {"polls": [], "acts": 0}
+    calls = {"polls": [], "acts": 0, "events": []}
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content or b"{}")
@@ -139,14 +139,20 @@ def test_arena_agent_ready_poll_act_and_event_cursor(tmp_path):
     @agent.act
     def act(turn):
         calls["acts"] += 1
+        assert turn.run_id == "run_1"
         assert turn.observation["text"] == "speak"
         return {"action": {"speak": "hello"}, "reasoning": "test"}
+
+    @agent.on_event
+    def remember(event):
+        calls["events"].append(event.run_id)
 
     signup = agent.signup(run_id="run_1")
     agent.run_once([signup])
     agent.run_once([signup])
 
     assert calls["acts"] == 1
+    assert calls["events"] == ["run_1", "run_1"]
     assert calls["polls"][0]["after_event_id"] is None
     assert calls["polls"][1]["after_event_id"] == "evt_1"
     assert os.environ.get("PERSUASION_ARENA_CREDENTIALS") is None
