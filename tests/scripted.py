@@ -4,7 +4,7 @@ from __future__ import annotations
 
 class _Resp:
     def __init__(self, reasoning, action):
-        self.reasoning = reasoning
+        self.declared_reasoning = reasoning
         self.action = action
         self.ok = True
         self.raw = ""

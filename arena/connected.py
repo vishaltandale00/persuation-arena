@@ -92,14 +92,14 @@ class ConnectedTurnRequest:
                 phase=self.turn["phase"],
             )
             return AgentResponse(
-                reasoning="(deadline expired; defaulted)",
+                declared_reasoning="(deadline expired; defaulted)",
                 action=parsed,
                 raw=raw,
                 ok=False,
                 ms=ms,
             )
         return AgentResponse(
-            reasoning="(turn disappeared; defaulted)",
+            declared_reasoning="(turn disappeared; defaulted)",
             action=self.default_action,
             raw="",
             ok=False,
@@ -126,7 +126,7 @@ class ConnectedTurnRequest:
             phase=self.turn["phase"],
         )
         return AgentResponse(
-            reasoning=reply.get("reasoning") or "",
+            declared_reasoning=reply.get("reasoning") or "",
             action=action,
             raw=raw,
             ok=ok,

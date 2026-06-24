@@ -3,6 +3,8 @@ and agent forfeit telemetry. No API calls (the model client / _play_one are stub
 from __future__ import annotations
 
 from dataclasses import replace
+
+import pytest
 from types import SimpleNamespace
 
 from arena import batch, store
@@ -221,7 +223,6 @@ def test_agent_records_ok_on_valid_response(monkeypatch):
     resp = a.act("obs", lambda action, raw: int(action), default_action=0)
     assert resp.ok is True and resp.action == 3
     assert len(a.calls) == 1 and a.calls[0]["ok"] is True
-    assert resp.reasoning == "r"
     assert resp.declared_reasoning == "r"
     assert resp.provider_reasoning == "native trace"
     assert a.calls[0]["declared_reasoning"] == "r"
@@ -473,3 +474,23 @@ def test_agent_passes_prior_provider_reasoning_as_assistant_message_fields(monke
         {"type": "reasoning.summary", "summary": "provider plan"}
     ]
     assert messages_by_call[1][3] == {"role": "user", "content": "second obs"}
+
+
+def test_agent_response_requires_explicit_declared_reasoning():
+    from arena.openrouter import AgentResponse
+
+    with pytest.raises(TypeError):
+        AgentResponse(reasoning="ambiguous", action=1, raw="{}", ok=True)
+
+    resp = AgentResponse(
+        declared_reasoning="arena rationale",
+        action=1,
+        raw="{}",
+        ok=True,
+        provider_reasoning="provider trace",
+        provider_reasoning_details=[{"type": "summary", "text": "provider trace"}],
+    )
+    assert resp.declared_reasoning == "arena rationale"
+    assert not hasattr(resp, "reasoning")
+    assert resp.provider_reasoning == "provider trace"
+    assert resp.provider_reasoning_details == [{"type": "summary", "text": "provider trace"}]

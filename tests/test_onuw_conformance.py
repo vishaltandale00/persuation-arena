@@ -23,7 +23,7 @@ class RecordingAgent:
         self.turn_meta.append(turn_meta)
 
         class Resp:
-            reasoning = "(recorded)"
+            declared_reasoning = "(recorded)"
             action = default_action
             ms = 0.0
 

@@ -191,7 +191,7 @@ class Avalon:
         default = (list(range(size)), "Proposing a balanced team.")
         resp = agent.act(prompt, parse, default)
         team, statement = resp.action
-        return team, statement, resp.reasoning, resp.ms
+        return team, statement, resp.declared_reasoning, resp.ms
 
     def _team_vote(self, pid: int, team: list[int], agent: Agent):
         prompt = self.base_prompt(pid) + (
@@ -207,7 +207,7 @@ class Avalon:
             return s
 
         resp = agent.act(prompt, parse, default_action="approve")
-        return resp.action, resp.reasoning
+        return resp.action, resp.declared_reasoning
 
     def _quest_card(self, pid: int, agent: Agent):
         prompt = self.base_prompt(pid) + (
@@ -223,7 +223,7 @@ class Avalon:
             return s
 
         resp = agent.act(prompt, parse, default_action="fail")  # evil defaults to failing
-        return resp.action, resp.reasoning
+        return resp.action, resp.declared_reasoning
 
     # ---- assassination -----------------------------------------------------
     def run_assassination(self, status: list[dict], agents: dict[int, Agent]):
@@ -255,7 +255,7 @@ class Avalon:
         ]
         synth = {"state": text, "key": "In Avalon the deception layer overrides the mission layer — Merlin can win every quest and still lose.",
                  "note": "Primary social-intelligence signal: did Merlin stay hidden?"}
-        return {"name": "Assassination", "kind": "result", "events": events, "reason": {self.assassin: resp.reasoning},
+        return {"name": "Assassination", "kind": "result", "events": events, "reason": {self.assassin: resp.declared_reasoning},
                 "synth": synth, "outcome": {"team": winner, "text": text},
                 "board": {"quests": [dict(s) for s in status]}}, winner
 

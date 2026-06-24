@@ -519,7 +519,7 @@ class ONUW:
             txt, _, _ = self._drunk_action(pid, agent); extra = " then " + txt
         elif copied == "Insomniac":
             self._reborn_insomniacs.append(pid)
-        return f"Doppelganger copies {self.names[t]} -> {copied}{extra}", resp.reasoning, resp.ms
+        return f"Doppelganger copies {self.names[t]} -> {copied}{extra}", resp.declared_reasoning, resp.ms
 
     def _seer_action(self, pid: int, agent: Agent):
         alive_targets = [i for i in range(self.n) if i != pid]
@@ -589,11 +589,11 @@ class ONUW:
         if mode == "player":
             self._observe(pid, f"As Seer you looked at {self.names[val]}'s card: {self.current[val]}.",
                           target=val, role=self.current[val])
-            return f"Seer views {self.names[val]} -> {self.current[val]}", resp.reasoning, resp.ms
+            return f"Seer views {self.names[val]} -> {self.current[val]}", resp.declared_reasoning, resp.ms
         roles = [self.center[i] for i in val]
         self._observe(pid, f"As Seer you looked at center #{val[0]+1},#{val[1]+1}: {roles[0]}, {roles[1]}.",
                       center_indices=val, roles=roles)
-        return f"Seer views center #{val[0]+1},#{val[1]+1} -> {roles[0]}, {roles[1]}", resp.reasoning, resp.ms
+        return f"Seer views center #{val[0]+1},#{val[1]+1} -> {roles[0]}, {roles[1]}", resp.declared_reasoning, resp.ms
 
     def _robber_action(self, pid: int, agent: Agent):
         targets = [i for i in range(self.n) if i != pid]
@@ -627,12 +627,12 @@ class ONUW:
         t = resp.action
         if t is None:
             self._observe(pid, "As Robber you declined to swap; you are still the Robber.")
-            return "Robber declines", resp.reasoning, resp.ms
+            return "Robber declines", resp.declared_reasoning, resp.ms
         self.current[pid], self.current[t] = self.current[t], self.current[pid]
         new_role = self.current[pid]
         self._observe(pid, f"As Robber you swapped with {self.names[t]} and your new card is {new_role}.",
                       believed=new_role, swapped_with=t, role=new_role)
-        return f"Robber swaps with {self.names[t]} -> now {new_role}", resp.reasoning, resp.ms
+        return f"Robber swaps with {self.names[t]} -> now {new_role}", resp.declared_reasoning, resp.ms
 
     def _tm_action(self, pid: int, agent: Agent):
         others = [i for i in range(self.n) if i != pid]
@@ -687,12 +687,12 @@ class ONUW:
         pair = resp.action
         if pair is None:
             self._observe(pid, "As Troublemaker you declined to swap anyone.")
-            return "Troublemaker declines", resp.reasoning, resp.ms
+            return "Troublemaker declines", resp.declared_reasoning, resp.ms
         x, y = pair
         self.current[x], self.current[y] = self.current[y], self.current[x]
         self._observe(pid, f"As Troublemaker you swapped {self.names[x]} and {self.names[y]} (you did not see the cards).",
                       swapped=[x, y])
-        return f"Troublemaker swaps {self.names[x]} and {self.names[y]}", resp.reasoning, resp.ms
+        return f"Troublemaker swaps {self.names[x]} and {self.names[y]}", resp.declared_reasoning, resp.ms
 
     def _drunk_action(self, pid: int, agent: Agent):
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.drunk.swap_center") + (
@@ -725,7 +725,7 @@ class ONUW:
         self._observe(pid, f"As Drunk you swapped your card with center #{i+1} (you did not see your new role).",
                       center_index=i)
         # Drunk does NOT learn its new role; belief stays "Drunk"
-        return f"Drunk swaps with center #{i+1}", resp.reasoning, resp.ms
+        return f"Drunk swaps with center #{i+1}", resp.declared_reasoning, resp.ms
 
     # ---- discussion --------------------------------------------------------
     def run_discussion(self, agents: dict[int, Agent]):
@@ -815,8 +815,8 @@ class ONUW:
         )
         s = resp.action
         if s.lower() in ("pass", "(pass)", "stay silent", "silent"):
-            return "", resp.reasoning, True, resp.ms
-        return s, resp.reasoning, False, resp.ms
+            return "", resp.declared_reasoning, True, resp.ms
+        return s, resp.declared_reasoning, False, resp.ms
 
     # ---- vote --------------------------------------------------------------
     def run_vote(self, agents: dict[int, Agent]):
@@ -834,7 +834,7 @@ class ONUW:
             if isinstance(vote_result, tuple):
                 tgt, r, ms = vote_result
             else:
-                tgt, r, ms = vote_result.action, vote_result.reasoning, vote_result.ms
+                tgt, r, ms = vote_result.action, vote_result.declared_reasoning, vote_result.ms
             reason[pid] = r
             votes[pid] = tgt
             vote_ms[pid] = ms
@@ -896,7 +896,7 @@ class ONUW:
         )
         resp = req_or_resp.wait() if wait and hasattr(req_or_resp, "wait") else req_or_resp
         if hasattr(resp, "action"):
-            return resp.action, resp.reasoning, resp.ms
+            return resp.action, resp.declared_reasoning, resp.ms
         return resp
 
     # ---- resolution --------------------------------------------------------

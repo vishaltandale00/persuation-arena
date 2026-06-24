@@ -100,7 +100,7 @@ class SecretMafia:
             return t
 
         resp = agent.act(prompt, parse, default if default is not None else candidates[0])
-        return resp.action, resp.reasoning, resp.ms
+        return resp.action, resp.declared_reasoning, resp.ms
 
     def run_night(self, rnd, agents):
         events = [{"t": "sys", "text": f"Night {rnd}: the town sleeps."}]
@@ -166,7 +166,7 @@ class SecretMafia:
                         raise ValueError("empty")
                     return s
                 resp = agents[pid].act(prompt, parse, "pass")
-                reason[pid] = resp.reasoning
+                reason[pid] = resp.declared_reasoning
                 if resp.action.lower() in ("pass", "(pass)"):
                     events.append({"t": "pass", "pid": pid, "ms": resp.ms})
                     self.public.append(f"{self.names[pid]} passes.")

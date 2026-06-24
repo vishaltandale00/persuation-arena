@@ -50,26 +50,17 @@ class AgentResponse:
         raw: str,
         ok: bool,
         ms: float = 0.0,
-        declared_reasoning: str | None = None,
-        # Temporary compatibility only: migrate callers to explicit declared_reasoning and remove
-        # this alias. Cleanup note:
-        # /Users/jacobajit/.codex/memories/extensions/ad_hoc/notes/20260624T201527Z-persuation-arena-reasoning-compat-cleanup.md
-        reasoning: str | None = None,
+        declared_reasoning: str = "",
         provider_reasoning: Any = None,
         provider_reasoning_details: Any = None,
     ) -> None:
-        self.declared_reasoning = declared_reasoning if declared_reasoning is not None else (reasoning or "")
+        self.declared_reasoning = declared_reasoning
         self.action = action
         self.raw = raw
         self.ok = ok
         self.ms = ms
         self.provider_reasoning = provider_reasoning
         self.provider_reasoning_details = provider_reasoning_details
-
-    @property
-    def reasoning(self) -> str:
-        """Temporary alias for game cores/tests that still read `resp.reasoning`."""
-        return self.declared_reasoning
 
 
 def _extract_json(text: str) -> dict | None:
