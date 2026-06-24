@@ -104,6 +104,48 @@ def test_save_game_static_roster_leaves_agent_id_null(tmp_path, monkeypatch):
     assert all(r["agent_id"] is None for r in rows)
 
 
+def test_backfill_connected_game_player_identities_matches_by_name_not_seat(tmp_path, monkeypatch):
+    """Legacy connected rows predate agent_id columns; player rotation means seat is not a safe key."""
+    _sqlite(tmp_path, monkeypatch)
+    store.save_run({
+        "id": "run_legacy", "game": "onuw", "label": "ONUW", "status": "done",
+        "n_games": 1, "players": 2, "seed_base": 1, "created": "2026-01-01 00:00",
+        "created_utc": "2026-01-01T00:00:00Z",
+        "agents": [
+            {"name": "Alice", "model": "connected-agent", "harness": "connected",
+             "agent_id": "agent_alice", "signup_id": "signup_alice"},
+            {"name": "Bob", "model": "connected-agent", "harness": "connected",
+             "agent_id": "agent_bob", "signup_id": "signup_bob"},
+        ],
+    })
+    transcript = {
+        "seed": 1, "winner_team": "good", "outcome": {"text": "village wins"},
+        "players": [
+            {"seat": 0, "dealt": "Werewolf", "end": "Werewolf", "team": "evil",
+             "won": False, "calls": 1, "forfeits": 0},
+            {"seat": 1, "dealt": "Villager", "end": "Villager", "team": "good",
+             "won": True, "calls": 1, "forfeits": 0},
+        ],
+    }
+    assert store.save_game("run_legacy", 1, transcript, [
+        {"name": "Bob", "model": "connected-agent", "harness": "connected"},
+        {"name": "Alice", "model": "connected-agent", "harness": "connected"},
+    ]) is True
+
+    summary = store.backfill_connected_game_player_identities()
+    assert summary["rows_updated"] == 2
+    with store.conn() as c:
+        rows = {r["seat"]: dict(r) for r in c.execute(
+            "SELECT seat, agent, agent_id, signup_id FROM game_players WHERE run_id='run_legacy'"
+        ).fetchall()}
+    assert rows[0]["agent"] == "Bob"
+    assert rows[0]["agent_id"] == "agent_bob"
+    assert rows[0]["signup_id"] == "signup_bob"
+    assert rows[1]["agent"] == "Alice"
+    assert rows[1]["agent_id"] == "agent_alice"
+    assert rows[1]["signup_id"] == "signup_alice"
+
+
 # --- end-to-end: a real connected ONUW game writes agent_id-bearing rows -----------------------
 
 def _active_signup(run_id, agent_name):

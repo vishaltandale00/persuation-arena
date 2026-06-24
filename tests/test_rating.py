@@ -135,6 +135,23 @@ def test_no_contest_game_excluded_from_rating(tmp_path, monkeypatch):
     assert "wolf" in r and "vil" in r
 
 
+def test_anonymous_connected_rows_do_not_merge_into_static_model_identity(tmp_path, monkeypatch):
+    _sqlite(tmp_path, monkeypatch)
+    _save_run("legacy_connected", 2)
+    _save_game("legacy_connected", 0, [
+        {"seat": 0, "role": "Werewolf", "team": "evil", "won": 0,
+         "model": "connected-agent", "name": "Alice"},
+        {"seat": 1, "role": "Villager", "team": "good", "won": 1,
+         "model": "connected-agent", "name": "Bob"},
+    ])
+
+    rating.recompute()
+    r = _ratings_by_key()
+    assert not any(k.startswith("static:connected-agent:") for k in r)
+    assert "legacy-connected:legacy_connected:Alice" in r
+    assert "legacy-connected:legacy_connected:Bob" in r
+
+
 def test_hard_role_has_higher_difficulty_than_easy_role(tmp_path, monkeypatch):
     _sqlite(tmp_path, monkeypatch)
     _save_run("r1", 2)

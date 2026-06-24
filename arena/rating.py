@@ -133,11 +133,15 @@ def _rd_for(games: int) -> float:
 def _identity(row: dict, roster_harness: dict[tuple[str, str], str]) -> tuple[str, str | None, str, str | None, str | None]:
     """-> (identity_key, agent_id, display_name, declared_model, declared_harness).
     Connected seats key on agent_id (the bearer-token identity); static roster seats key on
-    model:harness so a model is rated even without a token."""
+    model:harness so a model is rated even without a token. Legacy connected rows without a token
+    stay run-local because aggregating them as one static model would fabricate a leaderboard entry."""
     agent_id = row.get("agent_id")
     if agent_id:
         return agent_id, agent_id, row.get("agent") or agent_id, None, None
     model = row.get("model") or "?"
+    if model == "connected-agent":
+        name = row.get("agent") or f"seat-{row.get('seat', '?')}"
+        return f"legacy-connected:{row['run_id']}:{name}", None, name, model, "connected-legacy"
     harness = roster_harness.get((row["run_id"], row.get("agent")), "base")
     return f"static:{model}:{harness}", None, model, model, harness
 
@@ -354,10 +358,15 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="arena.rating")
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("recompute", help="rebuild ratings from all stored games")
+    sub.add_parser("backfill-connected-identities",
+                   help="repair legacy connected game_player rows from per-run rosters")
     top = sub.add_parser("top", help="recompute then print the leaderboard")
     top.add_argument("-n", type=int, default=10)
     args = parser.parse_args(argv)
 
+    if args.cmd == "backfill-connected-identities":
+        print(f"backfill-connected-identities: {store.backfill_connected_game_player_identities()}")
+        return 0
     if args.cmd in (None, "recompute", "top"):
         summary = recompute()
         print(f"recompute: {summary}")

@@ -239,6 +239,53 @@ def _migrate(c: sqlite3.Connection) -> None:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
+def _backfill_connected_game_player_identities(c) -> dict:
+    """Repair legacy connected game rows by matching the saved player name to a unique run roster row."""
+    ph = _ph()
+    runs = c.execute(
+        "SELECT DISTINCT r.id, r.agents_json "
+        "FROM runs r JOIN game_players gp ON gp.run_id=r.id "
+        "WHERE gp.model='connected-agent' AND (gp.agent_id IS NULL OR gp.signup_id IS NULL)"
+    ).fetchall()
+    rows_updated = 0
+    ambiguous_names = 0
+    usable_names = 0
+    for run in runs:
+        try:
+            agents = json.loads(run["agents_json"] or "[]")
+        except (TypeError, ValueError):
+            agents = []
+        counts: dict[str, int] = {}
+        for agent in agents:
+            name = agent.get("name")
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+        ambiguous_names += sum(1 for n in counts.values() if n > 1)
+        for agent in agents:
+            name = agent.get("name")
+            if not name or counts.get(name) != 1:
+                continue
+            agent_id = agent.get("agent_id")
+            signup_id = agent.get("signup_id")
+            if not (agent_id or signup_id):
+                continue
+            usable_names += 1
+            cur = c.execute(
+                f"UPDATE game_players "
+                f"SET agent_id=COALESCE(agent_id,{ph}), signup_id=COALESCE(signup_id,{ph}) "
+                f"WHERE run_id={ph} AND model='connected-agent' AND agent={ph} "
+                f"  AND (agent_id IS NULL OR signup_id IS NULL)",
+                (agent_id, signup_id, run["id"], name),
+            )
+            rows_updated += max(cur.rowcount or 0, 0)
+    return {
+        "runs_examined": len(runs),
+        "usable_roster_names": usable_names,
+        "ambiguous_roster_names": ambiguous_names,
+        "rows_updated": rows_updated,
+    }
+
+
 @contextmanager
 def conn():
     """Open a fresh connection to the active backend. Used as `with conn() as c:` — both backends
@@ -277,9 +324,10 @@ def init_schema() -> None:
                 c.execute(stmt)
             for stmt in PG_MIGRATION_STMTS:
                 c.execute(stmt)
+            _backfill_connected_game_player_identities(c)
     else:
-        with conn():
-            pass
+        with conn() as c:
+            _backfill_connected_game_player_identities(c)
 
 
 def save_run(meta: dict):
@@ -534,6 +582,12 @@ def run_meta_map() -> dict[str, dict]:
                 d["agents"] = []
             out[d.pop("id")] = d
     return out
+
+
+def backfill_connected_game_player_identities() -> dict:
+    """Fill missing agent_id/signup_id on legacy connected-agent game rows."""
+    with conn() as c:
+        return _backfill_connected_game_player_identities(c)
 
 
 def replace_ratings(difficulty: list[dict], events: list[dict], ratings: list[dict]) -> None:
