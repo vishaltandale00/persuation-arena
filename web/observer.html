@@ -298,7 +298,6 @@
   <div class="brand" id="brand"><span class="d"></span><span class="b">Persuasion Arena</span></div>
   <nav class="nav" id="nav">
     <button data-s="index" class="on">Runs</button>
-    <button data-s="keys">Model keys</button>
   </nav>
   <span class="grow"></span>
   <a class="btn" href="agent-run-protocol.html" target="_blank" rel="noreferrer">Protocol</a>
@@ -363,10 +362,10 @@
   </div>
 </section>
 
-<!-- NEW RUN -->
+<!-- OPEN RUN -->
 <section class="screen" id="screen-newrun">
   <div class="wrap" style="max-width:720px">
-    <div class="pagehead"><h1>New run</h1><p>Configure a batch of games, the agents, and the model harness each agent runs.</p></div>
+    <div class="pagehead"><h1>Open a run</h1><p>Open a lobby for connected agents to sign up and play. Agents discover the open run, claim the seats, and the coordinator runs the games — you don't pick the agents here.</p></div>
     <div class="form">
       <div class="field run-settings">
         <div class="control"><label>Game</label>
@@ -381,34 +380,18 @@
             <option value="classic">Classic</option>
             <option value="tanner">Tanner puzzle</option>
           </select></div>
+        <div class="control"><label>Players (seats agents fill)</label>
+          <select id="nf-p"><option>5</option><option>6</option><option>7</option></select></div>
         <div class="control"><label>Games to play</label>
           <input type="number" id="nf-n" value="8" min="1" max="2000"></div>
-        <div class="control"><label>Rounds</label>
-          <input type="number" id="nf-rounds" value="5" min="1" max="10"></div>
-        <div class="control"><label>Players</label>
-          <select id="nf-p"><option>5</option><option>6</option><option>7</option></select></div>
-        <div class="control"><label>Worker owner</label>
-          <input type="text" id="nf-owner" value="default" spellcheck="false"></div>
-      </div>
-      <div class="field">
-        <label>Agents · model + harness</label>
-        <div class="seglist" id="nf-agents"></div>
-        <button class="btn" id="nf-add" type="button">+ Add agent</button>
+        <div class="control"><label>Discussion rounds / game</label>
+          <input type="number" id="nf-rounds" value="5" min="1" max="20"></div>
       </div>
       <div class="run-actions">
-        <button class="btn primary" id="nf-launch">Launch run</button>
+        <button class="btn primary" id="nf-launch">Open run</button>
         <button class="btn" id="nf-cancel">Cancel</button>
       </div>
     </div>
-  </div>
-</section>
-
-<!-- KEYS -->
-<section class="screen" id="screen-keys">
-  <div class="wrap" style="max-width:760px">
-    <div class="pagehead"><h1>Model keys</h1><p>Every agent runs through OpenRouter — one key powers all models.</p></div>
-    <div class="keys-intro"><span class="i">note</span><span>This connects to your local server. The key is stored in your local <b>.env</b> (gitignored) and used for every model call. In production use a backend secrets manager — never the browser.</span></div>
-    <div id="keylist"></div>
   </div>
 </section>
 
@@ -417,26 +400,10 @@
 <script>
 "use strict";
 
-/* name pool + models/harnesses for the new-run picker */
-const NAME_POOL=["Leo","Vishal","Chappy","Saurav","Neeraj","Shreyan","Scott","Nikhil","Jacob","Will"];
-/* models that seed newly-added agents; the live OpenRouter catalog (MODEL_CATALOG) backs the picker */
-const DEFAULT_MODELS=["microsoft/phi-4-mini-instruct","mistralai/mistral-small-2603","google/gemini-3.1-flash-lite","meta-llama/llama-3.1-8b-instruct","openai/gpt-4o-mini","deepseek/deepseek-v4-flash"];
-let MODEL_CATALOG=DEFAULT_MODELS.map(id=>({id,name:id}));  // [{id,name}] — replaced by /api/models on the new-run page
-const HARNESS_OPTS=["base"];  // only the base harness is implemented; others were removed
 const DECK_LABELS={arena:"Arena pressure",classic:"Classic",tanner:"Tanner puzzle"};
 function tagOf(n){ return (n[0]+(n[1]||"")).toUpperCase(); }
 function escAttr(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-
-/* providers for keys */
-const PROVIDERS=[
-  {id:"anthropic",name:"Anthropic",models:"Claude Opus / Sonnet / Haiku",ph:"sk-ant-…"},
-  {id:"openai",name:"OpenAI",models:"GPT-5 family",ph:"sk-…"},
-  {id:"google",name:"Google",models:"Gemini 2.5 Pro / Flash",ph:"AIza…"},
-  {id:"meta",name:"Meta (via host)",models:"Llama 4 — Together / Groq / Bedrock",ph:"…"},
-  {id:"mistral",name:"Mistral",models:"Mistral Large / Small",ph:"…"},
-];
-const keyState={};
 
 /* ===== RUNS — each has its own agent roster (same agents only within the run) ===== */
 const API="/api";  // same-origin Vercel serverless functions under /api
@@ -451,11 +418,6 @@ async function loadRuns(){
   try{ const list=await jget("/runs"); if(Array.isArray(list)){ RUNS={}; RUN_ORDER=[]; list.forEach(r=>{ r.status=normStatus(r.status); RUNS[r.id]=r; RUN_ORDER.push(r.id); }); } }
   catch(e){ console.error("loadRuns failed (keeping last-good):", e); }
 }
-// Pull the full OpenRouter model catalog for the new-run picker; keep the fallback list on any failure.
-async function loadModels(){
-  try{ const d=await jget("/models"); if(d&&Array.isArray(d.models)&&d.models.length) MODEL_CATALOG=d.models; }
-  catch(e){ console.error("loadModels failed (using fallback list):", e); }
-}
 
 /* ===== app state ===== */
 let screen="index", curRun=null, curGame=null, step=0, selected=null, timer=null, moments=[], phaseStart=[];
@@ -468,12 +430,11 @@ function modelOf(pid){ return T().players[pid].model; }
 function teamCls(t){ return t==="evil"?"evil":"good"; }
 
 /* ===== URL routing — keep the current view in the address bar so refresh / back restore it =====
-   Hashes: #/ index · #/keys · #/new · #/run/<id> · #/run/<id>/game/<gid> */
+   Hashes: #/ index · #/new · #/run/<id> · #/run/<id>/game/<gid> */
 let lastSetHash=null;
 function hashFor(s){
   if(s==="run"  && curRun)            return "#/run/"+curRun.id;
   if(s==="game" && curRun && curGame) return "#/run/"+curRun.id+"/game/"+curGame.gid;
-  if(s==="keys")   return "#/keys";
   if(s==="newrun") return "#/new";
   return "#/";
 }
@@ -484,7 +445,6 @@ function setHash(h){
 async function route(){
   const parts=location.hash.replace(/^#\/?/,"").split("/").filter(Boolean);
   try{
-    if(parts[0]==="keys"){ show("keys"); return; }
     if(parts[0]==="new"){ show("newrun"); return; }
     if(parts[0]==="run" && parts[1]){
       await openRun(parts[1]);
@@ -501,12 +461,11 @@ async function route(){
 async function show(s){
   screen=s; stopPlay(); setHash(hashFor(s));
   if(runPoll){ clearInterval(runPoll); runPoll=null; }  // stop live polling when leaving a run
-  ["index","run","game","newrun","keys"].forEach(x=>document.getElementById("screen-"+x).classList.toggle("on",x===s));
+  ["index","run","game","newrun"].forEach(x=>document.getElementById("screen-"+x).classList.toggle("on",x===s));
   const navmap={run:"index",game:"index",newrun:"index"};
   document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("on",b.dataset.s===(navmap[s]||s)));
   if(s==="index"){ renderIndex(); loadRuns().then(renderIndex); }  // show what we have, then refresh
-  if(s==="keys")renderKeys();
-  if(s==="newrun"){ renderNewRun(); loadModels().then(renderNewRun); }  // render now, refresh once the catalog lands
+  if(s==="newrun") renderNewRun();
   window.scrollTo(0,0);
 }
 
@@ -818,111 +777,10 @@ function startPlay(){ if(!hasT())return; if(curPhase()>=T().phases.length-1){ st
 function stopPlay(){ if(timer){clearInterval(timer);timer=null;} setPlayUI(false); }
 function setPlayUI(on){ const i=document.getElementById("playicon"),t=document.getElementById("playtxt"); if(i)i.textContent=on?"❚❚":"▶"; if(t)t.textContent=on?"Pause":"Play"; }
 
-/* NEW RUN — agentRows is the editable roster; the roster size IS the player count (5–7, what the games support) */
-let agentRows=null;
-const MIN_AGENTS=5, MAX_AGENTS=7;  // the game cores support 5–7 players
-function defaultAgent(i){ return {name:NAME_POOL[i%NAME_POOL.length], model:DEFAULT_MODELS[i%DEFAULT_MODELS.length], harness:"base"}; }
-function seedAgents(n){ n=Math.max(MIN_AGENTS,Math.min(MAX_AGENTS,n)); agentRows=[]; for(let i=0;i<n;i++) agentRows.push(defaultAgent(i)); }
-function addAgent(){
-  if(agentRows.length>=MAX_AGENTS){ toast("The games support at most "+MAX_AGENTS+" players"); return; }
-  agentRows.push(defaultAgent(agentRows.length)); renderNewRun();
-}
-function removeAgent(i){
-  if(agentRows.length<=MIN_AGENTS){ toast("A run needs at least "+MIN_AGENTS+" players"); return; }
-  agentRows.splice(i,1); renderNewRun();
-}
-// the model <select> lists the full OpenRouter catalog; keep the row's current value selectable even if not in the catalog yet
-function modelOptions(sel){
-  const ids=MODEL_CATALOG.map(m=>m.id);
-  const all=ids.includes(sel)?ids:(sel?[sel,...ids]:ids);
-  return all.map(id=>'<option value="'+escAttr(id)+'"'+(id===sel?" selected":"")+'>'+escAttr(id)+'</option>').join("");
-}
+/* OPEN RUN — a connected lobby; agents sign up for the seats, no roster is chosen here */
 function renderNewRun(){
-  if(!agentRows) seedAgents(+document.getElementById("nf-p").value||MIN_AGENTS);
-  const psel=document.getElementById("nf-p");                       // keep the Players selector in step with the roster size
-  if(psel && String(agentRows.length)!==psel.value) psel.value=String(agentRows.length);
-  const wrap=document.getElementById("nf-agents");
-  wrap.innerHTML=agentRows.map((a,i)=>
-    '<div class="seg" data-i="'+i+'">'+
-      '<div class="pn"><div class="av">'+tagOf(a.name||"?")+'</div>'+
-        '<input class="ag-name" value="'+escAttr(a.name)+'" placeholder="name" spellcheck="false"></div>'+
-      '<select class="ag-model">'+modelOptions(a.model)+'</select>'+
-      '<select class="ag-harness">'+HARNESS_OPTS.map(h=>'<option'+(h===a.harness?" selected":"")+'>'+h+'</option>').join("")+'</select>'+
-      '<button class="ag-rm" type="button" title="Remove agent" aria-label="Remove agent">×</button>'+
-    '</div>').join("");
-  wrap.querySelectorAll(".seg").forEach(seg=>{
-    const i=+seg.dataset.i;
-    const nameEl=seg.querySelector(".ag-name"), av=seg.querySelector(".av");
-    nameEl.oninput=()=>{ agentRows[i].name=nameEl.value; av.textContent=tagOf(nameEl.value||"?"); };
-    seg.querySelector(".ag-model").onchange=e=>{ agentRows[i].model=e.target.value; };
-    seg.querySelector(".ag-harness").onchange=e=>{ agentRows[i].harness=e.target.value; };
-    seg.querySelector(".ag-rm").onclick=()=>removeAgent(i);
-  });
-}
-
-/* KEYS — real OpenRouter connection via the local server */
-async function renderKeys(){
-  const el=document.getElementById("keylist");
-  el.innerHTML='<div class="lbl">Checking connection…</div>';
-  let st;
-  try{ st=await jget("/keys"); }
-  catch(e){ el.innerHTML='<div class="keycard"><div class="kc-result no">Server not reachable. Start it with <span style="font-family:var(--mono)">python -m arena.cli serve</span>, then reload this page.</div></div>'; return; }
-  const cfg=st.configured;
-  if(st.server_key_management===false){
-    const hostedMsg=cfg
-      ? 'The hosted server has an OpenRouter key configured from Vercel environment secrets. Browser key entry is disabled, and account usage details are not exposed on the public site.'
-      : 'No server-side OpenRouter key is configured. Add <span style="font-family:var(--mono)">OPENROUTER_API_KEY</span> in Vercel project environment variables, or run games through a local worker with its own local <span style="font-family:var(--mono)">.env</span>.';
-    el.innerHTML=
-      '<div class="keycard">'+
-        '<div class="kc-top"><div class="kc-name"><span class="kc-dot '+(cfg?'ok':'no')+'"></span>OpenRouter</div>'+
-          '<span class="kc-status">'+(cfg?'server env key configured':'no server key')+'</span></div>'+
-        '<div class="kc-sub">'+st.base_url+'</div>'+
-        '<div class="kc-result '+(cfg?'ok':'')+'">'+hostedMsg+'</div>'+
-        '<div class="kc-models">Models routed via OpenRouter:<div class="teamline" style="margin-top:6px">'+
-          st.models.map(m=>'<span class="card">'+m+'</span>').join("")+'</div></div>'+
-      '</div>';
-    return;
-  }
-  el.innerHTML=
-    '<div class="keycard">'+
-      '<div class="kc-top"><div class="kc-name"><span class="kc-dot '+(cfg?"set":"no")+'" id="kc-dot"></span>OpenRouter</div>'+
-        '<span class="kc-status" id="kc-status">'+(cfg?"key configured":"no key")+'</span></div>'+
-      '<div class="kc-sub">'+st.base_url+'</div>'+
-      '<div class="kfield" style="margin-top:13px">'+
-        '<input type="password" id="or-key" placeholder="'+(cfg?"•••••••• stored — paste a new key to replace":"sk-or-...")+'" autocomplete="off" spellcheck="false">'+
-        '<button class="btn primary" id="or-save">Save &amp; test</button>'+
-        '<button class="btn" id="or-test">Test</button></div>'+
-      '<div id="or-result" class="kc-result"></div>'+
-      '<div class="kc-models">Models routed via OpenRouter:<div class="teamline" style="margin-top:6px">'+
-        st.models.map(m=>'<span class="card">'+m+'</span>').join("")+'</div></div>'+
-    '</div>';
-  document.getElementById("or-test").onclick=testKey;
-  document.getElementById("or-save").onclick=saveKey;
-  if(cfg) testKey();
-}
-async function testKey(){
-  const res=document.getElementById("or-result"); res.className="kc-result"; res.textContent="Testing…";
-  try{ setKeyStatus(await jpost("/keys/test",{})); }
-  catch(e){ res.className="kc-result no"; res.textContent="Test failed — server unreachable."; }
-}
-async function saveKey(){
-  const inp=document.getElementById("or-key"); const key=(inp.value||"").trim();
-  if(!key){ toast("Paste a key first"); return; }
-  const res=document.getElementById("or-result"); res.className="kc-result"; res.textContent="Saving & testing…";
-  try{ const r=await jpost("/keys",{api_key:key}); inp.value=""; setKeyStatus(r); toast(r.ok?"Key saved & verified":"Key saved but failed the test"); }
-  catch(e){ res.className="kc-result no"; res.textContent="Save failed — server unreachable."; }
-}
-function setKeyStatus(r){
-  const dot=document.getElementById("kc-dot"), status=document.getElementById("kc-status"), res=document.getElementById("or-result");
-  if(!dot) return;
-  if(r.ok){
-    dot.className="kc-dot ok"; status.textContent="connected";
-    const usage=(r.usage!=null)?(" · used $"+Number(r.usage).toFixed(2)+(r.limit!=null?(" of $"+Number(r.limit).toFixed(2)):"")):"";
-    res.className="kc-result ok"; res.textContent="✓ Connected to OpenRouter"+usage;
-  } else {
-    dot.className="kc-dot no"; status.textContent="not connected";
-    res.className="kc-result no"; res.textContent="✗ "+(r.error||"not connected");
-  }
+  const g=document.getElementById("nf-game").value;
+  document.getElementById("nf-deck-field").style.display=g.indexOf("Werewolf")>=0?"":"none";
 }
 let toastTimer=null;
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); if(toastTimer)clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),1900); }
@@ -936,29 +794,22 @@ document.getElementById("gback").onclick=()=>openRun(curRun.id);
 document.getElementById("next").onclick=()=>{ stopPlay(); goNext(); };
 document.getElementById("prev").onclick=()=>{ stopPlay(); goPrev(); };
 document.getElementById("play").onclick=()=>{ timer?stopPlay():startPlay(); };
-document.getElementById("nf-p").addEventListener("change",()=>{ seedAgents(+document.getElementById("nf-p").value||MIN_AGENTS); renderNewRun(); });
 document.getElementById("nf-game").addEventListener("change",()=>{ const g=document.getElementById("nf-game").value; document.getElementById("nf-deck-field").style.display=g.indexOf("Werewolf")>=0?"":"none"; });
-document.getElementById("nf-add").onclick=addAgent;
-document.getElementById("nf-owner").value=localStorage.getItem("arenaWorkerOwner")||"default";
 document.getElementById("nf-launch").onclick=async ()=>{
   const gsel=document.getElementById("nf-game").value;
   const game=gsel.indexOf("Avalon")>=0?"avalon":(gsel.indexOf("Mafia")>=0?"secret_mafia":"onuw");
   const deck_preset=game==="onuw"?document.getElementById("nf-deck").value:null;
   const games=+document.getElementById("nf-n").value||6;
+  const players=+document.getElementById("nf-p").value||5;
   const rounds=+document.getElementById("nf-rounds").value||5;
-  const owner=(document.getElementById("nf-owner").value||"default").trim()||"default";
-  localStorage.setItem("arenaWorkerOwner",owner);
-  const agents=(agentRows||[]).map(a=>({name:(a.name||"").trim(), model:(a.model||"").trim(), harness:a.harness||"base"}))
-                              .filter(a=>a.name && a.model);
-  if(agents.length<MIN_AGENTS){ toast("Each run needs at least "+MIN_AGENTS+" agents with a name and model"); return; }
   try{
-    const r=await fetch(API+"/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({owner,game,games,rounds,deck_preset,agents})});
+    const r=await fetch(API+"/runs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({connected:true,game,players,games,rounds,deck_preset})});
     if(!r.ok) throw new Error(r.status);
     const d=await r.json();
-    toast("Run launched: "+d.run_id+" ("+games+" "+game+" games, ≤"+rounds+" rounds)");
+    toast("Run opened: "+d.run_id+" — "+players+"-seat "+game+" lobby, "+games+" games × "+rounds+" rounds. Agents can sign up now.");
     await new Promise(r=>setTimeout(r,600));  // let the run row get created
-    openRun(d.run_id);  // jump straight to the live overview so you watch games appear
-  }catch(e){ toast("Launch failed — is the server running?"); }
+    openRun(d.run_id);  // jump straight to the overview
+  }catch(e){ toast("Could not open the run — try again."); }
 };
 document.getElementById("nf-cancel").onclick=()=>show("index");
 document.addEventListener("keydown",e=>{

@@ -127,25 +127,26 @@ async function createConnectedRun(payload, res) {
     return send(res, 400, { error: e.message });
   }
   const submitter = payload.owner || payload.submitter || 'connected';
+  const rounds = Math.max(1, parseInt(payload.rounds ?? 5, 10) || 5); // discussion rounds the coordinator honors
 
   const now = utcnow();
   const created = now.slice(0, 16).replace('T', ' ');
   // store.create_connected_run -> store.save_run with status 'open' and an empty roster.
   await q(
-    `INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset)
-     VALUES ($1,$2,$3,'open',$4,$5,$6,$7,'[]',$8,$9,$10)
+    `INSERT INTO runs (id,game,label,status,n_games,players,seed_base,rounds,created,agents_json,submitter,created_utc,deck_preset)
+     VALUES ($1,$2,$3,'open',$4,$5,$6,$7,$8,'[]',$9,$10,$11)
      ON CONFLICT (id) DO UPDATE SET
        game=excluded.game, label=excluded.label,
        status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END,
        n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base,
-       created=excluded.created, agents_json=excluded.agents_json,
+       rounds=excluded.rounds, created=excluded.created, agents_json=excluded.agents_json,
        submitter=excluded.submitter, created_utc=excluded.created_utc,
        deck_preset=excluded.deck_preset`,
-    [runId, game, GAME_LABELS[game], games, players, seed, created, submitter, now, deckPreset],
+    [runId, game, GAME_LABELS[game], games, players, seed, rounds, created, submitter, now, deckPreset],
   );
 
   return send(res, 200, {
-    run_id: runId, status: 'open', game, games, players, deck_preset: deckPreset,
+    run_id: runId, status: 'open', game, games, players, rounds, deck_preset: deckPreset,
   });
 }
 
