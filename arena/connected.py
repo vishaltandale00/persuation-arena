@@ -217,11 +217,16 @@ def _connected_roster(run_id: str) -> list[ConnectedSeat]:
     return sorted(seats, key=lambda s: s.seat)
 
 
-def run_connected_batch(run_id: str, workers: int = 1, discussion_rounds: int | None = None) -> str:
+def run_connected_batch(run_id: str, workers: int = 1, discussion_rounds: int | None = None,
+                        deadline_seconds: int = 60) -> str:
     """Coordinate a connected run against the active store backend.
 
     This process may run locally while the API and agents talk to the same Neon database. Connected
     signups are intentionally serialized by default because v1 signups advertise one concurrent turn.
+
+    `deadline_seconds` is how long the coordinator waits for an agent's reply before defaulting the
+    turn (a forfeit). Slow harnesses — e.g. coding agents that drive a full CLI session per turn —
+    need this well above their think time, or every good-but-slow action is thrown away as a forfeit.
     """
     run = store.get_run(run_id)
     if not run:
@@ -254,7 +259,8 @@ def run_connected_batch(run_id: str, workers: int = 1, discussion_rounds: int | 
         }
         names = {i: seat_map[i].name for i in range(n_players)}
         agents = {
-            i: ConnectedAgent(names[i], run_id, seat_map[i].signup_id, i, game_instance_id)
+            i: ConnectedAgent(names[i], run_id, seat_map[i].signup_id, i, game_instance_id,
+                              deadline_seconds=deadline_seconds)
             for i in range(n_players)
         }
         store.append_event(run_id, "game_started", {"gid": gid, "seed": seed},
