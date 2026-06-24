@@ -144,6 +144,25 @@ mid-game). They are reference implementations of using agent frameworks as socia
   the optional extra (`uv sync --extra harness-agents`) and Claude auth (subscription via the
   `claude` CLI, or `ANTHROPIC_API_KEY`). Model: `ARENA_CLAUDE_AGENT_MODEL`.
 
+### Reasoning-effort support matrix
+
+Reasoning controls are wired only where the harness has a verified API, SDK, or CLI surface. The
+OpenRouter paths also request provider-native reasoning with `exclude=false`; coding-agent CLIs do
+not expose provider reasoning back to the arena protocol, so only their final JSON action/reasoning
+is submitted.
+
+| Harness path | Reasoning effort support | Control surface | Supported values | Provider reasoning capture/replay | Limitations |
+| --- | --- | --- | --- | --- | --- |
+| Local batch OpenRouter static agents (`arena/openrouter.py`, `agents.yaml`) | Yes | `ARENA_REASONING_EFFORT`; sent as OpenRouter `reasoning.effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; invalid values fall back to `medium` | Captured as `provider_reasoning` / `provider_reasoning_details` in per-turn calls and replayed in the agent's prior assistant messages | Provider/model support varies; unsupported effort values can be ignored or rejected by the provider |
+| `examples/session_agent.py` via OpenRouter helper | Yes | `ARENA_AGENT_REASONING_EFFORT`, falling back to `ARENA_REASONING_EFFORT`; sent as OpenRouter `reasoning.effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; invalid values fall back to `medium` | Captured in the assistant message and replayed because the harness keeps one live chat session per game | Not reported back through connected-agent protocol as provider-native reasoning |
+| `examples/file_memory_agent.py` via OpenRouter helper | Yes | `ARENA_AGENT_REASONING_EFFORT`, falling back to `ARENA_REASONING_EFFORT`; sent as OpenRouter `reasoning.effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; invalid values fall back to `medium` | Captured for the immediate assistant response only; not replayed because the next call is rebuilt from the markdown memory file | Not reported back through connected-agent protocol as provider-native reasoning |
+| Codex CLI harness (`examples/codex_agent.py`) | Yes | `ARENA_CODEX_REASONING_EFFORT`, falling back to `ARENA_AGENT_REASONING_EFFORT`, then `ARENA_REASONING_EFFORT`; passed as `-c model_reasoning_effort="..."` | `minimal`, `low`, `medium`, `high`, `xhigh`; invalid values fall back to `medium` | No provider-native reasoning capture; Codex's own session carries context between turns | Requires `codex` CLI/auth; arena only receives the final JSON reply |
+| Claude Agent SDK harness (`examples/claude_agent_sdk_agent.py`) | Yes | `ARENA_CLAUDE_AGENT_REASONING_EFFORT`, falling back to `ARENA_AGENT_REASONING_EFFORT`, then `ARENA_REASONING_EFFORT`; passed as SDK `effort`, or `extra_args.effort` for older SDKs | `low`, `medium`, `high`, `xhigh`, `max`; invalid values fall back to `medium` | No provider-native reasoning capture; Claude Agent SDK session carries context between turns | Requires optional SDK/auth; exact effort support depends on installed SDK/model |
+| opencode harness (`examples/opencode_agent.py`) | Yes, explicit only | `ARENA_OPENCODE_REASONING_EFFORT`; passed as `opencode run --variant ...` | Provider/model-specific variants. Common documented variants include Anthropic `high`/`max`, OpenAI `none`/`minimal`/`low`/`medium`/`high`/`xhigh`, and Google `low`/`high` | No provider-native reasoning capture; opencode session carries context between turns | Unset leaves opencode's default unchanged; `opencode` was not installed in the verification environment |
+| pi harness (`examples/pi_agent.py`) | Yes, explicit only | `ARENA_PI_REASONING_EFFORT`; passed as `pi --thinking ...` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; `none` is accepted by the harness and mapped to `off` | No provider-native reasoning capture; pi session carries context between turns | Unset leaves pi's default unchanged; `pi` was not installed in the verification environment |
+| Random/pass/scripted agents (`examples/random_agent.py`, `examples/pass_agent.py`, `tests/scripted.py`) | No | None | None | None | Deterministic or random local code, no model provider |
+| Connected SDK protocol (`persuasion_arena_agent/*`) | No protocol-level control | None in the protocol; each participant harness controls its own model/provider | None | Protocol stores only the submitted `reasoning` string with the action | The server cannot force provider reasoning effort for arbitrary connected agents |
+
 Each model var is unset by default (use the tool's own configured model). `ARENA_AGENT_BRAIN_TIMEOUT`
 (seconds, default 150) bounds how long the harness waits on the tool before falling back to a legal
 action. Any tool/auth failure degrades to a legal fallback, so a seat never forfeits on a broken brain.

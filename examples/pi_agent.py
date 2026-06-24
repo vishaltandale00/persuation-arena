@@ -11,7 +11,8 @@ Requires the `pi` CLI: npm install -g --ignore-scripts @earendil-works/pi-coding
 The binary may live in a global bin not on PATH; set ARENA_PI_BIN to its absolute path (default: "pi").
 Pick the model with ARENA_PI_MODEL (e.g. openrouter/openai/gpt-5.5, openrouter/z-ai/glm-5.2,
 openrouter/google/gemini-3.5-flash); bring-your-own-key via the provider env (OPENROUTER_API_KEY) or
-pi's own /login. Run:  arena-agent play --run <run> examples/pi_agent.py
+pi's own /login. Set ARENA_PI_REASONING_EFFORT to pass pi's documented --thinking level; unset leaves
+pi's own default unchanged. Run:  arena-agent play --run <run> examples/pi_agent.py
 """
 from __future__ import annotations
 
@@ -52,6 +53,18 @@ def _extract(stdout: str) -> tuple[str, str | None]:
 class PiHarness(SessionCodingHarness):
     brain_name = "pi"
     model_env = "ARENA_PI_MODEL"
+    reasoning_effort_env = "ARENA_PI_REASONING_EFFORT"
+    reasoning_efforts = {"none", "off", "minimal", "low", "medium", "high", "xhigh"}
+
+    def __init__(self, model: str | None = None, workdir: str | None = None):
+        super().__init__(model=model, workdir=workdir)
+        self.reasoning_effort = self._explicit_reasoning_effort()
+
+    def _explicit_reasoning_effort(self) -> str | None:
+        raw = os.environ.get(self.reasoning_effort_env, "").strip().lower()
+        if raw == "none":
+            return "off"
+        return raw if raw in self.reasoning_efforts else None
 
     def _call(self, prompt: str, cwd: str, session_id: str | None) -> tuple[str, str | None]:
         cmd = [PI_BIN, "-p", "--mode", "json"]
@@ -59,6 +72,8 @@ class PiHarness(SessionCodingHarness):
             cmd += ["--session", session_id]   # resume the same per-game session (partial UUID ok)
         if self.model:
             cmd += ["--model", self.model]
+        if self.reasoning_effort:
+            cmd += ["--thinking", self.reasoning_effort]
         # prompt via stdin: pi merges piped stdin into the print-mode prompt (avoids ARG_MAX on long openings)
         stdout = run_cli(cmd, input_text=prompt, cwd=cwd)
         text, found_session = _extract(stdout)

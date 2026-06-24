@@ -328,6 +328,7 @@ def test_opencode_argv_adds_session_only_on_resume_and_injects_model(tmp_path, m
         calls.append(cmd) or json.dumps(
             {"type": "text", "sessionID": "ses_1",
              "part": {"type": "text", "text": '{"action": {"pass": true}}'}})))
+    monkeypatch.delenv("ARENA_OPENCODE_REASONING_EFFORT", raising=False)
 
     h = oc.OpencodeHarness(model="anthropic/x", workdir=str(tmp_path))
     h._call("p", str(tmp_path), None)
@@ -337,8 +338,65 @@ def test_opencode_argv_adds_session_only_on_resume_and_injects_model(tmp_path, m
     for cmd in (open_cmd, resume_cmd):
         assert cmd[:2] == ["opencode", "run"] and "--format" in cmd
         assert "-m" in cmd and cmd[cmd.index("-m") + 1] == "anthropic/x"
+        assert "--variant" not in cmd
     assert "--session" not in open_cmd
     assert "--session" in resume_cmd and resume_cmd[resume_cmd.index("--session") + 1] == "ses_1"
+
+
+def test_opencode_argv_injects_explicit_reasoning_variant(tmp_path, monkeypatch):
+    import examples.opencode_agent as oc
+    calls: list[list[str]] = []
+    monkeypatch.setattr(oc, "run_cli", lambda cmd, input_text=None, cwd=None: (
+        calls.append(cmd) or json.dumps(
+            {"type": "text", "sessionID": "ses_1",
+             "part": {"type": "text", "text": '{"action": {"pass": true}}'}})))
+    monkeypatch.setenv("ARENA_OPENCODE_REASONING_EFFORT", "xhigh")
+
+    oc.OpencodeHarness(model="openai/gpt-5", workdir=str(tmp_path))._call("p", str(tmp_path), None)
+
+    cmd = calls[0]
+    assert "--variant" in cmd
+    assert cmd[cmd.index("--variant") + 1] == "xhigh"
+
+
+def test_pi_argv_injects_model_session_and_explicit_thinking(tmp_path, monkeypatch):
+    import examples.pi_agent as pi
+    calls: list[list[str]] = []
+    monkeypatch.setattr(pi, "run_cli", lambda cmd, input_text=None, cwd=None: (
+        calls.append(cmd) or json.dumps({
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": '{"action": {"pass": true}}'},
+            ]},
+        })))
+    monkeypatch.setenv("ARENA_PI_REASONING_EFFORT", "none")
+
+    h = pi.PiHarness(model="openrouter/openai/gpt-5", workdir=str(tmp_path))
+    h._call("p", str(tmp_path), None)
+    h._call("p", str(tmp_path), "pi-session")
+    open_cmd, resume_cmd = calls
+
+    for cmd in (open_cmd, resume_cmd):
+        assert cmd[:3] == [pi.PI_BIN, "-p", "--mode"]
+        assert "--model" in cmd and cmd[cmd.index("--model") + 1] == "openrouter/openai/gpt-5"
+        assert "--thinking" in cmd and cmd[cmd.index("--thinking") + 1] == "off"
+    assert "--session" not in open_cmd
+    assert "--session" in resume_cmd and resume_cmd[resume_cmd.index("--session") + 1] == "pi-session"
+
+
+def test_pi_argv_omits_thinking_when_unset_or_invalid(tmp_path, monkeypatch):
+    import examples.pi_agent as pi
+    calls: list[list[str]] = []
+    monkeypatch.setattr(pi, "run_cli", lambda cmd, input_text=None, cwd=None: (
+        calls.append(cmd) or ""))
+
+    monkeypatch.delenv("ARENA_PI_REASONING_EFFORT", raising=False)
+    pi.PiHarness(workdir=str(tmp_path / "unset"))._call("p", str(tmp_path), None)
+    monkeypatch.setenv("ARENA_PI_REASONING_EFFORT", "turbo")
+    pi.PiHarness(workdir=str(tmp_path / "invalid"))._call("p", str(tmp_path), None)
+
+    assert "--thinking" not in calls[0]
+    assert "--thinking" not in calls[1]
 
 
 def test_harness_modules_import_and_wire():
