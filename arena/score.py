@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 
 from . import store
+from .games.base import is_no_contest
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float, float]:
@@ -40,24 +41,30 @@ def score_run(run_id: str) -> dict:
     reliability fields {calls, forfeits, forfeit_rate}.
     """
     rows = store.player_rows(run_id)
-    agg: dict[str, dict] = {}
+    games: dict[int, list[dict]] = {}
     for r in rows:
-        a = agg.setdefault(r["agent"], {
-            "overall": [0, 0], "good": [0, 0], "evil": [0, 0],
-            "by_role": {}, "calls": 0, "forfeits": 0,
-        })
-        won = r["won"]
-        a["overall"][1] += 1
-        a["overall"][0] += won
-        t = r["team"] if r["team"] in ("good", "evil") else "good"
-        a[t][1] += 1
-        a[t][0] += won
-        role = r.get("dealt_role") or "?"
-        cell = a["by_role"].setdefault(role, [0, 0])
-        cell[1] += 1
-        cell[0] += won
-        a["calls"] += r.get("calls") or 0
-        a["forfeits"] += r.get("forfeits") or 0
+        games.setdefault(r["gid"], []).append(r)
+    agg: dict[str, dict] = {}
+    for seats in games.values():
+        if is_no_contest(seats):
+            continue  # no opposing faction in play — drop the game from win-rate scoring
+        for r in seats:
+            a = agg.setdefault(r["agent"], {
+                "overall": [0, 0], "good": [0, 0], "evil": [0, 0],
+                "by_role": {}, "calls": 0, "forfeits": 0,
+            })
+            won = r["won"]
+            a["overall"][1] += 1
+            a["overall"][0] += won
+            t = r["team"] if r["team"] in ("good", "evil") else "good"
+            a[t][1] += 1
+            a[t][0] += won
+            role = r.get("dealt_role") or "?"
+            cell = a["by_role"].setdefault(role, [0, 0])
+            cell[1] += 1
+            cell[0] += won
+            a["calls"] += r.get("calls") or 0
+            a["forfeits"] += r.get("forfeits") or 0
 
     out: dict[str, dict] = {}
     for agent, d in agg.items():

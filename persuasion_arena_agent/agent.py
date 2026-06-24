@@ -115,7 +115,18 @@ class ArenaAgent:
             next_sleep = max_sleep_ms
             keep: list[Signup] = []
             for signup in active:
-                current, poll = self.step_signup(signup)
+                try:
+                    current, poll = self.step_signup(signup)
+                except Exception as e:
+                    # A single failed step — the server 422s a rejected action, a transient network
+                    # blip, the coordinator briefly unreachable — must NEVER kill the agent. If it did,
+                    # one bad turn would forfeit every remaining turn for the whole run. Log it, keep
+                    # the signup, and retry on the next poll; the offending turn defaults server-side
+                    # at its deadline, after which polling resumes cleanly.
+                    print(f"[arena-agent] step error for {signup.signup_id}: {type(e).__name__}: {e}",
+                          flush=True)
+                    keep.append(signup)
+                    continue
                 if current and current.status not in {"completed", "rejected", "expired", "cancelled"}:
                     keep.append(current)
                     next_sleep = min(next_sleep, poll.poll_after_ms if poll else current.poll_after_ms)

@@ -23,7 +23,8 @@ def test_game_plays_to_a_winner_at_each_table_size(cls, n):
     names = {i: f"P{i}" for i in range(n)}
     agents = {i: ScriptedDefault() for i in range(n)}
     rec = cls(names, seed=7).play(agents)
-    assert rec["winner_team"] in ("good", "evil")
+    # ONUW can deal no evil faction at all (-> "void", a no-contest); Avalon/Mafia always deal evil.
+    assert rec["winner_team"] in ("good", "evil", "void")
     assert len(rec["players"]) == n                       # every seat is dealt and reported
     assert {p["seat"] for p in rec["players"]} == set(range(n))
 

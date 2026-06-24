@@ -1,7 +1,7 @@
 """Invariant tests: vote tallying, win resolution, atomic vote, no-leak filtering."""
 from __future__ import annotations
 
-from arena.games.base import NO_KILL, compute_winners, tally_votes
+from arena.games.base import NO_KILL, compute_winners, is_no_contest, tally_votes
 from arena.games.onuw import ONUW
 from tests.scripted import PolicyAgent, ScriptedDefault
 
@@ -45,8 +45,36 @@ def test_winners_wolves_survive():
 def test_winners_no_wolf_in_play():
     # both wolves in center -> village wins ONLY if nobody dies
     roles = {0: "Villager", 1: "Seer", 2: "Robber", 3: "Villager", 4: "Troublemaker"}
-    assert compute_winners(roles, deaths=[], votes={})["village"]
-    assert not compute_winners(roles, deaths=[2], votes={})["village"]
+    idle = compute_winners(roles, deaths=[], votes={})
+    assert idle["village"] and not idle["no_contest"]       # idle win is a real village win
+    killed = compute_winners(roles, deaths=[2], votes={})
+    # no evil faction at all + an innocent dies -> nobody wins; it's a no-contest, NOT an evil win
+    assert not killed["village"] and not killed["werewolf"] and not killed["tanner"]
+    assert killed["no_contest"]
+
+
+def test_no_contest_predicate_on_stored_seats():
+    # the degenerate: no evil seat, nobody won -> excluded from scoring/rating
+    void = [{"team": "good", "won": 0}, {"team": "good", "won": 0}, {"team": "good", "won": 0}]
+    assert is_no_contest(void)
+    # a no-wolf game the village idles to a win has winners -> kept
+    idle_win = [{"team": "good", "won": 1}, {"team": "good", "won": 1}]
+    assert not is_no_contest(idle_win)
+    # any game with an evil seat (even a voted-out, dead wolf) is a real contest -> kept
+    real = [{"team": "evil", "won": 0}, {"team": "good", "won": 1}]
+    assert not is_no_contest(real)
+
+
+def test_resolve_emits_void_for_no_evil_deal():
+    # deal with both wolves + the Minion in the center: no evil faction among the 5 players.
+    layout = ["Seer", "Robber", "Troublemaker", "Villager", "Villager",  # 5 players (all good)
+              "Werewolf", "Werewolf", "Minion"]                          # 3 center cards
+    core = ONUW({i: f"P{i}" for i in range(5)}, seed=1, deal_override=layout)
+    rec = core.play({i: ScriptedDefault() for i in range(5)})
+    # ScriptedDefault votes produce a death; with no evil in play that resolves to a no-contest.
+    if rec["outcome"]["team"] != "good":          # i.e. somebody was eliminated
+        assert rec["winner_team"] == "void"
+        assert all(not p["won"] for p in rec["players"])
 
 
 def test_winners_hunter_chain():

@@ -50,12 +50,14 @@ from arena.score import score_run
 # each seat's memory is isolated and nothing is shared across the run.
 # opencode is omitted for now: it hangs on every turn (forfeits 3/3 even at a 240s deadline) — a
 # default-model / non-interactive config issue, not auth. Re-add once ARENA_OPENCODE_MODEL is sorted.
+# Ordered so the LAST seats are the ones reserved by --external N (host launches SEATS[:players-N]).
+# Codex is last so a human participant can run the coding agent themselves while the host runs the rest.
 SEATS = [
-    ("Codex",          lambda: CodexHarness()),                                     # codex exec (ChatGPT login)
-    ("Claude Code",    lambda: ClaudeAgentSdkHarness()),                            # Claude Agent SDK
+    ("Claude Code",    lambda: ClaudeAgentSdkHarness()),                            # Claude Agent SDK (coding)
     ("Session·GPT",    lambda: SessionAgent("openai/gpt-5.4-mini")),               # reference LLM-session
     ("FileMem·Haiku",  lambda: FileMemoryAgent("anthropic/claude-haiku-4.5")),     # reference file-memory
     ("Session·Gemini", lambda: SessionAgent("google/gemini-3.1-flash-lite")),      # reference LLM-session
+    ("Codex",          lambda: CodexHarness()),                                     # codex exec (reserved last)
 ]
 
 
@@ -103,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="per-turn reply deadline (s); MUST exceed a coding agent's think time or good "
                         "actions get defaulted as forfeits. The harness CLI wait is ARENA_AGENT_BRAIN_TIMEOUT "
                         "(~180s), so keep this above that.")
+    p.add_argument("--external", type=int, default=0,
+                   help="reserve N seats for externally-run agents: the host launches players-N agents "
+                        "and coordinates; you run the other N yourself via `arena-agent play`. The last N "
+                        "SEATS entries are the reserved ones.")
     args = p.parse_args(argv)
 
     players = len(SEATS)
@@ -122,8 +128,16 @@ def main(argv: list[str] | None = None) -> int:
         "deck_preset": args.deck,
     })
 
+    mine = SEATS[: players - args.external] if args.external else SEATS
+    if args.external:
+        _log(f"reserving {args.external} of {players} seat(s) for EXTERNAL agents you run yourself.")
+        _log(f"in another terminal (repo root), run each reserved agent, e.g. opencode pinned to GLM 5.2:")
+        _log(f"  ARENA_OPENCODE_MODEL=openrouter/z-ai/glm-5.2 PYTHONPATH=. \\")
+        _log(f"  .venv/bin/arena-agent play --run {args.run_id} --server {args.server} \\")
+        _log(f"  --name 'GLM-opencode' examples/opencode_agent.py")
+
     threads = []
-    for name, make_harness in SEATS:
+    for name, make_harness in mine:
         # A path that does NOT exist yet (an empty file makes CredentialsStore json.loads("") crash);
         # the dir exists so the SDK writes the credential on first register.
         cred_path = os.path.join(tempfile.mkdtemp(prefix="arena-cred-"), "cred.json")
@@ -133,7 +147,8 @@ def main(argv: list[str] | None = None) -> int:
         threads.append(t)
         time.sleep(0.4)  # stagger registration so seat order is stable
 
-    _log("waiting for all agents to seat and ready (coding brains can take a bit to boot)...")
+    _log(f"launched {len(mine)} host agent(s); waiting for all {players} to seat and ready "
+         f"({args.external} reserved for you) — start your agent(s) now...")
     active = _wait_for_active(args.run_id, players, args.ready_timeout)
     if active < players:
         _log(f"only {active}/{players} agents became active — aborting (run left open)")

@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS games (
 CREATE TABLE IF NOT EXISTS game_players (
   run_id TEXT, gid INTEGER, seat INTEGER, agent TEXT, model TEXT,
   dealt_role TEXT, end_role TEXT, team TEXT, won INTEGER,
-  calls INTEGER DEFAULT 0, forfeits INTEGER DEFAULT 0
+  calls INTEGER DEFAULT 0, forfeits INTEGER DEFAULT 0,
+  agent_id TEXT, signup_id TEXT
 );
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY, run_id TEXT UNIQUE, owner TEXT, status TEXT,
@@ -59,7 +60,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY, display_name TEXT, token_hash TEXT UNIQUE,
-  protocol_version TEXT, sdk_version TEXT, created_utc TEXT, last_seen_utc TEXT, status TEXT
+  protocol_version TEXT, sdk_version TEXT, created_utc TEXT, last_seen_utc TEXT, status TEXT,
+  declared_model TEXT, declared_harness TEXT
 );
 CREATE TABLE IF NOT EXISTS run_signups (
   id TEXT PRIMARY KEY, run_id TEXT, agent_id TEXT, status TEXT, seat INTEGER,
@@ -80,6 +82,20 @@ CREATE TABLE IF NOT EXISTS turn_replies (
   turn_id TEXT PRIMARY KEY, signup_id TEXT, action_json TEXT, reasoning TEXT,
   client_ms INTEGER, accepted INTEGER, created_utc TEXT
 );
+CREATE TABLE IF NOT EXISTS ratings (
+  identity_key TEXT PRIMARY KEY, agent_id TEXT, display_name TEXT,
+  declared_model TEXT, declared_harness TEXT, skill REAL, rd REAL, elo REAL,
+  games INTEGER, wins INTEGER, forfeit_rate REAL, provisional INTEGER, updated_utc TEXT
+);
+CREATE TABLE IF NOT EXISTS rating_events (
+  id TEXT PRIMARY KEY, identity_key TEXT, run_id TEXT, gid INTEGER, seat INTEGER,
+  dealt_role TEXT, objective_group TEXT, won INTEGER, pre_skill REAL, post_skill REAL,
+  delta REAL, expected REAL, d_r REAL, resistance REAL, k REAL, damped REAL, created_utc TEXT
+);
+CREATE TABLE IF NOT EXISTS role_difficulty (
+  bucket TEXT, role TEXT, w INTEGER, n INTEGER, base_rate REAL, d_r REAL, updated_utc TEXT,
+  PRIMARY KEY (bucket, role)
+);
 """
 
 # Postgres: created once via scripts/init_db.py or store.init_schema() (NOT per connection —
@@ -97,7 +113,8 @@ PG_SCHEMA_STMTS = [
     """CREATE TABLE IF NOT EXISTS game_players (
          run_id TEXT, gid INTEGER, seat INTEGER, agent TEXT, model TEXT,
          dealt_role TEXT, end_role TEXT, team TEXT, won INTEGER,
-         calls INTEGER DEFAULT 0, forfeits INTEGER DEFAULT 0
+         calls INTEGER DEFAULT 0, forfeits INTEGER DEFAULT 0,
+         agent_id TEXT, signup_id TEXT
        )""",
     """CREATE TABLE IF NOT EXISTS jobs (
          id TEXT PRIMARY KEY, run_id TEXT UNIQUE, owner TEXT, status TEXT,
@@ -108,7 +125,8 @@ PG_SCHEMA_STMTS = [
        )""",
     """CREATE TABLE IF NOT EXISTS agents (
          id TEXT PRIMARY KEY, display_name TEXT, token_hash TEXT UNIQUE,
-         protocol_version TEXT, sdk_version TEXT, created_utc TEXT, last_seen_utc TEXT, status TEXT
+         protocol_version TEXT, sdk_version TEXT, created_utc TEXT, last_seen_utc TEXT, status TEXT,
+         declared_model TEXT, declared_harness TEXT
        )""",
     """CREATE TABLE IF NOT EXISTS run_signups (
          id TEXT PRIMARY KEY, run_id TEXT, agent_id TEXT, status TEXT, seat INTEGER,
@@ -129,20 +147,43 @@ PG_SCHEMA_STMTS = [
          turn_id TEXT PRIMARY KEY, signup_id TEXT, action_json TEXT, reasoning TEXT,
          client_ms INTEGER, accepted INTEGER, created_utc TEXT
        )""",
+    """CREATE TABLE IF NOT EXISTS ratings (
+         identity_key TEXT PRIMARY KEY, agent_id TEXT, display_name TEXT,
+         declared_model TEXT, declared_harness TEXT, skill DOUBLE PRECISION, rd DOUBLE PRECISION,
+         elo DOUBLE PRECISION, games INTEGER, wins INTEGER, forfeit_rate DOUBLE PRECISION,
+         provisional INTEGER, updated_utc TEXT
+       )""",
+    """CREATE TABLE IF NOT EXISTS rating_events (
+         id TEXT PRIMARY KEY, identity_key TEXT, run_id TEXT, gid INTEGER, seat INTEGER,
+         dealt_role TEXT, objective_group TEXT, won INTEGER, pre_skill DOUBLE PRECISION,
+         post_skill DOUBLE PRECISION, delta DOUBLE PRECISION, expected DOUBLE PRECISION,
+         d_r DOUBLE PRECISION, resistance DOUBLE PRECISION, k DOUBLE PRECISION,
+         damped DOUBLE PRECISION, created_utc TEXT
+       )""",
+    """CREATE TABLE IF NOT EXISTS role_difficulty (
+         bucket TEXT, role TEXT, w INTEGER, n INTEGER, base_rate DOUBLE PRECISION,
+         d_r DOUBLE PRECISION, updated_utc TEXT, PRIMARY KEY (bucket, role)
+       )""",
 ]
 
 # Columns added after the original schema shipped; ALTER-added on open so old SQLite DBs upgrade.
 _MIGRATIONS = {
-    "game_players": [("calls", "INTEGER DEFAULT 0"), ("forfeits", "INTEGER DEFAULT 0")],
+    "game_players": [("calls", "INTEGER DEFAULT 0"), ("forfeits", "INTEGER DEFAULT 0"),
+                     ("agent_id", "TEXT"), ("signup_id", "TEXT")],
     "runs": [("submitter", "TEXT"), ("created_utc", "TEXT"), ("deck_preset", "TEXT"),
              ("coordinator_url", "TEXT")],
     "jobs": [("deck_preset", "TEXT")],
+    "agents": [("declared_model", "TEXT"), ("declared_harness", "TEXT")],
 }
 
 PG_MIGRATION_STMTS = [
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS coordinator_url TEXT",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
+    "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS agent_id TEXT",
+    "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS signup_id TEXT",
+    "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_model TEXT",
+    "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_harness TEXT",
 ]
 
 
@@ -289,11 +330,12 @@ def save_game(run_id: str, gid: int, transcript: dict, agents: list[dict]):
         for p in transcript["players"]:
             agent = agents[p["seat"]]
             c.execute(
-                f"INSERT INTO game_players (run_id,gid,seat,agent,model,dealt_role,end_role,team,won,calls,forfeits) "
-                f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                f"INSERT INTO game_players (run_id,gid,seat,agent,model,dealt_role,end_role,team,won,calls,forfeits,agent_id,signup_id) "
+                f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
                 (run_id, gid, p["seat"], agent["name"], agent["model"],
                  p["dealt"], p["end"], p["team"], 1 if p["won"] else 0,
-                 int(p.get("calls", 0)), int(p.get("forfeits", 0))),
+                 int(p.get("calls", 0)), int(p.get("forfeits", 0)),
+                 agent.get("agent_id"), agent.get("signup_id")),
             )
         return True
 
@@ -463,9 +505,103 @@ def player_rows(run_id: str) -> list[dict]:
     ph = _ph()
     with conn() as c:
         rows = c.execute(
-            f"SELECT agent, team, won, dealt_role, end_role, calls, forfeits "
+            f"SELECT gid, seat, agent, agent_id, signup_id, model, team, won, dealt_role, end_role, calls, forfeits "
             f"FROM game_players WHERE run_id={ph}", (run_id,)).fetchall()
         return [dict(r) for r in rows]
+
+
+# --- rating engine I/O (consumed by arena/rating.py) ------------------------------------------
+
+def all_game_player_rows() -> list[dict]:
+    """Every game_players row across all runs — the raw material for the rating replay."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT run_id, gid, seat, agent, agent_id, signup_id, model, dealt_role, end_role, "
+            "team, won, calls, forfeits FROM game_players").fetchall()
+        return [dict(r) for r in rows]
+
+
+def run_meta_map() -> dict[str, dict]:
+    """run_id -> {game, players, deck_preset, created_utc, agents:[...]} for replay bucketing/ordering."""
+    out: dict[str, dict] = {}
+    with conn() as c:
+        for r in c.execute(
+                "SELECT id, game, players, deck_preset, created_utc, agents_json FROM runs").fetchall():
+            d = dict(r)
+            try:
+                d["agents"] = json.loads(d.pop("agents_json") or "[]")
+            except (TypeError, ValueError):
+                d["agents"] = []
+            out[d.pop("id")] = d
+    return out
+
+
+def replace_ratings(difficulty: list[dict], events: list[dict], ratings: list[dict]) -> None:
+    """Atomically swap in a freshly computed rating snapshot. Ratings are derived, so a full
+    rebuild clears and re-writes all three tables in one transaction."""
+    ph = _ph()
+    with conn() as c:
+        c.execute("DELETE FROM role_difficulty")
+        c.execute("DELETE FROM rating_events")
+        c.execute("DELETE FROM ratings")
+        for d in difficulty:
+            c.execute(
+                f"INSERT INTO role_difficulty (bucket,role,w,n,base_rate,d_r,updated_utc) "
+                f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                (d["bucket"], d["role"], d["w"], d["n"], d["base_rate"], d["d_r"], d["updated_utc"]))
+        for e in events:
+            c.execute(
+                f"INSERT INTO rating_events (id,identity_key,run_id,gid,seat,dealt_role,objective_group,"
+                f"won,pre_skill,post_skill,delta,expected,d_r,resistance,k,damped,created_utc) "
+                f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                (e["id"], e["identity_key"], e["run_id"], e["gid"], e["seat"], e["dealt_role"],
+                 e["objective_group"], e["won"], e["pre_skill"], e["post_skill"], e["delta"],
+                 e["expected"], e["d_r"], e["resistance"], e["k"], e["damped"], e["created_utc"]))
+        for r in ratings:
+            c.execute(
+                f"INSERT INTO ratings (identity_key,agent_id,display_name,declared_model,declared_harness,"
+                f"skill,rd,elo,games,wins,forfeit_rate,provisional,updated_utc) "
+                f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                (r["identity_key"], r["agent_id"], r["display_name"], r["declared_model"],
+                 r["declared_harness"], r["skill"], r["rd"], r["elo"], r["games"], r["wins"],
+                 r["forfeit_rate"], r["provisional"], r["updated_utc"]))
+
+
+def leaderboard_rows() -> list[dict]:
+    """The ratings snapshot, ordered by the conservative lower bound (elo - 2*173*rd)."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT * FROM ratings ORDER BY (elo - 2*173.0*rd) DESC, games DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+def rating_events_for(identity_key: str) -> list[dict]:
+    """One competitor's full rating ledger, oldest first (rating history)."""
+    ph = _ph()
+    with conn() as c:
+        rows = c.execute(
+            f"SELECT * FROM rating_events WHERE identity_key={ph} ORDER BY created_utc, run_id, gid, seat",
+            (identity_key,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def role_difficulty_map() -> dict[tuple[str, str], dict]:
+    """(bucket, role) -> {w,n,base_rate,d_r} from the last recompute."""
+    with conn() as c:
+        return {(r["bucket"], r["role"]): dict(r)
+                for r in c.execute("SELECT * FROM role_difficulty").fetchall()}
+
+
+def all_rating_events() -> list[dict]:
+    with conn() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM rating_events").fetchall()]
+
+
+def get_rating(identity_key: str) -> dict | None:
+    ph = _ph()
+    with conn() as c:
+        return _rowdict(c.execute(
+            f"SELECT * FROM ratings WHERE identity_key={ph}", (identity_key,)).fetchone())
 
 
 def distinct_gids(run_id: str) -> list[int]:
@@ -653,16 +789,27 @@ def list_open_runs(game: str | None = None) -> list[dict]:
 
 
 def register_agent(display_name: str, token_hash: str, protocol_version: str, sdk_version: str | None = None,
-                   agent_id: str | None = None) -> dict:
+                   agent_id: str | None = None, declared_model: str | None = None,
+                   declared_harness: str | None = None) -> dict:
     now, ph = _utcnow(), _ph()
     agent_id = agent_id or f"agent_{uuid.uuid4().hex[:16]}"
     with conn() as c:
         c.execute(
-            f"INSERT INTO agents (id,display_name,token_hash,protocol_version,sdk_version,created_utc,last_seen_utc,status) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
-            (agent_id, display_name, token_hash, protocol_version, sdk_version, now, now, "idle"),
+            f"INSERT INTO agents (id,display_name,token_hash,protocol_version,sdk_version,created_utc,last_seen_utc,status,declared_model,declared_harness) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+            (agent_id, display_name, token_hash, protocol_version, sdk_version, now, now, "idle",
+             declared_model, declared_harness),
         )
     return get_agent(agent_id)
+
+
+def list_agents() -> list[dict]:
+    """All registered connected agents, most-recently-seen first. Never returns token_hash to callers
+    that serialize this — the API layer projects only the public fields."""
+    with conn() as c:
+        rows = c.execute(
+            "SELECT * FROM agents ORDER BY last_seen_utc DESC NULLS LAST, created_utc DESC").fetchall()
+        return [_rowdict(r) for r in rows]
 
 
 def get_agent(agent_id: str) -> dict | None:

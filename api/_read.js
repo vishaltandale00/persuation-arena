@@ -28,38 +28,56 @@ function _cell(w, n) {
 }
 
 /**
+ * Port of arena/games/base.py is_no_contest: a game with no evil seat AND no winning seat is the
+ * ONUW degenerate (no Werewolf/Minion in play, the vote killed an innocent) — no opposing faction,
+ * so it is dropped from win-rate scoring. A no-wolf game the village idles to a win keeps its winners.
+ */
+function isNoContest(seats) {
+  const noEvil = !seats.some((s) => s.team === 'evil');
+  const noWinner = !seats.some((s) => (Number(s.won) || 0) > 0);
+  return noEvil && noWinner;
+}
+
+/**
  * agent -> scorecard. Reads game_players rows for the run and aggregates per agent:
  *   {overall, good, evil} cells, by_role:{dealt_role: cell}, and {calls, forfeits, forfeit_rate}.
  * Team bucket is r.team if in ('good','evil') else 'good'; dealt_role falls back to '?'.
  */
 export async function scoreRun(runId) {
   const rows = await q(
-    `SELECT agent, team, won, dealt_role, end_role, calls, forfeits
+    `SELECT gid, agent, team, won, dealt_role, end_role, calls, forfeits
        FROM game_players WHERE run_id = $1`,
     [runId],
   );
 
+  // group by game so no-contest games (no evil seat, no winner) drop out of scoring
+  const games = {};
+  for (const r of rows) (games[r.gid] ||= []).push(r);
+
   const agg = {}; // agent -> aggregate accumulator
-  for (const r of rows) {
-    let a = agg[r.agent];
-    if (!a) {
-      a = agg[r.agent] = {
-        overall: [0, 0], good: [0, 0], evil: [0, 0],
-        by_role: {}, calls: 0, forfeits: 0,
-      };
+  for (const seats of Object.values(games)) {
+    if (isNoContest(seats)) continue;
+    for (const r of seats) {
+      let a = agg[r.agent];
+      if (!a) {
+        a = agg[r.agent] = {
+          overall: [0, 0], good: [0, 0], evil: [0, 0],
+          by_role: {}, calls: 0, forfeits: 0,
+        };
+      }
+      const won = Number(r.won) || 0;
+      a.overall[1] += 1;
+      a.overall[0] += won;
+      const t = (r.team === 'good' || r.team === 'evil') ? r.team : 'good';
+      a[t][1] += 1;
+      a[t][0] += won;
+      const role = r.dealt_role || '?';
+      const cell = (a.by_role[role] ||= [0, 0]);
+      cell[1] += 1;
+      cell[0] += won;
+      a.calls += Number(r.calls) || 0;
+      a.forfeits += Number(r.forfeits) || 0;
     }
-    const won = Number(r.won) || 0;
-    a.overall[1] += 1;
-    a.overall[0] += won;
-    const t = (r.team === 'good' || r.team === 'evil') ? r.team : 'good';
-    a[t][1] += 1;
-    a[t][0] += won;
-    const role = r.dealt_role || '?';
-    const cell = (a.by_role[role] ||= [0, 0]);
-    cell[1] += 1;
-    cell[0] += won;
-    a.calls += Number(r.calls) || 0;
-    a.forfeits += Number(r.forfeits) || 0;
   }
 
   const out = {};

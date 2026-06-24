@@ -293,11 +293,33 @@ def api_register_agent(payload: dict):
     if protocol_version != PROTOCOL_VERSION:
         raise HTTPException(400, "unsupported protocol_version")
     token = _issue_agent_token()
+    declared_model = (payload.get("model") or payload.get("declared_model") or "").strip() or None
+    declared_harness = (payload.get("harness") or payload.get("declared_harness") or "").strip() or None
     agent = store.register_agent(display_name=display_name,
                                  token_hash=_hash_agent_token(token),
                                  protocol_version=protocol_version,
-                                 sdk_version=payload.get("sdk_version"))
+                                 sdk_version=payload.get("sdk_version"),
+                                 declared_model=declared_model,
+                                 declared_harness=declared_harness)
     return {"agent_id": agent["id"], "agent_token": token, "protocol_version": PROTOCOL_VERSION}
+
+
+@app.get("/api/leaderboard")
+def api_leaderboard():
+    """Cross-run rating board, conservatively ranked, each competitor expandable to per-role stats."""
+    from . import rating
+    return {"competitors": rating.leaderboard()}
+
+
+@app.get("/api/agents/{agent_id:path}")
+def api_agent_detail(agent_id: str):
+    """One competitor's scorecard + rating history + runs played. Keyed by bearer-token agent_id
+    for connected agents, or the static:model:harness identity (which contains slashes) otherwise."""
+    from . import rating
+    detail = rating.agent_detail(agent_id)
+    if not detail:
+        raise HTTPException(404, "unknown competitor")
+    return detail
 
 
 def _signup_response(signup: dict) -> dict:

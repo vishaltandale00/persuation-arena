@@ -772,6 +772,8 @@ class ONUW:
             winner, text = "evil", "TANNER WINS — the Tanner got itself eliminated."
         elif wins["werewolf"]:
             winner, text = "evil", "WEREWOLVES WIN — no werewolf was eliminated."
+        elif wins["no_contest"]:
+            winner, text = "void", "NO CONTEST — no werewolf or Minion was in play; the vote eliminated an innocent."
         else:
             winner, text = "evil", "VILLAGE LOSES."
         self._wins = wins

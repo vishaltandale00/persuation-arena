@@ -74,7 +74,7 @@ def test_full_game_completes_and_is_consistent():
     core = ONUW(NAMES, seed=11)
     rec = core.play({i: ScriptedDefault() for i in range(5)})
     assert [p["name"] for p in rec["phases"]] == ["Night", "Discussion", "Vote", "Result"]
-    assert rec["winner_team"] in ("good", "evil")
+    assert rec["winner_team"] in ("good", "evil", "void")  # "void" = no evil faction was in play
     # every player's team is well-formed and won-flag is a bool
     for p in rec["players"]:
         assert p["team"] in ("good", "evil")

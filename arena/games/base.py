@@ -89,8 +89,24 @@ def compute_winners(roles: dict[int, str], deaths: list[int], votes: dict[int, i
         village_win = len(D) == 0
         werewolf_win = (len(D) > 0) and minion_exists and (not tanner_died)
     tanner_win = tanner_died
+    # No team met a win condition. The only way to reach this is: no Werewolf and no Minion at
+    # end-of-night, a death occurred, and no Tanner died — i.e. no evil faction was in play and
+    # the vote killed an innocent. That is a no-contest, not an evil win.
+    no_contest = not (village_win or werewolf_win or tanner_win)
     return {"village": village_win, "werewolf": werewolf_win, "tanner": tanner_win,
-            "deaths": sorted(D)}
+            "no_contest": no_contest, "deaths": sorted(D)}
+
+
+def is_no_contest(seats: list[dict]) -> bool:
+    """True for a stored game with no evil seat AND no winning seat — the ONUW degenerate where no
+    Werewolf or Minion was in play and the vote eliminated an innocent. There was no opposing
+    faction, so it is a no-contest: excluded from win-rate scoring and the rating replay (rating a
+    seat for a loss against nobody would corrupt the Elo). A no-wolf game where the village correctly
+    idles to a win still has winning seats, so it is kept. Avalon/Mafia always deal an evil faction,
+    so this only ever trips on ONUW."""
+    no_evil = not any(s.get("team") == "evil" for s in seats)
+    no_winner = not any(int(s.get("won") or 0) for s in seats)
+    return no_evil and no_winner
 
 
 def player_won(role: str, wins: dict) -> bool:
