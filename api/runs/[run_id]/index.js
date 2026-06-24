@@ -54,6 +54,12 @@ export default async function handler(req, res) {
 
   // agents_json is TEXT holding JSON -> parse. (May be null/empty for connected-only runs.)
   const agentsSrc = r.agents_json ? JSON.parse(r.agents_json) : [];
+  let metadata = {};
+  try {
+    metadata = r.metadata_json ? JSON.parse(r.metadata_json) : {};
+  } catch {
+    metadata = {};
+  }
 
   // store.get_run: games for the run, ordered by gid.
   const games = await q(
@@ -146,6 +152,7 @@ export default async function handler(req, res) {
     agents,
     teamSplit,
     games: gamesOut,
+    runConfig: metadata.run_config || {},
     connected: signups.length > 0,
     connectedSummary: {
       signups: signups.length,

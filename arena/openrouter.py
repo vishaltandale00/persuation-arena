@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 from openai import OpenAI
 
-from .config import OPENROUTER_BASE_URL, SETTINGS, get_api_key
+from .config import Caps, OPENROUTER_BASE_URL, SETTINGS, get_api_key
 from .wolf_profiles import prompt_for
 
 _client: OpenAI | None = None
@@ -140,17 +140,18 @@ def _looks_like_structured_rejection(exc: Exception) -> bool:
 
 
 class OpenRouterAgent:
-    def __init__(self, name: str, model: str, harness: str = "base"):
+    def __init__(self, name: str, model: str, harness: str = "base", caps: Caps | None = None):
         self.name = name
         self.model = model
         self.harness = harness
+        self.caps = caps or SETTINGS.caps
         # Per-turn telemetry. Existing score code only depends on {ok, ms, raw}; the richer fields
         # are for audit/debug and are safe for old leaderboard rows to ignore.
         self.calls: list[dict] = []
         self._messages: list[dict[str, Any]] = []
 
     def _messages_for_turn(self, observation: str) -> list[dict[str, Any]]:
-        caps = SETTINGS.caps
+        caps = self.caps
         prior = self._messages[-max(0, caps.prior_message_turns) * 2:]
         return [
             {"role": "system", "content": prompt_for(self.harness)},
@@ -177,7 +178,7 @@ class OpenRouterAgent:
         ])
 
     def _request_extra_body(self) -> dict[str, Any]:
-        caps = SETTINGS.caps
+        caps = self.caps
         return {
             "reasoning": {
                 "effort": caps.reasoning_effort,
@@ -242,7 +243,7 @@ class OpenRouterAgent:
         parse_action(action_field, raw_text) -> validated action (raise ValueError if invalid).
         default_action: used if the model fails twice.
         """
-        caps = SETTINGS.caps
+        caps = self.caps
         last_raw = ""
         last_validation_error: str | None = None
         last_error: str | None = None
@@ -318,6 +319,9 @@ class OpenRouterAgent:
                 "provider_reasoning_details": provider_reasoning_details,
                 "reasoning_effort": caps.reasoning_effort,
                 "max_tokens": caps.max_tokens_per_turn,
+                "temperature": caps.temperature,
+                "retries": caps.retries,
+                "prior_message_turns": caps.prior_message_turns,
                 "finish_reason": finish_reason,
                 "usage": usage,
                 "validation_error": last_validation_error,
@@ -358,6 +362,9 @@ class OpenRouterAgent:
             "provider_reasoning_details": provider_reasoning_details,
             "reasoning_effort": caps.reasoning_effort,
             "max_tokens": caps.max_tokens_per_turn,
+            "temperature": caps.temperature,
+            "retries": caps.retries,
+            "prior_message_turns": caps.prior_message_turns,
             "finish_reason": finish_reason,
             "usage": usage,
             "validation_error": last_validation_error or last_error,

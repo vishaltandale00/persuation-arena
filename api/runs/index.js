@@ -20,6 +20,86 @@ const GAME_CORES = {
   secret_mafia: { min: 5, max: 7, title: 'Secret Mafia' },
 };
 
+const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+
+function envInt(name, fallback) {
+  const n = parseInt(process.env[name] ?? fallback, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function envFloat(name, fallback) {
+  const n = parseFloat(process.env[name] ?? fallback);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function payloadGet(payload, ...names) {
+  for (const name of names) {
+    if (payload[name] !== undefined && payload[name] !== null) return payload[name];
+  }
+  return undefined;
+}
+
+function positiveInt(value, name) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be positive`);
+  return n;
+}
+
+function nonnegativeInt(value, name) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`${name} must be nonnegative`);
+  return n;
+}
+
+function nonnegativeFloat(value, name) {
+  const n = parseFloat(value);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`${name} must be nonnegative`);
+  return n;
+}
+
+function runConfigFromPayload(payload, rounds) {
+  const effort = String(payloadGet(payload, 'reasoning_effort', 'reasoningEffort')
+    ?? process.env.ARENA_REASONING_EFFORT ?? 'medium').trim().toLowerCase();
+  if (!REASONING_EFFORTS.has(effort)) {
+    throw new Error(`reasoning_effort must be one of ${Array.from(REASONING_EFFORTS).sort().join(', ')}`);
+  }
+  const maxTokens = payloadGet(payload, 'max_tokens_per_turn', 'maxTokensPerTurn', 'max_tokens', 'maxTokens');
+  const retries = payloadGet(payload, 'retries');
+  const temperature = payloadGet(payload, 'temperature');
+  const priorTurns = payloadGet(payload, 'prior_message_turns', 'priorMessageTurns');
+  return {
+    discussion_rounds: rounds,
+    reasoning_effort: effort,
+    max_tokens_per_turn: maxTokens === undefined
+      ? envInt('ARENA_MAX_TOKENS_PER_TURN', 4000)
+      : positiveInt(maxTokens, 'max_tokens_per_turn'),
+    temperature: temperature === undefined
+      ? envFloat('ARENA_TEMPERATURE', 0.8)
+      : nonnegativeFloat(temperature, 'temperature'),
+    retries: retries === undefined
+      ? envInt('ARENA_RETRIES', 1)
+      : nonnegativeInt(retries, 'retries'),
+    prior_message_turns: priorTurns === undefined
+      ? envInt('ARENA_PRIOR_MESSAGE_TURNS', 8)
+      : nonnegativeInt(priorTurns, 'prior_message_turns'),
+  };
+}
+
+function annotateRunAgents(agents, runConfig) {
+  return agents.map((a) => ({
+    ...a,
+    provider: a.provider || 'openrouter',
+    reasoning_effort: runConfig.reasoning_effort,
+    max_tokens: runConfig.max_tokens_per_turn,
+    max_tokens_per_turn: runConfig.max_tokens_per_turn,
+    temperature: runConfig.temperature,
+    retries: runConfig.retries,
+    prior_message_turns: runConfig.prior_message_turns,
+    discussion_rounds: runConfig.discussion_rounds,
+    sessionful: a.sessionful ?? false,
+  }));
+}
+
 // Port of arena/server.py _job_owner.
 function jobOwner(payload) {
   const owner = String(payload.owner || payload.submitter || 'default').trim();
@@ -52,10 +132,17 @@ async function queueRun(payload, owner, res) {
   const game = payload.game || 'onuw';
   if (!(game in GAME_LABELS)) return send(res, 400, { error: `unknown game: ${game}` });
   const games = Math.max(1, parseInt(payload.games ?? payload.n_games ?? 6, 10) || 0);
-  const rounds = Math.max(1, parseInt(payload.rounds ?? 5, 10) || 0);
+  let rounds;
+  let runConfig;
+  try {
+    rounds = positiveInt(payload.rounds ?? 5, 'rounds');
+    runConfig = runConfigFromPayload(payload, rounds);
+  } catch (e) {
+    return send(res, 400, { error: e.message });
+  }
   const seed = parseInt(payload.seed || Math.floor((Date.now()) % 1000000), 10);
   const runId = String(payload.run_id || `run_${seed}_${newId('').slice(0, 6)}`).trim();
-  const agents = rosterFromPayload(payload);
+  const agents = annotateRunAgents(rosterFromPayload(payload), runConfig);
   const core = GAME_CORES[game];
   const nPlayers = agents.length; // the roster IS the table — no fixed player count
   if (!(core.min <= nPlayers && nPlayers <= core.max)) {
@@ -72,19 +159,20 @@ async function queueRun(payload, owner, res) {
   const now = utcnow();
   const created = now.slice(0, 16).replace('T', ' ');
   const agentsJson = JSON.stringify(agents);
+  const metadataJson = JSON.stringify({ run_config: runConfig });
 
   // store.enqueue_job first upserts the visible run row (store.save_run, MONOTONIC on done/partial)...
   await q(
-    `INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset)
-     VALUES ($1,$2,$3,'queued',$4,$5,$6,$7,$8,$9,$10,$11)
+    `INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json)
+     VALUES ($1,$2,$3,'queued',$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT (id) DO UPDATE SET
        game=excluded.game, label=excluded.label,
        status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END,
        n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base,
        created=excluded.created, agents_json=excluded.agents_json,
        submitter=excluded.submitter, created_utc=excluded.created_utc,
-       deck_preset=excluded.deck_preset`,
-    [runId, game, GAME_LABELS[game], games, nPlayers, seed, created, agentsJson, owner, now, deckPreset],
+       deck_preset=excluded.deck_preset, metadata_json=excluded.metadata_json`,
+    [runId, game, GAME_LABELS[game], games, nPlayers, seed, created, agentsJson, owner, now, deckPreset, metadataJson],
   );
 
   // ...then upserts the job row (ON CONFLICT (run_id) resets the lease so a re-queue re-runs).
@@ -103,7 +191,7 @@ async function queueRun(payload, owner, res) {
 
   return send(res, 200, {
     run_id: runId, job_id: jobId, status: 'queued', owner,
-    game, games, rounds, deck_preset: deckPreset,
+    game, games, rounds, deck_preset: deckPreset, run_config: runConfig,
   });
 }
 
@@ -127,26 +215,35 @@ async function createConnectedRun(payload, res) {
     return send(res, 400, { error: e.message });
   }
   const submitter = payload.owner || payload.submitter || 'connected';
-  const rounds = Math.max(1, parseInt(payload.rounds ?? 5, 10) || 5); // discussion rounds the coordinator honors
+  let rounds;
+  let runConfig;
+  try {
+    rounds = positiveInt(payload.rounds ?? 5, 'rounds'); // discussion rounds the coordinator honors
+    runConfig = runConfigFromPayload(payload, rounds);
+  } catch (e) {
+    return send(res, 400, { error: e.message });
+  }
 
   const now = utcnow();
   const created = now.slice(0, 16).replace('T', ' ');
+  const metadataJson = JSON.stringify({ run_config: runConfig });
   // store.create_connected_run -> store.save_run with status 'open' and an empty roster.
   await q(
-    `INSERT INTO runs (id,game,label,status,n_games,players,seed_base,rounds,created,agents_json,submitter,created_utc,deck_preset)
-     VALUES ($1,$2,$3,'open',$4,$5,$6,$7,$8,'[]',$9,$10,$11)
+    `INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json)
+     VALUES ($1,$2,$3,'open',$4,$5,$6,$7,'[]',$8,$9,$10,$11)
      ON CONFLICT (id) DO UPDATE SET
        game=excluded.game, label=excluded.label,
        status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END,
        n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base,
-       rounds=excluded.rounds, created=excluded.created, agents_json=excluded.agents_json,
+       created=excluded.created, agents_json=excluded.agents_json,
        submitter=excluded.submitter, created_utc=excluded.created_utc,
-       deck_preset=excluded.deck_preset`,
-    [runId, game, GAME_LABELS[game], games, players, seed, rounds, created, submitter, now, deckPreset],
+       deck_preset=excluded.deck_preset, metadata_json=excluded.metadata_json`,
+    [runId, game, GAME_LABELS[game], games, players, seed, created, submitter, now, deckPreset, metadataJson],
   );
 
   return send(res, 200, {
     run_id: runId, status: 'open', game, games, players, rounds, deck_preset: deckPreset,
+    run_config: runConfig,
   });
 }
 

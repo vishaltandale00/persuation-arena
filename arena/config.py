@@ -5,7 +5,7 @@ The API key is read once here and never printed or logged.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -97,6 +97,31 @@ class Caps:
         "ARENA_OPENROUTER_STRUCTURED_OUTPUT",
         "off",
     )
+
+
+def validate_caps(caps: Caps) -> Caps:
+    if caps.discussion_rounds <= 0:
+        raise ValueError("discussion_rounds must be positive")
+    if caps.max_tokens_per_turn <= 0:
+        raise ValueError("max_tokens_per_turn must be positive")
+    if caps.request_timeout_s <= 0:
+        raise ValueError("request_timeout_s must be positive")
+    if caps.retries < 0:
+        raise ValueError("retries must be nonnegative")
+    if caps.temperature < 0:
+        raise ValueError("temperature must be nonnegative")
+    if caps.reasoning_effort not in REASONING_EFFORTS:
+        raise ValueError(f"reasoning_effort must be one of {sorted(REASONING_EFFORTS)}")
+    if caps.prior_message_turns < 0:
+        raise ValueError("prior_message_turns must be nonnegative")
+    return caps
+
+
+def caps_with_overrides(base: Caps | None = None, **overrides) -> Caps:
+    values = {k: v for k, v in overrides.items() if v is not None}
+    if "reasoning_effort" in values:
+        values["reasoning_effort"] = str(values["reasoning_effort"]).strip().lower()
+    return validate_caps(replace(base or SETTINGS.caps, **values))
 
 
 @dataclass(frozen=True)

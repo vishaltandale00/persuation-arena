@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config
-from .config import ROOT, SETTINGS, OPENROUTER_BASE_URL, AgentSpec
+from .config import ROOT, SETTINGS, OPENROUTER_BASE_URL, AgentSpec, caps_with_overrides
 from . import openrouter as _or
 from . import store
 from .batch import GAME_CORES
@@ -149,15 +149,103 @@ def _deck_for_api(game: str, players: int, deck_preset: str | None) -> list[str]
         return None  # out-of-range player count (e.g. a partially-configured run) -> no deck preview
 
 
+def _payload_get(payload: dict, *names: str):
+    for name in names:
+        if name in payload and payload[name] is not None:
+            return payload[name]
+    return None
+
+
+def _payload_int(payload: dict, names: tuple[str, ...], default: int | None = None,
+                 *, positive: bool = False, nonnegative: bool = False) -> int | None:
+    raw = _payload_get(payload, *names)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, f"{names[0]} must be an integer") from e
+    if positive and value <= 0:
+        raise HTTPException(400, f"{names[0]} must be positive")
+    if nonnegative and value < 0:
+        raise HTTPException(400, f"{names[0]} must be nonnegative")
+    return value
+
+
+def _payload_float(payload: dict, names: tuple[str, ...], default: float | None = None,
+                   *, nonnegative: bool = False) -> float | None:
+    raw = _payload_get(payload, *names)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, f"{names[0]} must be a number") from e
+    if nonnegative and value < 0:
+        raise HTTPException(400, f"{names[0]} must be nonnegative")
+    return value
+
+
+def _caps_from_payload(payload: dict, rounds: int):
+    try:
+        return caps_with_overrides(
+            reasoning_effort=_payload_get(payload, "reasoning_effort", "reasoningEffort"),
+            max_tokens_per_turn=_payload_int(
+                payload, ("max_tokens_per_turn", "maxTokensPerTurn", "max_tokens", "maxTokens"),
+                positive=True,
+            ),
+            temperature=_payload_float(payload, ("temperature",), nonnegative=True),
+            retries=_payload_int(payload, ("retries",), nonnegative=True),
+            prior_message_turns=_payload_int(
+                payload, ("prior_message_turns", "priorMessageTurns"),
+                nonnegative=True,
+            ),
+            discussion_rounds=rounds,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+def _run_config_meta(caps, rounds: int) -> dict:
+    return {
+        "discussion_rounds": rounds,
+        "reasoning_effort": caps.reasoning_effort,
+        "max_tokens_per_turn": caps.max_tokens_per_turn,
+        "temperature": caps.temperature,
+        "retries": caps.retries,
+        "prior_message_turns": caps.prior_message_turns,
+    }
+
+
+def _annotate_run_agents(agents: list[dict], caps, rounds: int) -> list[dict]:
+    config = _run_config_meta(caps, rounds)
+    return [
+        {
+            **a,
+            "provider": a.get("provider", "openrouter"),
+            "reasoning_effort": config["reasoning_effort"],
+            "max_tokens": config["max_tokens_per_turn"],
+            "max_tokens_per_turn": config["max_tokens_per_turn"],
+            "temperature": config["temperature"],
+            "retries": config["retries"],
+            "prior_message_turns": config["prior_message_turns"],
+            "discussion_rounds": config["discussion_rounds"],
+            "sessionful": a.get("sessionful", False),
+        }
+        for a in agents
+    ]
+
+
 def _queue_run(payload: dict, owner: str) -> dict:
     game = payload.get("game", "onuw")
     if game not in GAME_LABELS:
         raise HTTPException(400, f"unknown game: {game}")
     games = max(1, int(payload.get("games", payload.get("n_games", 6))))
-    rounds = max(1, int(payload.get("rounds", 5)))
+    rounds = _payload_int(payload, ("rounds",), 5, positive=True)
+    caps = _caps_from_payload(payload, rounds)
     seed = int(payload.get("seed") or (time.time() * 1000) % 1000000)
     run_id = (payload.get("run_id") or f"run_{seed}_{uuid.uuid4().hex[:6]}").strip()
-    agents = _roster_from_payload(payload)
+    agents = _annotate_run_agents(_roster_from_payload(payload), caps, rounds)
     core = GAME_CORES[game]
     n_players = len(agents)  # the roster IS the table — no fixed player count
     if not (core.MIN_PLAYERS <= n_players <= core.MAX_PLAYERS):
@@ -176,9 +264,11 @@ def _queue_run(payload: dict, owner: str) -> dict:
         "rounds": rounds,
         "agents": agents,
         "deck_preset": deck_preset,
+        "metadata": {"run_config": _run_config_meta(caps, rounds)},
     })
     return {"run_id": run_id, "job_id": job["id"], "status": "queued", "owner": owner,
-            "game": game, "games": games, "rounds": rounds, "deck_preset": deck_preset}
+            "game": game, "games": games, "rounds": rounds, "deck_preset": deck_preset,
+            "run_config": _run_config_meta(caps, rounds)}
 
 
 # --- Modal per-run coordinator (opt-in via ARENA_MODAL_COORDINATOR) ------------------------------
@@ -231,6 +321,8 @@ def _create_connected_run(payload: dict) -> dict:
         raise HTTPException(400, f"{core.TITLE} supports {core.MIN_PLAYERS}–{core.MAX_PLAYERS} "
                                  f"players, got {players}")
     games = max(1, int(payload.get("games", payload.get("n_games", 6))))
+    rounds = _payload_int(payload, ("rounds",), 5, positive=True)
+    caps = _caps_from_payload(payload, rounds)
     seed = int(payload.get("seed") or (time.time() * 1000) % 1000000)
     run_id = (payload.get("run_id") or f"run_{seed}_{uuid.uuid4().hex[:6]}").strip()
     deck_preset = _deck_preset_from_payload(game, payload)
@@ -244,11 +336,13 @@ def _create_connected_run(payload: dict) -> dict:
         "seed_base": seed,
         "submitter": payload.get("owner") or payload.get("submitter") or "connected",
         "deck_preset": deck_preset,
+        "metadata": {"run_config": _run_config_meta(caps, rounds)},
     }
     store.create_connected_run(run_config)
-    _spawn_coordinator(run_config, int(payload.get("rounds") or 5))  # no-op unless ARENA_MODAL_COORDINATOR
+    _spawn_coordinator(run_config, rounds)  # no-op unless ARENA_MODAL_COORDINATOR
     return {"run_id": run_id, "status": "open", "game": game, "games": games,
-            "players": players, "deck_preset": deck_preset}
+            "players": players, "rounds": rounds, "deck_preset": deck_preset,
+            "run_config": _run_config_meta(caps, rounds)}
 
 
 @app.get("/api/runs")
@@ -499,6 +593,7 @@ def api_run(run_id: str):
         "deckPreset": r.get("deck_preset") or (DEFAULT_DECK_PRESET if r["game"] == "onuw" else None),
         "deck": _deck_for_api(r["game"], int(r["players"]), r.get("deck_preset")),
         "created": r["created"], "agents": agents, "teamSplit": r["team_split"], "games": games,
+        "runConfig": (r.get("metadata") or {}).get("run_config", {}),
         "connected": bool(signups),
         "connectedSummary": {
             "signups": len(signups),
@@ -687,26 +782,28 @@ def api_launch(payload: dict):
 
     game = payload.get("game", "onuw")
     games = int(payload.get("games", 6))
-    rounds = int(payload.get("rounds", 5))
+    rounds = _payload_int(payload, ("rounds",), 5, positive=True)
+    caps = _caps_from_payload(payload, rounds)
     deck_preset = _deck_preset_from_payload(game, payload)
     seed = int(time.time()) % 1000000
     run_id = f"run_{seed}"
     agents = payload.get("agents")
-    roster = [AgentSpec(**a) for a in agents] if agents else None
+    roster = [AgentSpec(name=a["name"], model=a["model"], harness=a.get("harness", "base"))
+              for a in agents] if agents else None
 
     def go():
         from .batch import run_batch
         try:
             run_batch(game=game, n_games=games, seed_base=seed, run_id=run_id,
                       roster=roster, workers=8, discussion_rounds=rounds,
-                      deck_preset=deck_preset)
+                      deck_preset=deck_preset, caps=caps)
         except Exception as e:  # surface a failed run rather than vanishing
             store.update_run_status(run_id, "done")
             print(f"[{run_id}] run failed: {e}", flush=True)
 
     threading.Thread(target=go, daemon=True).start()
     return {"run_id": run_id, "status": "running", "game": game, "games": games,
-            "deck_preset": deck_preset}
+            "deck_preset": deck_preset, "run_config": _run_config_meta(caps, rounds)}
 
 
 @app.post("/api/jobs/claim")

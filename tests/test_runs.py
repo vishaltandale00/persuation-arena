@@ -58,7 +58,8 @@ def test_every_scheduled_deal_has_a_wolf_in_play():
 
 
 # ---- batch resilience -------------------------------------------------------
-def _fake_play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, deck_preset=None):
+def _fake_play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, deck_preset=None,
+                   caps=None):
     if gid == 2:
         raise RuntimeError("boom")
     players = [{"seat": i, "dealt": "Villager", "end": "Villager", "team": "good",
@@ -79,6 +80,40 @@ def test_run_batch_survives_one_failing_game(tmp_path, monkeypatch):
     run = store.get_run(rid)
     assert run["status"] == "partial"                 # one game failed -> not 'done'
     assert store.distinct_gids(rid) == [1, 3, 4, 5]    # gid 2 dropped, rest persisted
+
+
+def test_run_batch_persists_effective_run_config(tmp_path, monkeypatch):
+    from arena.config import caps_with_overrides
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr(batch, "_play_one", _fake_play_one)
+    caps = caps_with_overrides(
+        reasoning_effort="high",
+        max_tokens_per_turn=1234,
+        temperature=0.2,
+        retries=3,
+        prior_message_turns=0,
+        discussion_rounds=2,
+    )
+
+    rid = batch.run_batch(game="onuw", n_games=1, seed_base=500, run_id="r_cfg",
+                          roster=SPECS, workers=1, discussion_rounds=2, caps=caps)
+
+    run = store.get_run(rid)
+    assert run["metadata"]["run_config"] == {
+        "discussion_rounds": 2,
+        "reasoning_effort": "high",
+        "max_tokens_per_turn": 1234,
+        "temperature": 0.2,
+        "retries": 3,
+        "prior_message_turns": 0,
+    }
+    assert run["agents"][0]["reasoning_effort"] == "high"
+    assert run["agents"][0]["max_tokens_per_turn"] == 1234
+    assert run["agents"][0]["temperature"] == 0.2
+    assert run["agents"][0]["retries"] == 3
+    assert run["agents"][0]["prior_message_turns"] == 0
+    assert run["agents"][0]["discussion_rounds"] == 2
 
 
 def test_run_batch_skips_existing_and_publishes_new_games(tmp_path, monkeypatch):
@@ -193,6 +228,9 @@ def test_agent_records_ok_on_valid_response(monkeypatch):
     assert a.calls[0]["provider_reasoning"] == "native trace"
     assert a.calls[0]["reasoning_effort"] == openrouter.SETTINGS.caps.reasoning_effort
     assert a.calls[0]["max_tokens"] == openrouter.SETTINGS.caps.max_tokens_per_turn
+    assert a.calls[0]["temperature"] == openrouter.SETTINGS.caps.temperature
+    assert a.calls[0]["retries"] == openrouter.SETTINGS.caps.retries
+    assert a.calls[0]["prior_message_turns"] == openrouter.SETTINGS.caps.prior_message_turns
     assert a.calls[0]["finish_reason"] == "stop"
     assert a.calls[0]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}
 
