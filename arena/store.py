@@ -905,6 +905,15 @@ def _refresh_run_roster(c, run_id: str, signups: list[dict]) -> None:
 
 def _maybe_ready_required(c, run_id: str, ready_deadline_seconds: int = 60) -> None:
     ph = _ph()
+    # The regressive run-status writes below are guarded to fire only while the run is still open.
+    # Under Neon READ COMMITTED the status read here can be a stale snapshot taken just before
+    # another request committed 'running'; without re-checking openness at write time, this UPDATE
+    # would clobber a freshly-activated run back to 'ready_required'/'waiting' — and because those
+    # are open statuses, every subsequent agent poll re-asserts them, pinning a live run there for
+    # the rest of its life (the frontier_100r_1 bug). Restricting the WHERE to open statuses makes
+    # the write re-check atomically, matching 0 rows instead of regressing 'running'.
+    open_clause = ",".join([ph] * len(OPEN_RUN_STATUSES))
+    open_vals = tuple(sorted(OPEN_RUN_STATUSES))
     run = c.execute(f"SELECT players,status FROM runs WHERE id={ph}", (run_id,)).fetchone()
     if not run:
         return
@@ -912,7 +921,8 @@ def _maybe_ready_required(c, run_id: str, ready_deadline_seconds: int = 60) -> N
         return
     signups = _active_signups(c, run_id)
     if len(signups) < int(run["players"]):
-        c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("waiting", run_id))
+        c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status IN ({open_clause})",
+                  ("waiting", run_id, *open_vals))
         return
     deadline = _utc_after(ready_deadline_seconds)
     for seat, signup in enumerate(signups[:int(run["players"])]):
@@ -922,7 +932,8 @@ def _maybe_ready_required(c, run_id: str, ready_deadline_seconds: int = 60) -> N
                 f"WHERE id={ph}",
                 ("ready_required", seat, deadline, _utcnow(), signup["id"]),
             )
-    c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("ready_required", run_id))
+    c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status IN ({open_clause})",
+              ("ready_required", run_id, *open_vals))
     _refresh_run_roster(c, run_id, _active_signups(c, run_id)[:int(run["players"])])
 
 

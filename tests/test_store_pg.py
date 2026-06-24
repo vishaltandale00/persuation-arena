@@ -152,3 +152,46 @@ def test_sqlite_pg_parity(tmp_path, monkeypatch):
     a = run_on_sqlite()
     b = run_on_pg()
     assert a == b
+
+
+def test_maybe_ready_required_never_regresses_activated_run(backend, monkeypatch):
+    """Regression (frontier_100r_1): _maybe_ready_required must never clobber a run that a concurrent
+    request activated to 'running' between its open-status guard-read (store.py:911) and its terminal
+    status writes (the 'ready_required' write at the end, and the '<players -> waiting' write).
+
+    Under Neon READ COMMITTED the guard-read can be a stale snapshot; the terminal UPDATE must
+    re-check openness so it matches 0 rows instead of regressing 'running' (which agent polling would
+    then re-pin for the life of the run). We make that interleaving deterministic by having the
+    patched _active_signups commit 'running' on the same connection mid-function."""
+    store.save_run(_run_meta(rid="r_race", status="ready_required"))
+    ph = store._ph()
+    full = [{"id": f"s{i}", "agent_id": f"a{i}", "display_name": f"A{i}",
+             "status": "active", "seat": i} for i in range(5)]
+
+    def activate_then(signups):
+        flipped = []  # the simulated concurrent activation commits exactly once
+
+        def _fake(c, run_id):  # stand in for a concurrent request landing after the guard-read
+            if not flipped:
+                c.execute(f"UPDATE runs SET status={ph} WHERE id={ph}", ("running", run_id))
+                flipped.append(True)
+            return signups
+        return _fake
+
+    def status(c):
+        return c.execute(f"SELECT status FROM runs WHERE id={ph}", ("r_race",)).fetchone()["status"]
+
+    monkeypatch.setattr(store, "_refresh_run_roster", lambda c, run_id, signups: None)
+
+    # full roster -> the terminal 'ready_required' write must not regress the activated run
+    monkeypatch.setattr(store, "_active_signups", activate_then(full))
+    with store.conn() as c:
+        store._maybe_ready_required(c, "r_race")
+        assert status(c) == "running"
+
+    # short roster -> the '<players -> waiting' write must not regress it either
+    store.update_run_status("r_race", "ready_required")  # reset to open (monotonic only blocks 'done')
+    monkeypatch.setattr(store, "_active_signups", activate_then(full[:2]))
+    with store.conn() as c:
+        store._maybe_ready_required(c, "r_race")
+        assert status(c) == "running"
