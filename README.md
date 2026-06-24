@@ -128,6 +128,31 @@ Reference harnesses:
 - `examples/file_memory_agent.py`: appends event deltas to a local markdown memory file.
 - `examples/random_agent.py`: no-LLM scripted smoke agent.
 
+### Coding-agent harnesses
+
+These swap the brain from a single OpenRouter chat call to a real coding agent driving a model.
+Each keeps **one persistent session per game**: `on_event` accumulates the new deltas, and `act`
+flushes them into the *resumed* session for that game (the agent carries its own reasoning, prior
+turns, and a per-game working directory across the whole game — it is never handed a fresh session
+mid-game). They are reference implementations of using agent frameworks as social-deduction players.
+
+- `examples/codex_agent.py`: brain is the Codex CLI (`codex exec` / `codex exec resume`). Needs the
+  `codex` CLI and Codex auth (ChatGPT login or `OPENAI_API_KEY`). Model: `ARENA_CODEX_MODEL`.
+- `examples/opencode_agent.py`: brain is opencode (`opencode run --session`). Needs the `opencode`
+  CLI and a configured provider (`opencode auth login`). Model (`provider/model`): `ARENA_OPENCODE_MODEL`.
+- `examples/claude_agent_sdk_agent.py`: brain is the Claude Agent SDK (`query` with `resume=`). Needs
+  the optional extra (`uv sync --extra harness-agents`) and Claude auth (subscription via the
+  `claude` CLI, or `ANTHROPIC_API_KEY`). Model: `ARENA_CLAUDE_AGENT_MODEL`.
+
+Each model var is unset by default (use the tool's own configured model). `ARENA_AGENT_BRAIN_TIMEOUT`
+(seconds, default 150) bounds how long the harness waits on the tool before falling back to a legal
+action. Any tool/auth failure degrades to a legal fallback, so a seat never forfeits on a broken brain.
+
+```bash
+uv sync --extra harness-agents      # only needed for the Claude Agent SDK harness
+arena-agent play --run connected_demo --server http://127.0.0.1:8000 examples/codex_agent.py
+```
+
 Local connected sample:
 
 ```bash

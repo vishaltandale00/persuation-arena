@@ -20,6 +20,9 @@ def _wire(path: str) -> tuple[bool, bool]:
     ("examples/session_agent.py", True),
     ("examples/file_memory_agent.py", True),
     ("examples/pass_agent.py", False),       # a stateless reference harness
+    ("examples/codex_agent.py", True),       # coding-agent brains keep one session per game,
+    ("examples/opencode_agent.py", True),    # so they need on_event to accumulate the deltas they
+    ("examples/claude_agent_sdk_agent.py", True),  # flush into the resumed session each turn
 ])
 def test_cli_wires_handlers(path, expect_on_event):
     act_ok, on_event_ok = _wire(path)

@@ -88,7 +88,7 @@ PG_SCHEMA_STMTS = [
     """CREATE TABLE IF NOT EXISTS runs (
          id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
          players INTEGER, seed_base BIGINT, created TEXT, agents_json TEXT,
-         submitter TEXT, created_utc TEXT, deck_preset TEXT
+         submitter TEXT, created_utc TEXT, deck_preset TEXT, coordinator_url TEXT
        )""",
     """CREATE TABLE IF NOT EXISTS games (
          run_id TEXT, gid INTEGER, seed BIGINT, winner_team TEXT, line TEXT,
@@ -134,12 +134,14 @@ PG_SCHEMA_STMTS = [
 # Columns added after the original schema shipped; ALTER-added on open so old SQLite DBs upgrade.
 _MIGRATIONS = {
     "game_players": [("calls", "INTEGER DEFAULT 0"), ("forfeits", "INTEGER DEFAULT 0")],
-    "runs": [("submitter", "TEXT"), ("created_utc", "TEXT"), ("deck_preset", "TEXT")],
+    "runs": [("submitter", "TEXT"), ("created_utc", "TEXT"), ("deck_preset", "TEXT"),
+             ("coordinator_url", "TEXT")],
     "jobs": [("deck_preset", "TEXT")],
 }
 
 PG_MIGRATION_STMTS = [
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS coordinator_url TEXT",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
 ]
 
@@ -818,6 +820,14 @@ def mark_signup_ready(signup_id: str, agent_id: str) -> tuple[dict | None, str |
             c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("running", run_id))
             append_event_tx(c, run_id, "run_status", {"status": "active"}, phase="run")
         return _rowdict(c.execute(f"SELECT * FROM run_signups WHERE id={ph}", (signup_id,)).fetchone()), None
+
+
+def set_coordinator_url(run_id: str, url: str | None) -> None:
+    """Publish (or clear) the per-run coordinator's public URL in Neon so the JS registry's signup
+    response can hand it to agents to re-point gameplay. Replaces the Modal-Dict handoff."""
+    ph = _ph()
+    with conn() as c:
+        c.execute(f"UPDATE runs SET coordinator_url={ph} WHERE id={ph}", (url, run_id))
 
 
 def activate_run_if_ready(run_id: str) -> int:

@@ -67,6 +67,7 @@ def run_server(run_config: dict, rounds: int = 5, wait_timeout: float = 300.0,
         # The tunnel URL is live only for the duration of this `with` — keep the whole run inside it.
         with _modal.forward(PORT) as tunnel:
             coordinator_urls.put(run_id, tunnel.url)
+            store.set_coordinator_url(run_id, tunnel.url)   # Neon handoff so the JS registry signup returns it
             print(f"[run_server] {run_id} serving at {tunnel.url}", flush=True)
 
             n = cs.wait_for_active(run_id, players, wait_timeout)
@@ -85,6 +86,7 @@ def run_server(run_config: dict, rounds: int = 5, wait_timeout: float = 300.0,
             coordinator_urls.pop(run_id)
         except KeyError:
             pass
+        store.set_coordinator_url(run_id, None)   # clear the Neon handoff on teardown
         cs.stop_api_server(server)
 
     run = store.get_run(run_id)
@@ -95,6 +97,20 @@ def run_server(run_config: dict, rounds: int = 5, wait_timeout: float = 300.0,
     }
     print(f"[run_server] {run_id} done: {result}", flush=True)
     return result
+
+
+@app.function(image=image, secrets=[db_secret], min_containers=0, timeout=600)
+@modal.concurrent(max_inputs=50)
+@modal.asgi_app(label="api")
+def api():
+    """The central Arena API (arena.server:app), served on Modal — register/signup/ready/poll/reply,
+    runs, models, keys. This is where ALL the Python lives now: the static observer (on Vercel) talks
+    to this URL, and creating a connected run spawns a per-run coordinator Modal->Modal (no SDK or
+    tokens on the frontend). DATABASE_URL comes from the neon secret."""
+    import os
+    os.environ["ARENA_MODAL_COORDINATOR"] = "1"   # enable coordinator spawning from the API
+    from arena.server import app as web
+    return web
 
 
 @app.function(image=image, secrets=[db_secret], timeout=120)

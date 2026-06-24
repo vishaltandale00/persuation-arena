@@ -1,10 +1,14 @@
 {
   "private": true,
+  "type": "module",
   "scripts": {
     "audit:pretext": ".venv/bin/python tools/pretext_responsive_audit.py"
   },
   "engines": {
     "node": "22.x"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.1.0"
   },
   "devDependencies": {
     "@chenglou/pretext": "^0.0.8"
