@@ -454,7 +454,7 @@ function tagOf(n){ return (n[0]+(n[1]||"")).toUpperCase(); }
 function escAttr(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function publicRef(name){
-  const h=String(name||"").trim().normalize("NFKD").replace(/[^\x00-\x7F]/g,"").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
+  const h=String(name||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
   return h?"@"+h:"";
 }
 function mentionMap(m){

@@ -6,7 +6,6 @@ participant ref derived from the public display name, e.g. "Alice Smith" -> "@al
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -19,9 +18,7 @@ def normalize_public_name(value: Any) -> str:
 
 
 def public_handle(name: str) -> str:
-    normalized = unicodedata.normalize("NFKD", normalize_public_name(name))
-    ascii_name = normalized.encode("ascii", "ignore").decode("ascii").lower()
-    return re.sub(r"[^a-z0-9]+", "-", ascii_name).strip("-")
+    return re.sub(r"[^a-z0-9]+", "-", normalize_public_name(name).lower()).strip("-")
 
 
 def public_ref(name: str) -> str:

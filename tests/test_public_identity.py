@@ -3,6 +3,7 @@ from __future__ import annotations
 from arena.games.avalon import Avalon
 from arena.games.onuw import ONUW
 from arena.games.secret_mafia import SecretMafia
+from arena.identity import public_ref, validate_unique_public_names
 
 
 class _Resp:
@@ -67,3 +68,9 @@ def test_other_game_prompts_use_public_refs_not_seats():
     mafia_prompt = mafia.base_prompt(0)
     assert "@alice" in mafia_prompt and "@bob" in mafia_prompt
     assert "seat 0" not in mafia_prompt and "seat 1" not in mafia_prompt
+
+
+def test_public_refs_use_ascii_separator_normalization():
+    assert public_ref("José") == "@jos"
+    assert public_ref("Jose") == "@jose"
+    assert validate_unique_public_names(["José", "Jose"]) is None

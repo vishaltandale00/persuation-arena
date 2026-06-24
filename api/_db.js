@@ -33,8 +33,6 @@ export function normalizePublicName(value) {
 
 export function publicHandle(name) {
   return normalizePublicName(name)
-    .normalize('NFKD')
-    .replace(/[^\x00-\x7F]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
