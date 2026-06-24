@@ -21,6 +21,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
+from arena.games.onuw import format_onuw_rules_block
+
 
 def _etype(event: Any) -> str:
     return event["type"] if isinstance(event, dict) else event.type
@@ -99,7 +101,7 @@ class SeatState:
     def roster_line(self) -> str:
         return ", ".join(f"{self.roster[i]}(seat {i})" for i in range(self.n))
 
-    def render_context(self) -> str:
+    def render_context(self, *, phase: str = "context", action_kind: str = "onuw.context") -> str:
         """Reconstruct the engine's per-seat filtered prompt from the folded events.
 
         Intentionally byte-identical to the engine's ONUW.base_prompt(seat) so an agent driven by
@@ -112,6 +114,8 @@ class SeatState:
             f"There are {self.center_count} face-down center cards nobody was dealt.",
             f"Players: {self.roster_line()}.",
             "Roles can be secretly swapped at night, so what you were dealt may not be what you are now.",
+            "",
+            format_onuw_rules_block(self.n, self.deck, self.center_count, phase=phase, action_kind=action_kind),
         ]
         if self.night_obs:
             lines.append("What you learned during the night:")

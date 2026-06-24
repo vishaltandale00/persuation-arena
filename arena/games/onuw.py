@@ -13,6 +13,7 @@ The output is a transcript dict in the shape the observer renders.
 from __future__ import annotations
 
 import inspect
+import json
 import random
 from collections import Counter
 from typing import Any, Callable
@@ -35,6 +36,123 @@ ROLE_DESC = {
 }
 
 WAKE = ["Doppelganger", "Werewolf", "Minion", "Mason", "Seer", "Robber", "Troublemaker", "Drunk", "Insomniac"]
+
+
+def onuw_rules_payload(
+    n_players: int,
+    deck: list[str],
+    center_count: int,
+    *,
+    phase: str = "context",
+    action_kind: str = "onuw.context",
+) -> dict[str, Any]:
+    """Public, model-facing ONUW rules. Never include seat/card assignments here."""
+    deck_counts = dict(sorted(Counter(deck).items()))
+    roles_in_deck = sorted(deck_counts)
+    role_rules = {role: ROLE_DESC.get(role, "") for role in roles_in_deck}
+    doppel_in_deck = "Doppelganger" in deck_counts
+    return {
+        "game": "One Night Ultimate Werewolf",
+        "game_setup": {
+            "player_count": n_players,
+            "total_cards": len(deck),
+            "dealt_player_cards": n_players,
+            "center_cards": center_count,
+            "deck_counts": deck_counts,
+            "public_information_boundary": (
+                "The roster, deck multiset, and center-card count are public. Exact player-card "
+                "assignments and center-card identities are hidden unless your own private "
+                "observations reveal them."
+            ),
+        },
+        "role_state_distinctions": {
+            "dealt_role": "The card a player received at setup; this can move during the night.",
+            "current_believed_role": (
+                "Your prompt states the role you currently believe you have. That belief may be "
+                "wrong if another role moved your card after you last saw it."
+            ),
+            "final_role": (
+                "The card at a seat after all night actions finish. Voting outcomes and win/loss "
+                "are evaluated on final roles, not original dealt roles or public claims."
+            ),
+        },
+        "night_action_order": list(WAKE),
+        "doppelganger_caveat": (
+            "Doppelganger acts first, looks at one player's card, becomes that role for final-role "
+            "resolution, and immediately performs the copied action when the copied role has one. "
+            "If Doppelganger copies Insomniac, it checks its own final card at dawn."
+            if doppel_in_deck
+            else "No Doppelganger card is in this deck, so no Doppelganger copy action occurs."
+        ),
+        "role_rules": role_rules,
+        "action_rules": {
+            "werewolf": (
+                "Werewolves wake together and see other waking werewolves. A lone werewolf may "
+                "peek at one center card."
+            ),
+            "minion": "Minion learns who the werewolves are; werewolves do not learn who the Minion is.",
+            "mason": "Masons see other waking Masons, if any.",
+            "seer": "Seer may view one other player's current card or two center cards.",
+            "robber": (
+                "Robber may swap its own current card with another player's current card, then sees "
+                "and believes the new card. The robbed player is not told."
+            ),
+            "troublemaker": (
+                "Troublemaker may swap two other players' current cards without looking at either "
+                "card. Those players are not told."
+            ),
+            "drunk": (
+                "Drunk must swap its own current card with one center card and does not look at the "
+                "new card, so it still only knows it was dealt Drunk."
+            ),
+            "insomniac": "Insomniac checks its own card at dawn and learns its final role.",
+        },
+        "discussion_rules": {
+            "visibility": "Discussion is public; all seats see public speech and passes.",
+            "allowed_strategy": "Players may claim roles, share true or false information, accuse, defend, or pass.",
+            "hidden_information": "Do not assume a claim is true; cards can move and players can lie.",
+        },
+        "vote_rules": {
+            "timing": "Votes are simultaneous and collected from a frozen pre-vote public state.",
+            "legal_targets": "Vote for one other player, or vote for no one with target -1. You cannot vote for yourself.",
+            "elimination": (
+                "Plurality target(s) are eliminated. If everyone receives exactly one vote, nobody "
+                "is eliminated. If no-one is tied for or has the plurality, nobody is eliminated."
+            ),
+            "hunter_chain": "If an eliminated player's final role is Hunter, the player the Hunter voted for also dies.",
+        },
+        "win_conditions": {
+            "village": "Village roles win if at least one final-role Werewolf is eliminated.",
+            "village_no_werewolves": "If no final-role Werewolf exists, Village wins only if nobody is eliminated.",
+            "werewolf": "Werewolf team wins if no final-role Werewolf is eliminated and Tanner does not win instead.",
+            "minion": (
+                "Minion is on the werewolf team. If no final-role Werewolf exists, Minion can win "
+                "when someone is eliminated and Tanner does not win."
+            ),
+            "tanner": "Tanner wins only if the final-role Tanner is eliminated.",
+            "hunter": "Hunter wins with the Village, but if eliminated it also eliminates its vote target.",
+        },
+        "current_step": {
+            "phase": phase,
+            "action_kind": action_kind,
+        },
+    }
+
+
+def format_onuw_rules_block(
+    n_players: int,
+    deck: list[str],
+    center_count: int,
+    *,
+    phase: str = "context",
+    action_kind: str = "onuw.context",
+) -> str:
+    payload = onuw_rules_payload(n_players, deck, center_count, phase=phase, action_kind=action_kind)
+    return "\n".join([
+        "ONUW_RULES_PAYLOAD_BEGIN",
+        json.dumps(payload, indent=2, sort_keys=True),
+        "ONUW_RULES_PAYLOAD_END",
+    ])
 
 DEFAULT_DECK_PRESET = "arena"
 
@@ -206,6 +324,9 @@ class ONUW:
             "roster": {i: self.names[i] for i in range(self.n)},
             "deck": list(self.deck),
             "center_count": len(self.center),
+            "rules_payload": onuw_rules_payload(
+                self.n, self.deck, len(self.center), phase="setup", action_kind="onuw.setup"
+            ),
             "win_condition": (
                 "Village wins if a Werewolf is eliminated (or, with no werewolf in play, if nobody "
                 "dies). The Werewolf team wins if no werewolf is eliminated. Tanner wins only by "
@@ -246,7 +367,7 @@ class ONUW:
             return prepare(observation, parse_action, default_action, **turn_meta)
         return self._act(agent, observation, parse_action, default_action, **turn_meta)
 
-    def base_prompt(self, pid: int) -> str:
+    def base_prompt(self, pid: int, *, phase: str = "context", action_kind: str = "onuw.context") -> str:
         # Under delta transport, send no context: the turn carries only the per-turn action
         # instruction (appended by the caller). A stateful harness rebuilds context from the event
         # stream; a stateless one plays blind — the point of the event contract.
@@ -260,6 +381,8 @@ class ONUW:
             f"There are {len(self.center)} face-down center cards nobody was dealt.",
             f"Players: {self._roster_line()}.",
             "Roles can be secretly swapped at night, so what you were dealt may not be what you are now.",
+            "",
+            format_onuw_rules_block(self.n, self.deck, len(self.center), phase=phase, action_kind=action_kind),
         ]
         if self.obs[pid]:
             lines.append("What you learned during the night:")
@@ -354,7 +477,7 @@ class ONUW:
         if not hasattr(self, "_doppel_role"):
             self._doppel_role = {}
         targets = [i for i in range(self.n) if i != pid]
-        prompt = self.base_prompt(pid) + (
+        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.doppelganger.copy_player") + (
             "\n\nNIGHT ACTION (Doppelganger): look at one player's card and become a copy of that role.\n"
             'Reply JSON {"reasoning":"...","action":{"target":<seat>}}.'
         )
@@ -400,7 +523,7 @@ class ONUW:
 
     def _seer_action(self, pid: int, agent: Agent):
         alive_targets = [i for i in range(self.n) if i != pid]
-        prompt = self.base_prompt(pid) + (
+        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.seer.inspect") + (
             "\n\nNIGHT ACTION (Seer): choose ONE:\n"
             '  {"mode":"player","target":<seat>}  view one other player\'s card, OR\n'
             '  {"mode":"center","indices":[a,b]}  view two of the three center cards (0-based).\n'
@@ -474,7 +597,7 @@ class ONUW:
 
     def _robber_action(self, pid: int, agent: Agent):
         targets = [i for i in range(self.n) if i != pid]
-        prompt = self.base_prompt(pid) + (
+        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.robber.swap_or_decline") + (
             "\n\nNIGHT ACTION (Robber): swap your card with a player's and see your new role, or decline.\n"
             'Reply JSON {"reasoning":"...","action":{"target":<seat or null>}}.'
         )
@@ -513,7 +636,7 @@ class ONUW:
 
     def _tm_action(self, pid: int, agent: Agent):
         others = [i for i in range(self.n) if i != pid]
-        prompt = self.base_prompt(pid) + (
+        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.troublemaker.swap_two_or_decline") + (
             "\n\nNIGHT ACTION (Troublemaker): swap two OTHER players' cards (you don't see them), or decline.\n"
             'Reply JSON {"reasoning":"...","action":{"a":<seat or null>,"b":<seat or null>}}.'
         )
@@ -572,7 +695,7 @@ class ONUW:
         return f"Troublemaker swaps {self.names[x]} and {self.names[y]}", resp.reasoning, resp.ms
 
     def _drunk_action(self, pid: int, agent: Agent):
-        prompt = self.base_prompt(pid) + (
+        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.drunk.swap_center") + (
             "\n\nNIGHT ACTION (Drunk): swap your card with a center card (0-based) without looking.\n"
             'Reply JSON {"reasoning":"...","action":{"index":<0,1,2>}}.'
         )
@@ -642,7 +765,7 @@ class ONUW:
         return {"name": "Discussion", "kind": "talk", "events": events, "reason": reason, "synth": synth}
 
     def _speak(self, pid: int, agent: Agent):
-        prompt = self.base_prompt(pid) + (
+        prompt = self.base_prompt(pid, phase="discussion", action_kind="onuw.discussion.speak_or_pass") + (
             "\n\nIt is your turn to speak to the whole table. Say something persuasive that helps your team — "
             "claim a role, share (or fake) information, accuse, or defend yourself. You may stay silent.\n"
             'Reply JSON {"reasoning":"...","action":"<what you say>"} or {"action":"pass"} to stay silent.'
@@ -741,7 +864,7 @@ class ONUW:
 
     def _vote(self, pid: int, agent: Agent, frozen_public: list[str], wait: bool = True):
         targets = [i for i in range(self.n) if i != pid]
-        prompt = self.base_prompt(pid) + (
+        prompt = self.base_prompt(pid, phase="vote", action_kind="onuw.vote") + (
             "\n\nFINAL VOTE: point at the player you believe should be eliminated, or vote for no one. "
             "You cannot vote for yourself.\n"
             'Reply JSON {"reasoning":"...","action":<seat number, or -1 for no one>}.'

@@ -1,11 +1,40 @@
 """ONUW conformance: deal, role actions, swaps, recognition, Doppelganger, full game."""
 from __future__ import annotations
 
+import json
+
 from arena.games.base import team_of
 from arena.games.onuw import DEFAULT_DECK, ONUW
 from tests.scripted import ScriptedDefault
 
 NAMES = {i: f"P{i}" for i in range(5)}
+
+
+class RecordingAgent:
+    name = "R"
+    model = "scripted"
+
+    def __init__(self):
+        self.observations: list[str] = []
+        self.turn_meta: list[dict] = []
+
+    def act(self, observation, parse_action, default_action, **turn_meta):
+        self.observations.append(observation)
+        self.turn_meta.append(turn_meta)
+
+        class Resp:
+            reasoning = "(recorded)"
+            action = default_action
+            ms = 0.0
+
+        return Resp()
+
+
+def _rules_payload_from_prompt(prompt: str) -> dict:
+    start = "ONUW_RULES_PAYLOAD_BEGIN"
+    end = "ONUW_RULES_PAYLOAD_END"
+    assert start in prompt and end in prompt
+    return json.loads(prompt.split(start, 1)[1].split(end, 1)[0].strip())
 
 
 def _night(layout, seed=1):
@@ -68,6 +97,66 @@ def test_doppelganger_copies_and_acts():
     assert c.current[0] == "Seer"
     assert any("copied" in o for o in c.obs[0])
     assert any("center" in o for o in c.obs[0])  # performed the copied Seer's center look
+
+
+def test_runtime_prompt_includes_comprehensive_onuw_rules_payload():
+    layout = ["Robber", "Doppelganger", "Werewolf", "Troublemaker", "Drunk", "Minion", "Hunter", "Tanner"]
+    core = ONUW(NAMES, seed=7, deck=list(layout), deal_override=list(layout))
+    core.deal()
+    agent = RecordingAgent()
+
+    core._robber_action(0, agent)
+
+    prompt = agent.observations[-1]
+    payload = _rules_payload_from_prompt(prompt)
+    assert payload["game_setup"]["player_count"] == 5
+    assert payload["game_setup"]["total_cards"] == 8
+    assert payload["game_setup"]["dealt_player_cards"] == 5
+    assert payload["game_setup"]["center_cards"] == 3
+    assert payload["game_setup"]["deck_counts"]["Werewolf"] == 1
+    assert payload["role_state_distinctions"]["dealt_role"]
+    assert payload["role_state_distinctions"]["final_role"]
+    assert payload["night_action_order"] == [
+        "Doppelganger", "Werewolf", "Minion", "Mason", "Seer", "Robber",
+        "Troublemaker", "Drunk", "Insomniac",
+    ]
+    assert "immediately performs the copied action" in payload["doppelganger_caveat"]
+    assert "sees and believes the new card" in payload["action_rules"]["robber"]
+    assert "without looking" in payload["action_rules"]["troublemaker"]
+    assert "does not look at the new card" in payload["action_rules"]["drunk"]
+    assert payload["discussion_rules"]["visibility"].startswith("Discussion is public")
+    assert "simultaneous" in payload["vote_rules"]["timing"]
+    assert "target -1" in payload["vote_rules"]["legal_targets"]
+    for key in ("tanner", "hunter", "minion", "werewolf", "village"):
+        assert payload["win_conditions"][key]
+    assert payload["current_step"] == {"phase": "night", "action_kind": "onuw.robber.swap_or_decline"}
+
+
+def test_rules_payload_does_not_leak_other_dealt_roles_or_center_identities():
+    layout = ["Seer", "Werewolf", "Minion", "Robber", "Tanner", "Hunter", "Drunk", "Villager"]
+    core = ONUW(NAMES, seed=9, deck=list(layout), deal_override=list(layout))
+    core.deal()
+
+    prompt = core.base_prompt(0, phase="discussion", action_kind="onuw.discussion.speak_or_pass")
+    payload = _rules_payload_from_prompt(prompt)
+
+    assert "P1(seat 1)" in prompt
+    assert payload["game_setup"]["deck_counts"] == {
+        "Drunk": 1,
+        "Hunter": 1,
+        "Minion": 1,
+        "Robber": 1,
+        "Seer": 1,
+        "Tanner": 1,
+        "Villager": 1,
+        "Werewolf": 1,
+    }
+    assert "P1: Werewolf" not in prompt
+    assert "seat 1: Werewolf" not in prompt
+    assert "P2: Minion" not in prompt
+    assert "center #1: Hunter" not in prompt
+    assert "center #2: Drunk" not in prompt
+    assert "center #3: Villager" not in prompt
 
 
 def test_full_game_completes_and_is_consistent():
