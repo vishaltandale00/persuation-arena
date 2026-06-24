@@ -439,7 +439,7 @@ const PROVIDERS=[
 const keyState={};
 
 /* ===== RUNS — each has its own agent roster (same agents only within the run) ===== */
-const API="https://vishaltandale00--api.modal.run/api";  // central Python API on Modal (this page is static on Vercel)
+const API="/api";  // same-origin Vercel serverless functions under /api
 let RUNS={}, RUN_ORDER=[];
 let curDebug=null;
 const TRANSCRIPTS={};
