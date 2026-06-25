@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -155,6 +156,102 @@ def test_sharded_smoke_proceeds_with_database_url(tmp_path, monkeypatch):
     with pytest.raises(_StopHere):
         smoke._sharded_smoke(_shard_args(database_url_present=True))
     assert created["k"] == 2 and created["parent"] == "modal_smoke_shards_test"
+
+
+def test_run_agent_forwards_join_token_to_signup(monkeypatch, tmp_path):
+    """P2c: `_run_agent` must thread its join_token through to ArenaAgent.signup. Each shard child is
+    created by create_sharded_run with a per-parent join_token, so a child REJECTS /signups
+    (403 run_not_joinable) unless the agent presents that token (arena/store.signup INV-4/D7)."""
+    captured = {}
+
+    class _FakeAgent:
+        def __init__(self, *a, **k):
+            pass
+
+        def act(self, fn):
+            return fn
+
+        def signup(self, run_id=None, game=None, max_concurrent_turns=1, join_token=None):
+            captured["run_id"] = run_id
+            captured["join_token"] = join_token
+            return SimpleNamespace(status="seated", seat=0, signup_id="su-1")
+
+        def run_forever(self, signups):
+            captured["ran"] = True
+
+    monkeypatch.setattr(smoke, "ArenaAgent", _FakeAgent)
+    cred = str(tmp_path / "cred.json")
+    smoke._run_agent("rand-0", COORD_A, "p_shard_0", cred=cred, join_token="JT-secret")
+
+    assert captured["join_token"] == "JT-secret", (
+        "the child's join_token must reach signup; without it the token-gated child returns "
+        f"403 run_not_joinable. got {captured.get('join_token')!r}")
+    assert captured["ran"] is True
+
+
+def test_sharded_smoke_passes_child_join_token_to_agents(monkeypatch):
+    """P2c (verifier): the sharded smoke must read EACH child's join_token from the store and thread
+    it through to that shard's agents' signup, so a token-gated child (create_sharded_run) accepts
+    them instead of returning 403 run_not_joinable. Modal/LLM/network-free."""
+    monkeypatch.setenv("DATABASE_URL", "postgres://example/shared")
+
+    child_ids = ["modal_smoke_shards_test_shard_0", "modal_smoke_shards_test_shard_1"]
+    # Distinct per-child token so the test proves each shard's agents get THAT shard's token,
+    # not a stale/shared one. (In prod create_sharded_run shares one token across a parent's
+    # children, but the smoke must still source it per child row.)
+    tokens = {child_ids[0]: "JT-shard-0", child_ids[1]: "JT-shard-1"}
+
+    monkeypatch.setattr(smoke, "create_sharded_run", lambda parent_cfg, k: list(child_ids))
+    monkeypatch.setattr(smoke, "_default_register",
+                        lambda name, server: AgentCredentials(
+                            server=server.rstrip("/"), agent_id=f"agent_{name}",
+                            display_name=name, agent_token="tok"))
+    # The fix sources the token from the child run row in the shared store.
+    monkeypatch.setattr(smoke.store, "get_run",
+                        lambda cid: {"id": cid, "join_token": tokens[cid]})
+    monkeypatch.setattr(smoke, "rollup_parent_status", lambda parent_id: "done")
+
+    # Stub Modal spawn + the per-shard coordinator URL lookup (no real container/tunnel).
+    class _FakeFn:
+        def spawn(self, *a, **k):
+            return SimpleNamespace(object_id="call-x", get=lambda timeout=None: {"ok": True})
+
+    monkeypatch.setattr(smoke.modal.Function, "from_name", staticmethod(lambda *a, **k: _FakeFn()))
+    monkeypatch.setattr(smoke, "coordinator_url",
+                        lambda cid: {child_ids[0]: COORD_A, child_ids[1]: COORD_B}[cid])
+
+    # Run threads inline so we deterministically capture every (shard, join_token) without sleeping.
+    seen = []
+
+    class _InlineThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self._target, self._args = target, args
+
+        def start(self):
+            self._target(*self._args)
+
+        def join(self, timeout=None):
+            pass
+
+    monkeypatch.setattr(smoke.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(smoke.time, "sleep", lambda *_a, **_k: None)
+
+    def _capture_run_agent(name, server, run_id, cred=None, join_token=None):
+        seen.append((run_id, join_token))
+
+    monkeypatch.setattr(smoke, "_run_agent", _capture_run_agent)
+
+    rc = smoke._sharded_smoke(_shard_args(database_url_present=True))
+    assert rc == 0  # rollup_parent_status == 'done'
+
+    # Every shard's agents must sign up with THAT shard's join_token (and never None).
+    assert {run_id for run_id, _ in seen} == set(child_ids)
+    assert all(jt is not None for _, jt in seen), seen
+    by_child = {cid: {jt for r, jt in seen if r == cid} for cid in child_ids}
+    assert by_child[child_ids[0]] == {tokens[child_ids[0]]}, by_child
+    assert by_child[child_ids[1]] == {tokens[child_ids[1]]}, by_child
+    # N_PLAYERS agents per shard, all token-bearing (would have been 403 without the token).
+    assert len(seen) == smoke.N_PLAYERS * len(child_ids)
 
 
 class _StopHere(Exception):

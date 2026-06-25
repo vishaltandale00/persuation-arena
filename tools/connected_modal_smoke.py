@@ -18,7 +18,7 @@ V-10 — manual parallel-shards gate (SPEC-parallel-shards.md REQ-10). Spawns K 
 containers and K shard host bundles (process per shard, D9), with each agent identity a SINGLE
 rating competitor across ALL K shards (REQ-5 / D9).
 
-Two correctness requirements this path used to get wrong (now enforced):
+Three correctness requirements this path used to get wrong (now enforced):
   - Shared identity (REQ-5): each shard has a DIFFERENT coordinator URL, and CredentialsStore keys
     profiles by server URL — so reusing one cred file across shards would register a SEPARATE
     agent_id per shard for the same displayed name. We pre-register each identity ONCE against the
@@ -29,6 +29,10 @@ Two correctness requirements this path used to get wrong (now enforced):
     DATABASE_URL to be set (and to match the coordinators' `neon-database-url` secret) and fails
     fast otherwise, instead of silently writing to local SQLite (which would make each coordinator
     replay the FULL schedule and the parent rollup never complete).
+  - Join token (INV-4 / D7): create_sharded_run gates each child's /signups behind a per-parent
+    `join_token`, so a child returns 403 run_not_joinable to any agent that does not present it. We
+    read each child's token from its (shared-Neon) run row and pass it through to that shard's
+    agents' signup; otherwise every smoke agent would be rejected.
 
 Requires a deployed Modal app + a shared DATABASE_URL (this process and the Modal side); NOT in CI.
   # deployed Modal + DATABASE_URL set to the SAME Neon as the coordinators' neon-database-url secret
@@ -54,19 +58,24 @@ from persuasion_arena_agent.agent import ArenaAgent
 from persuasion_arena_agent.client import ArenaHttpClient
 from persuasion_arena_agent.credentials import AgentCredentials, CredentialsStore, DEFAULT_SERVER
 from examples import random_agent
+from arena import store
 from arena.modal_app import APP_NAME, coordinator_url
 from arena.sharded import create_sharded_run, rollup_parent_status
 
 N_PLAYERS = 5
 
 
-def _run_agent(name: str, server: str, run_id: str, cred: str | None = None) -> None:
+def _run_agent(name: str, server: str, run_id: str, cred: str | None = None,
+               join_token: str | None = None) -> None:
     # cred path must NOT pre-exist (an empty file makes CredentialsStore json.loads("") crash).
     cred = cred or os.path.join(tempfile.mkdtemp(prefix="arena-cred-"), "cred.json")
     try:
         agent = ArenaAgent(name=name, server=server, credentials=CredentialsStore(cred))
         agent.act(random_agent.act)
-        signup = agent.signup(run_id=run_id)
+        # Shard children are created via create_sharded_run with a per-parent join_token, so they
+        # gate /signups (INV-4 / SPEC D7): without the token the child returns 403 run_not_joinable.
+        # Single-coordinator (run_kind='normal') runs ignore the token (None is fine).
+        signup = agent.signup(run_id=run_id, join_token=join_token)
         print(f"  {name}: {signup.status} seat={signup.seat}", flush=True)
         agent.run_forever([signup])
         print(f"  {name}: done", flush=True)
@@ -179,11 +188,19 @@ def _sharded_smoke(args) -> int:
         if not url:
             raise SystemExit(f"no coordinator URL for {cid} — check modal app logs")
         print(f"  {cid} coordinator URL: {url}", flush=True)
+        # INV-4 / D7: create_sharded_run gates each child's /signups behind a per-parent join_token.
+        # Read THIS child's token from its (shared-Neon) run row and present it on signup, else the
+        # coordinator rejects every agent with 403 run_not_joinable.
+        child_row = store.get_run(cid)
+        join_token = (child_row or {}).get("join_token")
+        if not join_token:
+            raise SystemExit(f"no join_token on child row {cid} — create_sharded_run must set one (D7)")
         for i in range(N_PLAYERS):
             # Reuse the pre-registered agent_id on THIS coordinator URL (one competitor across shards).
             _seed_cred_for_coordinator(shared_creds[i], url, cred_paths[i])
             t = threading.Thread(target=_run_agent,
-                                 args=(identities[i], url, cid, cred_paths[i]), daemon=True)
+                                 args=(identities[i], url, cid, cred_paths[i], join_token),
+                                 daemon=True)
             t.start()
             threads.append(t)
             time.sleep(0.3)
