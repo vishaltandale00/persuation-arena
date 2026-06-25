@@ -1072,6 +1072,51 @@ def test_create_sharded_run_same_count_changed_config_rejected(tmp_path, monkeyp
     assert store.get_run("cfgchg")["join_token"] == orig_token
 
 
+def test_create_sharded_run_same_count_changed_metadata_rejected(tmp_path, monkeypatch):
+    """Codex round-9 / FINDING P2: the round-8 same-K immutable-field guard validates
+    n_games/seed_base/players/game/deck_preset but NOT metadata (the run_config). A same-K
+    re-create with identical numerics/game/deck but DIFFERENT metadata.run_config (e.g. rounds,
+    temperature, prior_message_turns) leaves the mismatch set empty, so the upserts overwrite
+    metadata_json while old games/signups stay under the SAME child ids — a reused run id serves
+    old transcripts/scores under NEW run settings. The metadata must be part of the same-K
+    immutable-field validation: a changed-metadata re-create raises 'changed config'; a truly
+    identical-metadata same-K retry stays idempotent (same child ids, token reused)."""
+    import pytest
+    _sqlite_store(tmp_path, monkeypatch)
+    base = _base_run("metachg", n_games=6, players=3, seed_base=7,
+                     deck_preset="standard",
+                     metadata={"run_config": {"rounds": 5, "temperature": 0.7,
+                                              "prior_message_turns": 2}})
+    create_sharded_run(base, 2)
+    orig_token = store.get_run("metachg")["join_token"]
+
+    # changed metadata.run_config (rounds 5 -> 9), everything else identical -> reject
+    with pytest.raises(ValueError, match="config"):
+        create_sharded_run(
+            _base_run("metachg", n_games=6, players=3, seed_base=7,
+                      deck_preset="standard",
+                      metadata={"run_config": {"rounds": 9, "temperature": 0.7,
+                                               "prior_message_turns": 2}}), 2)
+
+    # the existing parent is untouched (metadata preserved, token preserved)
+    parent = store.get_run("metachg")
+    assert parent["metadata"] == {"run_config": {"rounds": 5, "temperature": 0.7,
+                                                 "prior_message_turns": 2}}
+    assert parent["join_token"] == orig_token
+    assert store.child_run_ids("metachg") == ["metachg_shard_0", "metachg_shard_1"]
+
+    # an identical-metadata same-K retry stays idempotent (same ids, token reused)
+    again = create_sharded_run(
+        _base_run("metachg", n_games=6, players=3, seed_base=7,
+                  deck_preset="standard",
+                  metadata={"run_config": {"rounds": 5, "temperature": 0.7,
+                                           "prior_message_turns": 2}}), 2)
+    assert again == ["metachg_shard_0", "metachg_shard_1"]
+    assert store.get_run("metachg")["join_token"] == orig_token
+    assert store.get_run("metachg")["metadata"] == {
+        "run_config": {"rounds": 5, "temperature": 0.7, "prior_message_turns": 2}}
+
+
 def test_create_sharded_run_rejects_reused_normal_run_id(tmp_path, monkeypatch):
     """Codex round-6 / FINDING #1 (DATA-INTEGRITY): create_sharded_run must REJECT a parent_id that
     already belongs to a NORMAL run. Today existing_k (num_shards) is None for a normal run, so the

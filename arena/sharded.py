@@ -141,6 +141,18 @@ def create_sharded_run(parent_config: dict, num_shards: int) -> list[str]:
             mismatches.append(
                 f"deck_preset (existing {existing.get('deck_preset')!r}, "
                 f"requested {parent_config.get('deck_preset')!r})")
+        # FINDING P2 (round-9, DATA-INTEGRITY): metadata (the run_config: rounds, temperature,
+        # prior_message_turns, ...) is just as IMMUTABLE for a reused id as n_games/seed_base/etc.
+        # The round-8 guard omitted it, so a same-K re-create with identical numerics/game/deck but
+        # a different metadata.run_config left `mismatches` empty and the later upserts rewrote
+        # metadata_json while old games/signups stayed under the SAME child ids — serving stale
+        # transcripts/scores under NEW run settings. get_run normalizes metadata to {} when absent,
+        # and the incoming metadata is `parent_config.get("metadata") or {}`, so compare both
+        # normalized: a truly identical retry (incl. absent==empty) stays idempotent.
+        existing_meta = (existing.get("metadata") or {})
+        if existing_meta != metadata:
+            mismatches.append(
+                f"metadata (existing {existing_meta!r}, requested {metadata!r})")
         if mismatches:
             raise ValueError(
                 f"run id {parent_id!r} reused with changed config (immutable fields differ from the "

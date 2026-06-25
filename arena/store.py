@@ -255,6 +255,17 @@ def _seat_unique_violation() -> type[BaseException] | tuple[type[BaseException],
     return sqlite3.IntegrityError
 
 
+def _is_seat_index_violation(exc: BaseException) -> bool:
+    """True iff `exc` is the explicit-seat (uq_run_signups_run_roster) unique violation, as opposed
+    to the table's UNIQUE(run_id, agent_id) constraint — both surface as IntegrityError. Distinguish
+    by the violated index/constraint named in the message: SQLite -> 'roster_index'; Postgres ->
+    'uq_run_signups_run_roster'. So a racing duplicate SEAT becomes 'invalid_seat' while a racing
+    duplicate (run_id, agent_id) signup reloads the existing signup instead of a misleading seat
+    error (codex round-9)."""
+    msg = str(exc).lower()
+    return "roster_index" in msg or "uq_run_signups_run_roster" in msg
+
+
 def _utcnow() -> str:
     return _dt.datetime.now(_dt.UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
@@ -1187,14 +1198,30 @@ def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
                  None, None, None, int(max_concurrent_turns),
                  int(seat) if seat is not None else None),
             )
-        except _seat_unique_violation():
+        except _seat_unique_violation() as exc:
             # Postgres aborts the transaction on a constraint violation; roll back so the conn()
             # context-manager's commit-on-exit doesn't fail. SQLite tolerates a rollback here too.
             try:
                 c.rollback()
             except Exception:
                 pass
-            return None, "invalid_seat"
+            # ONLY the explicit-seat index (uq_run_signups_run_roster) is a seat error. A racing
+            # duplicate (run_id, agent_id) signup must reload the existing signup, NOT report
+            # 'invalid_seat' (codex round-9). An unrecognized violation re-raises rather than mislabel.
+            if _is_seat_index_violation(exc):
+                return None, "invalid_seat"
+            # A (run_id, agent_id) violation means a signup for this agent already exists (a racing
+            # duplicate, or this agent's prior — possibly expired — signup). Reload and return it
+            # rather than mislabel it 'invalid_seat'. Status-agnostic: any collision means a row exists.
+            raced = c.execute(
+                f"SELECT * FROM run_signups WHERE run_id={ph} AND agent_id={ph}",
+                (run_id, agent_id),
+            ).fetchone()
+            if raced:
+                _maybe_ready_required(c, run_id)
+                return _rowdict(c.execute(f"SELECT * FROM run_signups WHERE id={ph}",
+                                          (raced["id"],)).fetchone()), None
+            raise
         _maybe_ready_required(c, run_id)
         return _rowdict(c.execute(f"SELECT * FROM run_signups WHERE id={ph}", (signup_id,)).fetchone()), None
 
