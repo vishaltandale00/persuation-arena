@@ -37,33 +37,56 @@ def _save_game(run_id, gid, n_players=3):
     return store.save_game(run_id, gid, transcript, agents)
 
 
-# --- token-from-env ----------------------------------------------------------
-def test_push_token_from_env_present():
-    assert cli.push_token_from_env({"ARENA_INGEST_TOKEN": "  team=abc  "}) == "team=abc"
+# --- token resolution: env -> cache -> auto-register -------------------------
+def test_push_token_env_override(tmp_path, monkeypatch):
+    """$ARENA_INGEST_TOKEN wins outright — no CredentialsStore read, no network register."""
+    monkeypatch.setenv("ARENA_INGEST_TOKEN", "pa_live_envtoken")
+    from persuasion_arena_agent import credentials as creds_mod
+    monkeypatch.setattr(creds_mod.CredentialsStore, "get",
+                        lambda self, server: pytest.fail("read cache despite env token"))
+    assert cli.push_token_or_register("https://x.example") == "pa_live_envtoken"
 
 
-def test_push_token_from_env_absent():
-    assert cli.push_token_from_env({}) is None
-    assert cli.push_token_from_env({"ARENA_INGEST_TOKEN": "   "}) is None
-
-
-def test_push_fails_closed_when_token_unset(tmp_path, monkeypatch):
-    """(d) No $ARENA_INGEST_TOKEN -> exit 2 (fail closed) BEFORE any network call. We arm the HTTP
-    helpers to fail loudly so a regression that reaches the network is caught."""
-    _sqlite(tmp_path, monkeypatch)
-    _save_run("r1")
-    _save_game("r1", 0)
+def test_push_token_uses_cache(tmp_path, monkeypatch):
+    """A cached identity for the server is returned without registering."""
     monkeypatch.delenv("ARENA_INGEST_TOKEN", raising=False)
-    monkeypatch.setattr(cli, "_worker_get", lambda *a, **k: pytest.fail("hit network with no token"))
-    monkeypatch.setattr(cli, "_worker_post", lambda *a, **k: pytest.fail("hit network with no token"))
+    from persuasion_arena_agent import credentials as creds_mod
+    cached = creds_mod.AgentCredentials(server="https://x.example", agent_id="agent_1",
+                                        display_name="laptop", agent_token="pa_live_cached")
+    monkeypatch.setattr(creds_mod.CredentialsStore, "get", lambda self, server: cached)
+    from persuasion_arena_agent import client as client_mod
+    monkeypatch.setattr(client_mod, "ArenaHttpClient",
+                        lambda *a, **k: pytest.fail("registered despite cached identity"))
+    assert cli.push_token_or_register("https://x.example") == "pa_live_cached"
 
-    class _Args:
-        run, all, dry_run, force, no_recompute = "r1", False, True, False, False
-        server = "http://127.0.0.1:59999"  # never reached
 
-    with pytest.raises(SystemExit) as ei:
-        cli._push(_Args())
-    assert ei.value.code == 2
+def test_push_token_auto_registers_and_caches(tmp_path, monkeypatch):
+    """No env token + no cache -> register_agent mints a pa_live_ token, which is cached and used."""
+    monkeypatch.delenv("ARENA_INGEST_TOKEN", raising=False)
+    from persuasion_arena_agent import credentials as creds_mod
+    from persuasion_arena_agent import client as client_mod
+    monkeypatch.setattr(creds_mod.CredentialsStore, "get", lambda self, server: None)
+
+    minted = creds_mod.AgentCredentials(server="https://x.example", agent_id="agent_new",
+                                        display_name="myhost", agent_token="pa_live_minted")
+    saved = {}
+    monkeypatch.setattr(creds_mod.CredentialsStore, "save",
+                        lambda self, creds: saved.update(creds=creds))
+
+    class _FakeClient:
+        def __init__(self, server):
+            self.server = server
+
+        def register_agent(self, display_name):
+            assert display_name == "myhost"
+            return minted
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(client_mod, "ArenaHttpClient", _FakeClient)
+    assert cli.push_token_or_register("https://x.example", "myhost") == "pa_live_minted"
+    assert saved["creds"] is minted
 
 
 # --- gid diff ----------------------------------------------------------------
@@ -161,22 +184,6 @@ def test_guard_passes_when_prod_grows():
 
 def test_guard_passes_when_prod_unchanged():
     rating.guard_recompute(local_game_players=10, prior_prod_count=10, current_prod_count=10)
-
-
-def test_push_recompute_uses_prior_baseline_for_shrink_guard(monkeypatch):
-    """Regression: _push_recompute must feed the PRE-UPLOAD baseline it was handed into the shrink
-    guard and compare it against the CURRENT prod count. If the prior dead-guard bug returns (prior
-    captured post-upload, so prior==current), this abort never fires."""
-    monkeypatch.setattr(store, "game_player_count", lambda: 90)  # current prod (shrunk vs baseline)
-    monkeypatch.setattr(rating, "recompute", lambda: pytest.fail("recompute ran despite a shrink"))
-    with pytest.raises(rating.RecomputeAborted):
-        cli._push_recompute(prior_prod_count=100, local_game_players=50)
-
-
-def test_push_recompute_runs_when_prod_grows(monkeypatch):
-    monkeypatch.setattr(store, "game_player_count", lambda: 130)  # current prod grew vs baseline
-    monkeypatch.setattr(rating, "recompute", lambda: {"ok": True})
-    assert cli._push_recompute(prior_prod_count=100, local_game_players=50) == {"ok": True}
 
 
 def test_game_player_count(tmp_path, monkeypatch):

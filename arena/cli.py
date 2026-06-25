@@ -248,17 +248,52 @@ def _worker(args):
 # unit-tested offline without a live server or prod DB.
 
 # Canonical production host used when neither --server nor $ARENA_SERVER_URL is set.
-PROD_SERVER_URL = "https://persuasion-arena.vercel.app"
+# NOTE: the Vercel project is 'persuation-arena' (the codebase's historical misspelling), so the
+# live host is persuation-arena.vercel.app — NOT 'persuasion-arena'.
+PROD_SERVER_URL = "https://persuation-arena.vercel.app"
 
 PUSHABLE_RUN_STATUSES = {"done", "partial"}
 
 
-def push_token_from_env(env: dict | None = None) -> str | None:
-    """The bearer token push sends to /api/runs/import. Sourced from $ARENA_INGEST_TOKEN ONLY (no
-    --token CLI arg, by design). Returns None when unset/blank."""
-    env = os.environ if env is None else env
-    token = (env.get("ARENA_INGEST_TOKEN") or "").strip()
-    return token or None
+def push_token_or_register(server: str, display_name: str | None = None) -> str:
+    """Resolve the bearer token push sends to /api/runs/import — fully self-service, no hand-minting.
+
+    Resolution order, keyed by `server`:
+      1. $ARENA_INGEST_TOKEN, if set (explicit override / CI secret),
+      2. a cached `pa_live_` token in CredentialsStore for this server,
+      3. otherwise POST /api/agents/register (via client.register_agent) to mint a fresh identity,
+         cache the returned `pa_live_` token in CredentialsStore keyed by server, and use it.
+
+    Prints which identity is in use with the token redacted, and returns the raw token."""
+    from persuasion_arena_agent.credentials import CredentialsStore, redact_token
+
+    server = server.rstrip("/")
+
+    env_token = (os.environ.get("ARENA_INGEST_TOKEN") or "").strip()
+    if env_token:
+        print(f"push: identity from $ARENA_INGEST_TOKEN (token {redact_token(env_token)})")
+        return env_token
+
+    store = CredentialsStore()
+    cached = store.get(server)
+    if cached and cached.agent_token:
+        print(f"push: identity '{cached.display_name}' (agent_id={cached.agent_id}, "
+              f"token {redact_token(cached.agent_token)}) [cached]")
+        return cached.agent_token
+
+    from persuasion_arena_agent.client import ArenaHttpClient
+
+    name = display_name or socket.gethostname()
+    print(f"push: no cached identity for {server} — registering as '{name}'...")
+    client = ArenaHttpClient(server=server)
+    try:
+        creds = client.register_agent(name)
+    finally:
+        client.close()
+    store.save(creds)
+    print(f"push: registered identity '{creds.display_name}' (agent_id={creds.agent_id}, "
+          f"token {redact_token(creds.agent_token)}) [cached -> {store.path}]")
+    return creds.agent_token
 
 
 def gid_diff(local_gids, remote_run_json: dict | None, force: bool = False) -> list[int]:
@@ -332,52 +367,33 @@ def _push_one(args, run_id: str, token: str | None) -> dict:
     return summary
 
 
-def _push_recompute(prior_prod_count: int, local_game_players: int) -> dict:
-    """Recompute prod ratings AFTER the upload, with the four disaster guardrails. Assumes
-    DATABASE_URL already points at prod. prior_prod_count is the prod game_players count read
-    BEFORE the upload, so the shrink guard compares against a true pre-upload baseline."""
-    from . import rating, store
-    current_prod = store.game_player_count()
-    rating.guard_recompute(local_game_players, prior_prod_count, current_prod)
-    return rating.recompute()
-
-
 def _push(args):
-    import json
-    from . import rating, store
+    """Upload the missing games of one (or --all) local run(s) to the prod leaderboard.
 
-    # Capture any prod URL the env may carry, then POP DATABASE_URL so the READ phase
-    # (store.get_run / get_game / distinct_gids) hits the LOCAL SQLite, not prod Neon.
-    prod_url = os.environ.pop("DATABASE_URL", None) or os.environ.get("ARENA_PROD_DATABASE_URL")
-    args.server = (args.server or os.environ.get("ARENA_SERVER_URL") or PROD_SERVER_URL).rstrip("/")
-    token = push_token_from_env()
-    if not token:
-        print("ERROR: $ARENA_INGEST_TOKEN is not set. The import endpoint fails closed without it.")
+    No Neon/DATABASE_URL creds required: this talks to the prod HTTP API only. The server
+    recomputes ratings on write (api/runs/import compute-on-write), so there is NO local recompute
+    phase and no prod DB access from the client. Returns the manifest (list of per-run summaries)."""
+    from . import store
+
+    # Validate args BEFORE resolving/minting a token, so a bare `arena push` usage error never
+    # triggers an auto-registration.
+    if not args.all and not args.run:
+        print("ERROR: pass --run RUN_ID (or --all to push every done/partial local run)")
         raise SystemExit(2)
+
+    # POP DATABASE_URL so the READ phase (store.get_run / get_game / distinct_gids) hits the LOCAL
+    # SQLite, not a prod Neon URL the env may carry. The client never connects to prod's DB.
+    os.environ.pop("DATABASE_URL", None)
+    args.server = (args.server or os.environ.get("ARENA_SERVER_URL") or PROD_SERVER_URL).rstrip("/")
+    token = push_token_or_register(args.server, getattr(args, "as_name", None))
 
     if args.all:
         run_ids = [r["id"] for r in store.list_runs() if r["status"] in PUSHABLE_RUN_STATUSES]
         if not run_ids:
             print("no local runs with status done/partial to push")
-            return
+            return []
     else:
-        if not args.run:
-            print("ERROR: pass --run RUN_ID (or --all to push every done/partial local run)")
-            raise SystemExit(2)
         run_ids = [args.run]
-
-    # Pre-upload prod baseline for the shrink guard (guardrail #2): read prod's game_players
-    # count BEFORE uploading, so the post-upload count can be compared against a true prior.
-    # Briefly point at prod, then restore local (popped) for the read/upload phase.
-    prior_prod_count = 0
-    if prod_url and not args.dry_run and not args.no_recompute:
-        os.environ["DATABASE_URL"] = prod_url
-        try:
-            prior_prod_count = store.game_player_count()
-        except Exception as e:
-            print(f"push: WARNING could not read prod baseline count ({e}); shrink guard treats prior as 0")
-        finally:
-            os.environ.pop("DATABASE_URL", None)
 
     print(f"push: server={args.server} runs={run_ids} "
           f"{'(dry-run)' if args.dry_run else ''}{' (force)' if args.force else ''}".rstrip())
@@ -391,42 +407,11 @@ def _push(args):
 
     total_uploaded = sum(s["uploaded"] for s in summaries)
     print(f"push: {total_uploaded} game(s) uploaded across {len(summaries)} run(s)")
-
     if args.dry_run:
-        print("push: dry-run, skipping recompute")
-        return
-    if args.no_recompute:
-        print("push: --no-recompute, skipping leaderboard rebuild")
-        return
-
-    # RECOMPUTE PHASE — point store at prod Neon, snapshot first, guard, then rebuild.
-    local_game_players = store.game_player_count()  # local count (DATABASE_URL still unset here)
-    if not prod_url:
-        print("push: no prod DATABASE_URL (or ARENA_PROD_DATABASE_URL) available — "
-              "skipping recompute. Set it (prod-scoped) to rebuild the leaderboard.")
-        return
-    os.environ["DATABASE_URL"] = prod_url
-    os.environ.setdefault("ARENA_PG_STATEMENT_TIMEOUT_MS", "60000")
-    # Pin the schema recompute writes to the one the JS leaderboard reads (default 'public'),
-    # so a stray ARENA_PG_SEARCH_PATH can't make recompute populate a schema the live board
-    # can't see (the "silent empty board" disaster). Operator can still override deliberately.
-    os.environ.setdefault("ARENA_PG_SEARCH_PATH", "public")
-    try:
-        snapshot = rating.rating_snapshot()
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        backup_path = os.path.abspath(f"arena-backup-{stamp}-pre-recompute.json")
-        with open(backup_path, "w") as fh:
-            json.dump(snapshot, fh, indent=2, default=str)
-        print(f"push: wrote ratings snapshot -> {backup_path}")
-        try:
-            result = _push_recompute(prior_prod_count, local_game_players)
-        except rating.RecomputeAborted as e:
-            print(f"push: RECOMPUTE ABORTED — {e}")
-            print(f"push: prod ratings UNCHANGED; snapshot kept at {backup_path}")
-            raise SystemExit(3)
-        print(f"push: recompute done -> {result}")
-    finally:
-        os.environ.pop("DATABASE_URL", None)
+        print("push: dry-run — nothing written")
+    elif total_uploaded:
+        print("push: done. The leaderboard updates server-side (compute-on-write); no local recompute.")
+    return summaries
 
 
 def main():
@@ -487,11 +472,12 @@ def main():
     pu.add_argument("--all", action="store_true",
                     help="push every local run with status done/partial")
     pu.add_argument("--dry-run", dest="dry_run", action="store_true",
-                    help="show what would be uploaded without writing or recomputing")
+                    help="show what would be uploaded without writing")
     pu.add_argument("--force", action="store_true",
                     help="resend all local games (server-side no-op for ones already recorded)")
-    pu.add_argument("--no-recompute", dest="no_recompute", action="store_true",
-                    help="upload games but skip the prod leaderboard recompute")
+    pu.add_argument("--as", dest="as_name", default=None,
+                    help="display name to register/identify as (default: hostname); ignored when "
+                         "$ARENA_INGEST_TOKEN or a cached identity is used")
     pu.add_argument("--server", default=None,
                     help="central site URL (default $ARENA_SERVER_URL else the prod Vercel host)")
     pu.set_defaults(func=_push)

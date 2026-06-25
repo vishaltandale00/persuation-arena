@@ -17,7 +17,17 @@
 //   1. runs upsert (monotonic status CASE, copied from api/runs/index.js),
 //   2. games   INSERT ... ON CONFLICT (run_id,gid) DO NOTHING,
 //   3. game_players INSERT ... ON CONFLICT (run_id,gid,seat) DO NOTHING.
+//
+// COMPUTE-ON-WRITE: after that transaction commits, IF any games were actually inserted
+//   (games_inserted > 0) we call _rating.recompute() to rebuild the prod rating tables
+//   (role_difficulty / rating_events / ratings) from the now-current game_players — server-side,
+//   over the Vercel function's existing DATABASE_URL (no client creds, no shrink-guard: the server
+//   only ever ADDS games). The recompute is a FULL replay, so it is correct after any insert.
+//   The games are already committed and durable BEFORE we recompute, so a recompute failure is
+//   non-fatal: we still return ok with a `recompute` note (a later push/retry recomputes). When
+//   games_inserted === 0 the board is unchanged, so we skip recompute entirely.
 import { send, readBody, bearer, utcnow, stmt, tx, agentFromToken } from '../_db.js';
+import { recompute } from '../_rating.js';
 
 // Terminal run statuses that the monotonic upsert must never regress — mirrors the
 // `runs.status IN ('done','partial')` guard in api/runs/index.js. Kept local so this
@@ -186,11 +196,31 @@ export default async function handler(req, res) {
     if (rows.length > 0) gamesInserted += 1;
   }
 
+  // COMPUTE-ON-WRITE: the games above are now committed and durable. Only rebuild the rating tables
+  // when new games actually landed (games_inserted > 0); a re-push that inserted nothing leaves the
+  // board unchanged, so skip the (full-replay) recompute. recompute() reads the now-current
+  // game_players over this function's own DATABASE_URL and atomically swaps in the snapshot. On any
+  // recompute error the inserted games stay durable, so we return ok with a `recompute_failed` note
+  // (HTTP 200) rather than 500 — a later push or retry will recompute.
+  let recomputeNote = gamesInserted > 0 ? 'pending' : 'skipped';
+  let recomputeSummary = null;
+  if (gamesInserted > 0) {
+    try {
+      recomputeSummary = await recompute();
+      recomputeNote = 'ok';
+    } catch (e) {
+      recomputeNote = 'recompute_failed';
+      recomputeSummary = { error: String(e.message || e) };
+    }
+  }
+
   return send(res, 200, {
     ok: true,
     run_id: runId,
     games_inserted: gamesInserted,
     games_skipped: games.length - gamesInserted,
     players_written: playersWritten,
+    recompute: recomputeNote,
+    rating: recomputeSummary,
   });
 }
