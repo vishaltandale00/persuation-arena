@@ -75,10 +75,11 @@ CREATE TABLE IF NOT EXISTS run_signups (
   roster_index INTEGER,
   UNIQUE (run_id, agent_id)
 );
--- FINDINGS #2/#3: make explicit-seat uniqueness ATOMIC (race-free) rather than a TOCTOU pre-read.
--- PARTIAL so the many NULL roster_index rows (normal/no-seat signups) are unconstrained (INV-2).
-CREATE UNIQUE INDEX IF NOT EXISTS uq_run_signups_run_roster
-  ON run_signups (run_id, roster_index) WHERE roster_index IS NOT NULL;
+-- NOTE: the uq_run_signups_run_roster partial unique index is intentionally NOT created here.
+-- roster_index is an ALTER-added column (see _MIGRATIONS), so on an EXISTING pre-upgrade DB this
+-- executescript runs BEFORE _migrate adds the column and the index DDL would fail with
+-- "no such column: roster_index", blocking startup/migration (FINDING P1). The index is created in
+-- _migrate AFTER the roster_index ALTER instead.
 CREATE TABLE IF NOT EXISTS run_events (
   id TEXT PRIMARY KEY, run_id TEXT, game_instance_id TEXT, seq INTEGER,
   visibility TEXT, target_signup_id TEXT, phase TEXT, type TEXT, payload_json TEXT, created_utc TEXT
@@ -148,10 +149,10 @@ PG_SCHEMA_STMTS = [
          roster_index INTEGER,
          UNIQUE (run_id, agent_id)
        )""",
-    # FINDINGS #2/#3: race-free explicit-seat uniqueness (atomic, not a TOCTOU pre-read). PARTIAL so the
-    # many NULL roster_index rows (normal/no-seat signups) are unconstrained (INV-2).
-    """CREATE UNIQUE INDEX IF NOT EXISTS uq_run_signups_run_roster
-         ON run_signups (run_id, roster_index) WHERE roster_index IS NOT NULL""",
+    # NOTE: uq_run_signups_run_roster is intentionally NOT created here. roster_index is added by
+    # PG_MIGRATION_STMTS, and init_schema runs PG_SCHEMA_STMTS BEFORE PG_MIGRATION_STMTS — on an
+    # EXISTING pre-upgrade DB the column would not yet exist and the index DDL would fail, blocking
+    # migration (FINDING P1). The index is created in PG_MIGRATION_STMTS after the ADD COLUMN.
     """CREATE TABLE IF NOT EXISTS run_events (
          id TEXT PRIMARY KEY, run_id TEXT, game_instance_id TEXT, seq INTEGER,
          visibility TEXT, target_signup_id TEXT, phase TEXT, type TEXT, payload_json TEXT, created_utc TEXT
@@ -212,10 +213,16 @@ PG_MIGRATION_STMTS = [
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_model TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_harness TEXT",
     "ALTER TABLE run_signups ADD COLUMN IF NOT EXISTS roster_index INTEGER",
-    # FINDINGS #2/#3: race-free explicit-seat uniqueness. roster_index is brand-new + nullable, so no
-    # existing rows can violate this; PARTIAL keeps NULL (normal/no-seat) signups unconstrained (INV-2).
+    # FINDINGS #2/#3 + P1/P2: race-free explicit-seat uniqueness. Created HERE, AFTER the roster_index
+    # ADD COLUMN above, so an EXISTING pre-upgrade DB migrates cleanly (FINDING P1: the column must
+    # exist before the index DDL). PARTIAL on roster_index IS NOT NULL keeps NULL (normal/no-seat)
+    # signups unconstrained (INV-2). The active-status predicate (FINDING P2) means only LIVE holders
+    # occupy a seat, so an expired/cancelled signup releases its seat for a replacement instead of
+    # wedging the shard with permanent 'invalid_seat'. Mirrors the active set in create_signup.
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_run_signups_run_roster "
-    "ON run_signups (run_id, roster_index) WHERE roster_index IS NOT NULL",
+    "ON run_signups (run_id, roster_index) "
+    "WHERE roster_index IS NOT NULL "
+    "AND status IN ('waiting','ready_required','ready','active')",
     # Dedup duplicate (run_id,gid,seat) rows, then add the unique index the JS import path needs for
     # ON CONFLICT (run_id,gid,seat) DO NOTHING. Use CREATE UNIQUE INDEX IF NOT EXISTS (idempotent on
     # re-run) rather than ALTER TABLE ADD CONSTRAINT (no IF NOT EXISTS in PG; re-run would throw).
@@ -297,6 +304,19 @@ def _migrate(c: sqlite3.Connection) -> None:
         for name, decl in cols:
             if name not in have:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    # FINDINGS #2/#3 + P1/P2: race-free explicit-seat uniqueness. Created HERE (NOT in SQLITE_SCHEMA's
+    # executescript) so it runs AFTER the roster_index ADD COLUMN above — on an EXISTING pre-upgrade DB
+    # the column must exist before the index DDL or it fails with "no such column" (FINDING P1).
+    # PARTIAL on roster_index IS NOT NULL keeps NULL (normal/no-seat) signups unconstrained (INV-2).
+    # The active-status predicate (FINDING P2) means only LIVE holders occupy a seat, so an
+    # expired/cancelled signup releases its seat for a replacement instead of wedging the shard with a
+    # permanent 'invalid_seat'. Mirrors the active set in create_signup. IF NOT EXISTS = idempotent.
+    c.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_run_signups_run_roster "
+        "ON run_signups (run_id, roster_index) "
+        "WHERE roster_index IS NOT NULL "
+        "AND status IN ('waiting','ready_required','ready','active')"
+    )
     # Enforce one row per (run_id,gid,seat) so re-pushing a game is idempotent (the JS import path
     # relies on ON CONFLICT (run_id,gid,seat)). Once the index exists it guarantees no duplicates, so
     # do the (DML-issuing) dedup ONLY on first creation — running a DELETE on every conn() would leave

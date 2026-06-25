@@ -115,6 +115,37 @@ def create_sharded_run(parent_config: dict, num_shards: int) -> list[str]:
             f"shard-count change not supported for parent {parent_id!r}: "
             f"existing num_shards={existing_k}, requested {num_shards}"
         )
+    # FINDING P2 (round-8, DATA-INTEGRITY): a same-K re-create is treated as an idempotent retry and
+    # re-upserts parent+child rows, but the IMMUTABLE run fields were never re-validated. If
+    # n_games/seed_base/players/game/deck_preset differ from the existing parent, the upserts rewrite
+    # the metadata while old games/signups/events stay under the SAME child run ids (save_game is
+    # first-write-wins by (run_id, gid)), so a reused --run-id silently serves STALE transcripts/
+    # scores under new settings. Reject a changed-config same-K re-create; an identical-config retry
+    # is byte-for-byte the same and stays idempotent (round-4/5/7 retry/idempotent tests).
+    if existing_k is not None:
+        # compare numerics as ints, game/deck_preset by value (deck_preset may be None on both sides)
+        mismatches = []
+        if int(existing.get("n_games")) != int(parent_config["n_games"]):
+            mismatches.append(
+                f"n_games (existing {existing.get('n_games')}, requested {parent_config['n_games']})")
+        if int(existing.get("seed_base")) != int(parent_config["seed_base"]):
+            mismatches.append(
+                f"seed_base (existing {existing.get('seed_base')}, requested {parent_config['seed_base']})")
+        if int(existing.get("players")) != int(parent_config["players"]):
+            mismatches.append(
+                f"players (existing {existing.get('players')}, requested {parent_config['players']})")
+        if existing.get("game") != parent_config["game"]:
+            mismatches.append(
+                f"game (existing {existing.get('game')!r}, requested {parent_config['game']!r})")
+        if existing.get("deck_preset") != parent_config.get("deck_preset"):
+            mismatches.append(
+                f"deck_preset (existing {existing.get('deck_preset')!r}, "
+                f"requested {parent_config.get('deck_preset')!r})")
+        if mismatches:
+            raise ValueError(
+                f"run id {parent_id!r} reused with changed config (immutable fields differ from the "
+                f"existing parent): {', '.join(mismatches)}; refusing to overwrite it"
+            )
     join_token = (existing or {}).get("join_token") or secrets.token_urlsafe(24)
 
     # FINDING #1 (round-7, DATA-INTEGRITY): the parent-id guard above protects {parent}, but the

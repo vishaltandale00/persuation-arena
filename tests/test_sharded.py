@@ -1013,6 +1013,65 @@ def test_create_sharded_run_same_count_recreate_idempotent(tmp_path, monkeypatch
     assert store.get_run("samek")["num_shards"] == 2
 
 
+def test_create_sharded_run_same_count_changed_config_rejected(tmp_path, monkeypatch):
+    """Codex round-8 / FINDING P2 (DATA-INTEGRITY): a same-K re-create of an existing parent is
+    treated as an idempotent retry, but today it does NOT validate the OTHER immutable run fields.
+    If n_games / seed_base / players / game / deck_preset differ from the existing parent, the
+    upserts rewrite parent+child metadata while old games/signups/events stay under the same child
+    run ids (save_game is first-write-wins by (run_id, gid)) — a reused --run-id can then silently
+    serve STALE transcripts/scores under NEW settings. A same-K re-create whose immutable config
+    differs must raise a clear ValueError; a truly identical same-K retry stays idempotent."""
+    import pytest
+    _sqlite_store(tmp_path, monkeypatch)
+    base = _base_run("cfgchg", n_games=6, players=3, seed_base=7,
+                     deck_preset="standard")
+    create_sharded_run(base, 2)
+    orig_token = store.get_run("cfgchg")["join_token"]
+
+    # changed n_games (same K) -> reject
+    with pytest.raises(ValueError, match="config"):
+        create_sharded_run(
+            _base_run("cfgchg", n_games=8, players=3, seed_base=7,
+                      deck_preset="standard"), 2)
+    # changed seed_base (same K) -> reject
+    with pytest.raises(ValueError, match="config"):
+        create_sharded_run(
+            _base_run("cfgchg", n_games=6, players=3, seed_base=99,
+                      deck_preset="standard"), 2)
+    # changed players (same K) -> reject
+    with pytest.raises(ValueError, match="config"):
+        create_sharded_run(
+            _base_run("cfgchg", n_games=6, players=5, seed_base=7,
+                      deck_preset="standard"), 2)
+    # changed game (same K) -> reject
+    with pytest.raises(ValueError, match="config"):
+        create_sharded_run(
+            _base_run("cfgchg", game="werewolf", n_games=6, players=3,
+                      seed_base=7, deck_preset="standard"), 2)
+    # changed deck_preset (same K) -> reject
+    with pytest.raises(ValueError, match="config"):
+        create_sharded_run(
+            _base_run("cfgchg", n_games=6, players=3, seed_base=7,
+                      deck_preset="alt"), 2)
+
+    # the existing parent is untouched (no clobber, token preserved)
+    parent = store.get_run("cfgchg")
+    assert int(parent["n_games"]) == 6
+    assert int(parent["players"]) == 3
+    assert int(parent["seed_base"]) == 7
+    assert parent["game"] == "onuw"
+    assert parent["deck_preset"] == "standard"
+    assert parent["join_token"] == orig_token
+    assert store.child_run_ids("cfgchg") == ["cfgchg_shard_0", "cfgchg_shard_1"]
+
+    # an identical-config same-K retry stays idempotent (returns same ids, reuses token)
+    again = create_sharded_run(
+        _base_run("cfgchg", n_games=6, players=3, seed_base=7,
+                  deck_preset="standard"), 2)
+    assert again == ["cfgchg_shard_0", "cfgchg_shard_1"]
+    assert store.get_run("cfgchg")["join_token"] == orig_token
+
+
 def test_create_sharded_run_rejects_reused_normal_run_id(tmp_path, monkeypatch):
     """Codex round-6 / FINDING #1 (DATA-INTEGRITY): create_sharded_run must REJECT a parent_id that
     already belongs to a NORMAL run. Today existing_k (num_shards) is None for a normal run, so the
