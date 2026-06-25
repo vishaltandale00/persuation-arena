@@ -14,6 +14,7 @@ children (`run_kind='child'`), each carrying its shard coordinates and the GLOBA
 from __future__ import annotations
 
 import os
+import secrets
 
 from . import store
 
@@ -85,6 +86,11 @@ def create_sharded_run(parent_config: dict, num_shards: int) -> list[str]:
     created = parent_config.get("created")
     created_utc = parent_config.get("created_utc")
 
+    # One per-parent secret, shared by the parent and every child (INV-4 / SPEC D7). A child is
+    # joinable ONLY by an agent that presents this token; a stray agent posting the predictable
+    # parent id or `{parent}_shard_0` child id never has it. The parent itself is never joinable.
+    join_token = secrets.token_urlsafe(24)
+
     # Parent: a presentational umbrella; never discoverable/joinable (INV-4 via list_open_runs).
     store.save_run({
         "id": parent_id,
@@ -104,6 +110,7 @@ def create_sharded_run(parent_config: dict, num_shards: int) -> list[str]:
         "parent_run_id": None,
         "shard_index": None,
         "num_shards": num_shards,
+        "join_token": join_token,
     })
 
     child_ids: list[str] = []
@@ -127,6 +134,7 @@ def create_sharded_run(parent_config: dict, num_shards: int) -> list[str]:
             "parent_run_id": parent_id,
             "shard_index": k,
             "num_shards": num_shards,
+            "join_token": join_token,
         })
         child_ids.append(child_id)
     return child_ids

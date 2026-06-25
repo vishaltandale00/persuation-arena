@@ -284,11 +284,14 @@ def _seat_run(run_id: str, creds: list[tuple[str, str]]) -> dict[str, str]:
     runs (shared credentials, REQ-5/D9). Signing up in the SAME fixed order gives the SAME
     arrival-order seat assignment in every run (controls V-4's seats without an explicit-seat
     feature, which is a later step). Returns {signup_id: agent_id}."""
+    # Shard child runs require the per-parent join_token (INV-4); read it from the run row. Normal
+    # runs have join_token=None, so this is a no-op for them.
+    join_token = (store.get_run(run_id) or {}).get("join_token")
     agent_by_signup: dict[str, str] = {}
     for name, agent_id in creds:
         if store.get_agent(agent_id) is None:
             store.register_agent(name, f"hash_{agent_id}", "arena-agent-v1", "test", agent_id=agent_id)
-        signup, err = store.create_signup(run_id, agent_id)
+        signup, err = store.create_signup(run_id, agent_id, join_token=join_token)
         assert err is None, err
         agent_by_signup[signup["id"]] = agent_id
     for signup_id, agent_id in agent_by_signup.items():
@@ -647,3 +650,201 @@ def test_launcher_shards_creates_parent_and_children(tmp_path, monkeypatch):
     parent = store.get_run("L")
     assert parent["run_kind"] == "parent" and parent["num_shards"] == 3
     assert store.child_run_ids("L") == ["L_shard_0", "L_shard_1", "L_shard_2"]
+
+
+# --- P1 (INV-4 / SPEC D7): direct signups gated to parents and children -------------------------
+#
+# The discovery filter only HIDES shard rows from list_open_runs; create_signup must also make them
+# UNJOINABLE. Parents are NEVER joinable; children require the per-parent join_token. Normal runs are
+# unaffected (token ignored), keeping INV-2 byte-identical.
+
+
+def _register_agent(agent_id: str = "agent_join", name: str = "Joiner") -> str:
+    if store.get_agent(agent_id) is None:
+        store.register_agent(name, f"hash_{agent_id}", "arena-agent-v1", "test", agent_id=agent_id)
+    return agent_id
+
+
+def test_signup_to_parent_always_rejected(tmp_path, monkeypatch):
+    """INV-4: a parent run is never joinable, even with the correct token."""
+    _sqlite_store(tmp_path, monkeypatch)
+    create_sharded_run(_base_run("gp", n_games=4, players=3, seed_base=7), 2)
+    token = store.get_run("gp")["join_token"]
+    assert token  # a token was minted on the parent
+    agent_id = _register_agent()
+
+    signup, err = store.create_signup("gp", agent_id)
+    assert signup is None and err == "run_not_joinable"
+    # even presenting the real token does not make a parent joinable
+    signup, err = store.create_signup("gp", agent_id, join_token=token)
+    assert signup is None and err == "run_not_joinable"
+
+
+def test_signup_to_child_requires_token(tmp_path, monkeypatch):
+    """INV-4: a child is joinable ONLY with the parent's join_token; absent/wrong -> run_not_joinable."""
+    _sqlite_store(tmp_path, monkeypatch)
+    children = create_sharded_run(_base_run("gc", n_games=4, players=3, seed_base=7), 2)
+    child = children[0]
+    token = store.get_run(child)["join_token"]
+    assert token
+    agent_id = _register_agent()
+
+    # no token -> rejected (today this SUCCEEDS; the bug)
+    signup, err = store.create_signup(child, agent_id)
+    assert signup is None and err == "run_not_joinable"
+    # wrong token -> rejected
+    signup, err = store.create_signup(child, agent_id, join_token="not-the-token")
+    assert signup is None and err == "run_not_joinable"
+    # correct token -> accepted
+    signup, err = store.create_signup(child, agent_id, join_token=token)
+    assert err is None and signup is not None
+    assert signup["agent_id"] == agent_id
+
+
+def test_signup_to_normal_run_ignores_token(tmp_path, monkeypatch):
+    """INV-2: a normal run signs up identically with or without a token (token ignored)."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.create_connected_run({
+        "id": "n_notoken", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 2, "players": 3, "seed_base": 1,
+    })
+    store.create_connected_run({
+        "id": "n_withtoken", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 2, "players": 3, "seed_base": 1,
+    })
+    a1 = _register_agent("agent_n1", "N1")
+    a2 = _register_agent("agent_n2", "N2")
+
+    s_no, err_no = store.create_signup("n_notoken", a1)
+    assert err_no is None and s_no is not None
+    s_tok, err_tok = store.create_signup("n_withtoken", a2, join_token="irrelevant")
+    assert err_tok is None and s_tok is not None
+    # byte-identical signup shape (modulo the run/agent/ids that legitimately differ)
+    ignore = {"id", "run_id", "agent_id", "created_utc", "updated_utc",
+              "waiting_expires_utc", "ready_deadline_utc"}
+    assert {k: v for k, v in s_no.items() if k not in ignore} == \
+           {k: v for k, v in s_tok.items() if k not in ignore}
+
+
+def test_http_signup_parent_and_tokenless_child_rejected(tmp_path, monkeypatch):
+    """INV-4 over HTTP: the signup endpoint rejects a parent and a tokenless child with a 4xx."""
+    import hashlib
+    _sqlite_store(tmp_path, monkeypatch)
+    children = create_sharded_run(_base_run("gh", n_games=4, players=3, seed_base=7), 2)
+    child = children[0]
+    raw_token = "pa_live_test_join_secret"
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    store.register_agent("HJoiner", token_hash, "arena-agent-v1", "test", agent_id="agent_hjoin")
+
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {raw_token}"}
+        # parent: rejected
+        resp = client.post("/api/runs/gh/signups",
+                           json={"protocol_version": "arena-agent-v1"}, headers=headers)
+        assert resp.status_code >= 400, resp.text
+        # child without token: rejected
+        resp = client.post(f"/api/runs/{child}/signups",
+                           json={"protocol_version": "arena-agent-v1"}, headers=headers)
+        assert resp.status_code >= 400, resp.text
+
+
+# --- P2 (codex): parent observer aggregation — the parent renders as ONE normal run (D7) -------
+#
+# GET /api/runs/{parent} and the /api/runs index must source agents/roster, connected, wins/
+# teamSplit, recent events AND status from the CHILDREN, not the (empty) parent row. Children remain
+# hidden from the index, and normal/child responses stay byte-identical (INV-2).
+
+
+def _seed_parent_children_signups_events(parent_id: str, k: int, games_per_child: int) -> list[str]:
+    """Seed a parent + K children with saved games, child SIGNUPS (shared creds across shards), and
+    child run events — i.e. everything a real running sharded run accrues on the children."""
+    join_token = "tok_" + parent_id
+    store.create_connected_run({
+        "id": parent_id, "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": k * games_per_child, "players": 2, "seed_base": 7,
+        "created": "2026-06-25 00:00", "created_utc": "2026-06-25T00:00:00Z",
+        "run_kind": "parent", "num_shards": k, "join_token": join_token,
+    })
+    # one shared identity per logical competitor, signed up on every child (REQ-5 / D9)
+    creds = [("A", "agent_A"), ("B", "agent_B")]
+    for name, agent_id in creds:
+        if store.get_agent(agent_id) is None:
+            store.register_agent(name, f"hash_{agent_id}", "arena-agent-v1", "test", agent_id=agent_id)
+    child_ids = []
+    for shard in range(k):
+        cid = f"{parent_id}_shard_{shard}"
+        store.create_connected_run({
+            "id": cid, "game": "onuw", "label": "ONUW", "status": "open",
+            "n_games": k * games_per_child, "players": 2, "seed_base": 7,
+            "created": "2026-06-25 00:00", "created_utc": "2026-06-25T00:00:00Z",
+            "run_kind": "child", "parent_run_id": parent_id,
+            "shard_index": shard, "num_shards": k, "join_token": join_token,
+        })
+        # sign up the shared identities WHILE the child is open, then add events + games + finish.
+        for name, agent_id in creds:
+            signup, err = store.create_signup(cid, agent_id, join_token=join_token)
+            assert err is None, err
+            store.mark_signup_ready(signup["id"], agent_id)
+        store.append_event(cid, "round_started", {"shard": cid})
+        for i in range(games_per_child):
+            gid = shard + 1 + i * k  # global gids striped to this shard
+            _save_child_game(cid, gid)
+        store.save_run({**store.get_run(cid), "status": "done"})
+        child_ids.append(cid)
+    return child_ids
+
+
+def test_api_run_parent_aggregates_signups_events_status(tmp_path, monkeypatch):
+    """P2(i) / D7: GET /api/runs/{parent} sources agents, connected, teamSplit, recentEvents and
+    status from the CHILDREN — not the empty parent row. RED today: agents=[], connected=False,
+    teamSplit 0-0, no events."""
+    _sqlite_store(tmp_path, monkeypatch)
+    children = _seed_parent_children_signups_events("parent_full", 2, 2)  # 4 good wins total
+
+    with TestClient(app) as client:
+        detail = client.get("/api/runs/parent_full").json()
+
+    # roster derived from a child's signups (the identities are shared across shards)
+    names = {a["name"] for a in detail["agents"]}
+    assert names == {"A", "B"}, detail["agents"]
+    # connected flag reflects that children have signups
+    assert detail["connected"] is True
+    # teamSplit aggregates the children's game outcomes (4 good wins, 0 evil), not 0-0
+    assert detail["teamSplit"] == {"good": 4, "evil": 0}, detail["teamSplit"]
+    # recent events are the union across children, not the parent's empty stream
+    assert len(detail["recentEvents"]) >= 2
+    # status rolls up across children (both done -> done)
+    assert detail["status"] == "done"
+    # the games union is still present and ordered
+    assert [g["gid"] for g in detail["games"]] == [1, 2, 3, 4]
+
+
+def test_api_runs_index_parent_rollup_status_and_split(tmp_path, monkeypatch):
+    """P2(ii) / D7: the /api/runs index row for a parent shows the ROLLED-UP status (not its own
+    stale 'open') and the aggregated teamSplit (not 0-0). RED today: status 'open', split 0-0."""
+    _sqlite_store(tmp_path, monkeypatch)
+    _seed_parent_children_signups_events("parent_idx_full", 2, 2)  # children done; 4 good wins
+
+    with TestClient(app) as client:
+        rows = client.get("/api/runs").json()
+    by_id = {r["id"]: r for r in rows}
+    assert "parent_idx_full" in by_id
+    prow = by_id["parent_idx_full"]
+    assert prow["status"] == "done", prow
+    assert prow["teamSplit"] == {"good": 4, "evil": 0}, prow["teamSplit"]
+
+
+def test_api_runs_index_normal_row_unchanged(tmp_path, monkeypatch):
+    """INV-2: the index row for a normal run is unaffected by the parent-rollup path."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.create_connected_run({
+        "id": "plain_idx_row", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 2, "players": 2, "seed_base": 1,
+    })
+    _save_child_game("plain_idx_row", 1)  # one good win
+
+    with TestClient(app) as client:
+        rows = client.get("/api/runs").json()
+    prow = {r["id"]: r for r in rows}["plain_idx_row"]
+    assert prow["status"] == "open"
+    assert prow["teamSplit"] == {"good": 1, "evil": 0}

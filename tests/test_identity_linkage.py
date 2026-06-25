@@ -182,11 +182,13 @@ def _action_for(turn):
 def _seat_run_shared(run_id, creds):
     """Sign up an ordered roster of (display_name, agent_id) and ready them. The SAME agent_id may
     be reused across runs (shared credentials, REQ-5/D9) — register once, reuse thereafter."""
+    # Shard child runs require the per-parent join_token (INV-4); read it from the run row.
+    join_token = (store.get_run(run_id) or {}).get("join_token")
     agent_by_signup = {}
     for name, agent_id in creds:
         if store.get_agent(agent_id) is None:
             store.register_agent(name, f"hash_{agent_id}", "arena-agent-v1", "test", agent_id=agent_id)
-        signup, err = store.create_signup(run_id, agent_id)
+        signup, err = store.create_signup(run_id, agent_id, join_token=join_token)
         assert err is None, err
         agent_by_signup[signup["id"]] = agent_id
     for signup_id, agent_id in agent_by_signup.items():

@@ -85,12 +85,17 @@ class ArenaHttpClient:
         return r.json().get("runs", [])
 
     def signup_run(self, creds: AgentCredentials, run_id: str,
-                   max_concurrent_turns: int = 1) -> Signup:
+                   max_concurrent_turns: int = 1, join_token: str | None = None) -> Signup:
+        body = {"protocol_version": "arena-agent-v1", "max_concurrent_turns": max_concurrent_turns}
+        # Only sent for shard child runs (INV-4); omitted for normal runs so the request body is
+        # byte-identical to before (INV-2).
+        if join_token is not None:
+            body["join_token"] = join_token
         r = self._request(
             "POST",
             f"/api/runs/{run_id}/signups",
             headers=creds.auth_header(),
-            json={"protocol_version": "arena-agent-v1", "max_concurrent_turns": max_concurrent_turns},
+            json=body,
         )
         return Signup.from_dict(r.json())
 

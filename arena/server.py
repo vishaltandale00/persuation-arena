@@ -427,12 +427,23 @@ def api_runs():
     for r in store.list_runs():
         # SPEC D7 / INV-4: child shards are invisible in the observer — the parent renders as one
         # normal run. (Parents and plain runs are listed; only run_kind='child' is hidden.)
-        if (r.get("run_kind") or "normal") == "child":
+        run_kind = (r.get("run_kind") or "normal")
+        if run_kind == "child":
             continue
+        status, team_split = r["status"], r["team_split"]
+        if run_kind == "parent":
+            # SPEC D7 / §6.9(a): the index renders the parent as one normal run — its OWN row never
+            # gets child progress written back, so roll status up and aggregate the children's
+            # team-split here (the parent's own status is stale 'open' and its split is 0-0).
+            status = rollup_parent_status(r["id"])
+            team_split = {"good": 0, "evil": 0}
+            for cid in store.child_run_ids(r["id"]):
+                for team, n in (store.get_run(cid)["team_split"]).items():
+                    team_split[team] = team_split.get(team, 0) + n
         out.append({
-            "id": r["id"], "game": r["game"], "label": r["label"], "status": r["status"],
+            "id": r["id"], "game": r["game"], "label": r["label"], "status": status,
             "nGames": r["n_games"], "players": r["players"], "seed": r["seed_base"],
-            "when": r["created"], "teamSplit": r["team_split"],
+            "when": r["created"], "teamSplit": team_split,
             "deckPreset": r.get("deck_preset") or (DEFAULT_DECK_PRESET if r["game"] == "onuw" else None),
         })
     return out
@@ -540,11 +551,17 @@ def api_signup_run(run_id: str, payload: dict, authorization: str | None = Heade
     agent = _authorized_agent(authorization)
     if (payload.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
         raise HTTPException(400, "unsupported protocol_version")
-    signup, err = store.create_signup(run_id, agent["id"], int(payload.get("max_concurrent_turns") or 1))
+    signup, err = store.create_signup(
+        run_id, agent["id"], int(payload.get("max_concurrent_turns") or 1),
+        join_token=payload.get("join_token"),
+    )
     if err == "run_not_found":
         raise HTTPException(404, "run not found")
     if err == "run_full":
         raise HTTPException(409, "run_full")
+    if err == "run_not_joinable":
+        # INV-4: shard parents/children are not directly joinable by a stray agent.
+        raise HTTPException(403, "run_not_joinable")
     if err:
         raise HTTPException(409, err)
     return _signup_response(signup)
@@ -718,6 +735,31 @@ def _source_run_ids(run: dict) -> list[str]:
     return [run["id"]]
 
 
+def _parent_signups(source_ids: list[str]) -> list[dict]:
+    """The roster for a sharded parent: the children share identities (REQ-5), so the same agent is
+    signed up on every shard. Present ONE logical signup per agent_id (the observer renders the
+    parent as one normal run, D7), picking the most-advanced status across shards so the roster row
+    reflects whether that competitor has reached ready/active/completed anywhere."""
+    rank = {"waiting": 0, "ready_required": 1, "ready": 2, "active": 3,
+            "completed": 4, "expired": -1, "cancelled": -1}
+    best: dict[str, dict] = {}
+    for cid in source_ids:
+        for s in store.list_run_signups(cid):
+            key = s["agent_id"]
+            cur = best.get(key)
+            if cur is None or rank.get(s["status"], 0) > rank.get(cur["status"], 0):
+                best[key] = s
+    return list(best.values())
+
+
+def _parent_recent_events(source_ids: list[str]) -> list[dict]:
+    """Union of the children's recent events, globally ordered (created time, then per-shard seq) and
+    capped like a single run's stream. The parent owns no events of its own (D7)."""
+    events = [e for cid in source_ids for e in store.list_run_events(cid, max_events=120)]
+    events.sort(key=lambda e: (e.get("created_utc") or "", e.get("seq") or 0))
+    return events[-120:]
+
+
 @app.get("/api/runs/{run_id}")
 def api_run(run_id: str):
     r = store.get_run(run_id)
@@ -726,15 +768,24 @@ def api_run(run_id: str):
     is_parent = (r.get("run_kind") or "normal") == "parent"
     source_ids = _source_run_ids(r)
     if is_parent:
-        # Aggregate the children's games (disjoint global gids, D8) into the parent's view, ordered
-        # by global gid; the parent's own `games`/`wins` are empty (it owns no games).
-        agg_games = []
-        for cid in source_ids:
-            agg_games.extend(store.get_run(cid)["games"])
+        # SPEC D7: present the parent as ONE normal run by sourcing EVERY aggregate field from the
+        # children (the parent row owns no games/signups/events/wins of its own). The children carry
+        # the same identities (shared creds, REQ-5), disjoint global gids (D8), and per-shard events.
+        child_runs = [store.get_run(cid) for cid in source_ids]
+        agg_games = [g for cr in child_runs for g in cr["games"]]
         agg_games.sort(key=lambda g: g["gid"])
-        r = {**r, "games": agg_games, "status": rollup_parent_status(run_id)}
+        # per-name wins/team-split summed across shards (gids are disjoint, so no double counting).
+        agg_wins: dict[str, int] = {}
+        agg_split = {"good": 0, "evil": 0}
+        for cr in child_runs:
+            for name, w in cr["wins"].items():
+                agg_wins[name] = agg_wins.get(name, 0) + (w or 0)
+            for team, n in cr["team_split"].items():
+                agg_split[team] = agg_split.get(team, 0) + n
+        r = {**r, "games": agg_games, "wins": agg_wins, "team_split": agg_split,
+             "status": rollup_parent_status(run_id)}
     has_games = len(r["games"]) > 0
-    signups = store.list_run_signups(run_id)
+    signups = _parent_signups(source_ids) if is_parent else store.list_run_signups(run_id)
     signup_by_id = {s["id"]: s for s in signups}
     agents_src = r["agents"] or [
         {"name": s["display_name"], "model": "connected-agent", "harness": "connected",
@@ -761,7 +812,9 @@ def api_run(run_id: str):
              for g in r["games"]]
     # partial scores while a run is in progress, full when done; a parent aggregates across shards.
     scores = (score_runs(source_ids) if is_parent else score_run(run_id)) if has_games else {}
-    recent_events = store.list_run_events(run_id, max_events=120) if r["status"] == "running" or signups else []
+    recent_events = (_parent_recent_events(source_ids) if is_parent
+                     else store.list_run_events(run_id, max_events=120)) \
+        if r["status"] == "running" or signups else []
     return {
         "id": r["id"], "game": r["game"], "label": r["label"], "status": r["status"],
         "nGames": r["n_games"], "players": r["players"], "seedBase": r["seed_base"],

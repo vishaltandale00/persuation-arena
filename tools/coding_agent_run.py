@@ -68,15 +68,19 @@ def _log(msg: str) -> None:
     print(f"[coding-run] {msg}", flush=True)
 
 
-def _run_agent(name: str, make_harness, run_id: str, server: str, cred_path: str) -> None:
+def _run_agent(name: str, make_harness, run_id: str, server: str, cred_path: str,
+               join_token: str | None = None) -> None:
     """One agent identity: register -> sign up -> ready -> poll/act until the run completes.
-    The harness owns its memory; the SDK only delivers the delta event stream."""
+    The harness owns its memory; the SDK only delivers the delta event stream.
+
+    `join_token` is the per-parent shard secret (INV-4); a shard host passes its child's token so the
+    signup is accepted. None for normal runs (token omitted from the request body, INV-2)."""
     try:
         agent = ArenaAgent(name=name, server=server, credentials=CredentialsStore(cred_path))
         h = make_harness()
         agent.on_event(h.on_event)   # fold each delta event into the harness's OWN memory
         agent.act(h.act)             # decide from the memory the harness built
-        signup = agent.signup(run_id=run_id)
+        signup = agent.signup(run_id=run_id, join_token=join_token)
         _log(f"{name} [{type(h).__name__}]: signed up ({signup.status}, seat={signup.seat})")
         agent.run_forever([signup])
         _log(f"{name}: done")
@@ -204,13 +208,17 @@ def _run_shard_child(args) -> int:
     child_id = args.shard_child
     creds_dir = args.creds_dir
     players = len(SEATS)
+    # The child row carries the per-parent join_token (minted by create_sharded_run); a stray agent
+    # cannot guess it, so passing it here is what makes the child joinable for this host (INV-4).
+    child_run = store.get_run(child_id) or {}
+    join_token = child_run.get("join_token")
     _log(f"[shard host] coordinating child {child_id} (players={players})")
 
     threads = []
     for idx, (name, make_harness) in enumerate(SEATS):
         cred_path = os.path.join(creds_dir, f"identity_{idx}.json")
         t = threading.Thread(target=_run_agent,
-                             args=(name, make_harness, child_id, args.server, cred_path),
+                             args=(name, make_harness, child_id, args.server, cred_path, join_token),
                              daemon=True, name=f"{child_id}:{name}")
         t.start()
         threads.append(t)

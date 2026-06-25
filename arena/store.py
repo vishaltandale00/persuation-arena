@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
   players INTEGER, seed_base INTEGER, created TEXT, agents_json TEXT,
   submitter TEXT, created_utc TEXT, deck_preset TEXT, metadata_json TEXT,
-  run_kind TEXT DEFAULT 'normal', parent_run_id TEXT, shard_index INTEGER, num_shards INTEGER
+  run_kind TEXT DEFAULT 'normal', parent_run_id TEXT, shard_index INTEGER, num_shards INTEGER,
+  join_token TEXT
 );
 CREATE TABLE IF NOT EXISTS games (
   run_id TEXT, gid INTEGER, seed INTEGER, winner_team TEXT, line TEXT,
@@ -111,7 +112,8 @@ PG_SCHEMA_STMTS = [
          players INTEGER, seed_base BIGINT, created TEXT, agents_json TEXT,
          submitter TEXT, created_utc TEXT, deck_preset TEXT, coordinator_url TEXT,
          metadata_json TEXT,
-         run_kind TEXT DEFAULT 'normal', parent_run_id TEXT, shard_index INTEGER, num_shards INTEGER
+         run_kind TEXT DEFAULT 'normal', parent_run_id TEXT, shard_index INTEGER, num_shards INTEGER,
+         join_token TEXT
        )""",
     """CREATE TABLE IF NOT EXISTS games (
          run_id TEXT, gid INTEGER, seed BIGINT, winner_team TEXT, line TEXT,
@@ -181,7 +183,7 @@ _MIGRATIONS = {
     "runs": [("submitter", "TEXT"), ("created_utc", "TEXT"), ("deck_preset", "TEXT"),
              ("coordinator_url", "TEXT"), ("metadata_json", "TEXT"),
              ("run_kind", "TEXT DEFAULT 'normal'"), ("parent_run_id", "TEXT"),
-             ("shard_index", "INTEGER"), ("num_shards", "INTEGER")],
+             ("shard_index", "INTEGER"), ("num_shards", "INTEGER"), ("join_token", "TEXT")],
     "jobs": [("deck_preset", "TEXT")],
     "agents": [("declared_model", "TEXT"), ("declared_harness", "TEXT")],
     "run_signups": [("roster_index", "INTEGER")],
@@ -195,6 +197,7 @@ PG_MIGRATION_STMTS = [
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS shard_index INTEGER",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS num_shards INTEGER",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS join_token TEXT",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS agent_id TEXT",
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS signup_id TEXT",
@@ -383,8 +386,8 @@ def save_run(meta: dict):
     metadata_json = json.dumps(meta.get("metadata") or {}) if "metadata" in meta else None
     with conn() as c:
         c.execute(
-            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json,run_kind,parent_run_id,shard_index,num_shards) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
+            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json,run_kind,parent_run_id,shard_index,num_shards,join_token) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
             f"ON CONFLICT (id) DO UPDATE SET "
             f"  game=excluded.game, label=excluded.label, "
             f"  status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END, "
@@ -394,13 +397,14 @@ def save_run(meta: dict):
             f"  deck_preset=excluded.deck_preset, "
             f"  metadata_json=COALESCE(excluded.metadata_json, runs.metadata_json), "
             f"  run_kind=excluded.run_kind, parent_run_id=excluded.parent_run_id, "
-            f"  shard_index=excluded.shard_index, num_shards=excluded.num_shards",
+            f"  shard_index=excluded.shard_index, num_shards=excluded.num_shards, "
+            f"  join_token=COALESCE(excluded.join_token, runs.join_token)",
             (meta["id"], meta["game"], meta["label"], meta["status"], meta["n_games"],
              meta["players"], meta["seed_base"], meta["created"], json.dumps(meta["agents"]),
              meta.get("submitter"), meta.get("created_utc"), meta.get("deck_preset"),
              metadata_json,
              meta.get("run_kind") or "normal", meta.get("parent_run_id"),
-             meta.get("shard_index"), meta.get("num_shards")),
+             meta.get("shard_index"), meta.get("num_shards"), meta.get("join_token")),
         )
 
 
@@ -905,6 +909,7 @@ def create_connected_run(meta: dict) -> dict:
         "parent_run_id": meta.get("parent_run_id"),
         "shard_index": meta.get("shard_index"),
         "num_shards": meta.get("num_shards"),
+        "join_token": meta.get("join_token"),
     })
     return get_run(run_id)
 
@@ -1036,21 +1041,36 @@ def _maybe_ready_required(c, run_id: str, ready_deadline_seconds: int = 60) -> N
 
 
 def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
-                  waiting_seconds: int = 600, seat: int | None = None) -> tuple[dict | None, str | None]:
+                  waiting_seconds: int = 600, seat: int | None = None,
+                  join_token: str | None = None) -> tuple[dict | None, str | None]:
     """Create or return this agent's active signup for a run.
 
-    Returns (signup, error_reason). error_reason is one of run_not_found, run_full, run_not_open.
+    Returns (signup, error_reason). error_reason is one of run_not_found, run_full, run_not_open,
+    run_not_joinable.
 
     `seat` is an OPTIONAL explicit seat index (the orchestrator's deterministic-seat request, SPEC
     D5/REQ-7). It is stored as `roster_index` and honored by `_maybe_ready_required` when EVERY
     active signup carries one; otherwise seating stays arrival-order (INV-2). It does NOT change
     `run_full`/`run_not_open` semantics — placement is resolved at fill time, not on insert.
+
+    `join_token` gates shard runs (INV-4 / SPEC D7). A `run_kind='parent'` run is NEVER joinable
+    (it is a presentational umbrella) -> `run_not_joinable`. A `run_kind='child'` shard is joinable
+    ONLY when `join_token` matches the child row's `join_token` (set by `create_sharded_run`);
+    absent/wrong -> `run_not_joinable`. A `run_kind='normal'` run ignores the token entirely, so
+    normal/discovered signups are byte-identical to before (INV-2).
     """
     now, ph = _utcnow(), _ph()
     with conn() as c:
         run = c.execute(f"SELECT * FROM runs WHERE id={ph}", (run_id,)).fetchone()
         if not run:
             return None, "run_not_found"
+        run_kind = (run["run_kind"] if "run_kind" in run.keys() else None) or "normal"
+        if run_kind == "parent":
+            return None, "run_not_joinable"
+        if run_kind == "child":
+            expected = run["join_token"] if "join_token" in run.keys() else None
+            if not expected or join_token != expected:
+                return None, "run_not_joinable"
         existing = c.execute(
             f"SELECT * FROM run_signups WHERE run_id={ph} AND agent_id={ph} "
             f"AND status NOT IN ('completed','rejected','expired','cancelled')",
