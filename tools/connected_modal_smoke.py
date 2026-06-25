@@ -66,7 +66,7 @@ N_PLAYERS = 5
 
 
 def _run_agent(name: str, server: str, run_id: str, cred: str | None = None,
-               join_token: str | None = None) -> None:
+               join_token: str | None = None, seat: int | None = None) -> None:
     # cred path must NOT pre-exist (an empty file makes CredentialsStore json.loads("") crash).
     cred = cred or os.path.join(tempfile.mkdtemp(prefix="arena-cred-"), "cred.json")
     try:
@@ -75,7 +75,7 @@ def _run_agent(name: str, server: str, run_id: str, cred: str | None = None,
         # Shard children are created via create_sharded_run with a per-parent join_token, so they
         # gate /signups (INV-4 / SPEC D7): without the token the child returns 403 run_not_joinable.
         # Single-coordinator (run_kind='normal') runs ignore the token (None is fine).
-        signup = agent.signup(run_id=run_id, join_token=join_token)
+        signup = agent.signup(run_id=run_id, join_token=join_token, seat=seat)
         print(f"  {name}: {signup.status} seat={signup.seat}", flush=True)
         agent.run_forever([signup])
         print(f"  {name}: done", flush=True)
@@ -198,8 +198,10 @@ def _sharded_smoke(args) -> int:
         for i in range(N_PLAYERS):
             # Reuse the pre-registered agent_id on THIS coordinator URL (one competitor across shards).
             _seed_cred_for_coordinator(shared_creds[i], url, cred_paths[i])
+            # Seat by roster index i (D5/V-7) so the same identity lands in the same seat across
+            # shards — otherwise arrival-order seating breaks the deterministic-seat fairness V-10 verifies.
             t = threading.Thread(target=_run_agent,
-                                 args=(identities[i], url, cid, cred_paths[i], join_token),
+                                 args=(identities[i], url, cid, cred_paths[i], join_token, i),
                                  daemon=True)
             t.start()
             threads.append(t)

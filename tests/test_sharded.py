@@ -906,3 +906,21 @@ def test_create_connected_run_normal_response_unchanged(tmp_path, monkeypatch):
         assert "child_run_ids" not in body
         assert set(body) == {"run_id", "status", "game", "games", "players", "rounds",
                              "deck_preset", "run_config"}
+
+
+def test_create_sharded_run_retry_reuses_join_token(tmp_path, monkeypatch):
+    """Codex round-4: retrying create_sharded_run for an existing parent must REUSE the persisted
+    join token, not mint a fresh one. save_run upserts join_token=COALESCE(excluded, existing), so a
+    new token would ROTATE the secret out from under any token an orchestrator already handed to
+    agents (they'd then be rejected 403 run_not_joinable)."""
+    _sqlite_store(tmp_path, monkeypatch)
+    parent_cfg = _base_run("retry", n_games=5, players=5, seed_base=7)
+
+    create_sharded_run(parent_cfg, 2)
+    token1 = store.get_run("retry")["join_token"]
+    assert token1 and store.get_run("retry_shard_0")["join_token"] == token1
+
+    create_sharded_run(parent_cfg, 2)  # retry, e.g. after a partial write
+    assert store.get_run("retry")["join_token"] == token1, "retry must not rotate the join token"
+    tokens = {store.get_run(r)["join_token"] for r in ("retry", "retry_shard_0", "retry_shard_1")}
+    assert tokens == {token1}

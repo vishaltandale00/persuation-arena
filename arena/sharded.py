@@ -89,7 +89,11 @@ def create_sharded_run(parent_config: dict, num_shards: int) -> list[str]:
     # One per-parent secret, shared by the parent and every child (INV-4 / SPEC D7). A child is
     # joinable ONLY by an agent that presents this token; a stray agent posting the predictable
     # parent id or `{parent}_shard_0` child id never has it. The parent itself is never joinable.
-    join_token = secrets.token_urlsafe(24)
+    # On a retry/re-create for an existing parent, REUSE the persisted token rather than minting a
+    # fresh one — save_run upserts join_token=COALESCE(excluded, existing), so a new token would
+    # rotate the secret out from under any token an orchestrator already handed to agents.
+    existing = store.get_run(parent_id)
+    join_token = (existing or {}).get("join_token") or secrets.token_urlsafe(24)
 
     # Parent: a presentational umbrella; never discoverable/joinable (INV-4 via list_open_runs).
     store.save_run({

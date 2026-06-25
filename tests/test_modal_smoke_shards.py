@@ -171,9 +171,10 @@ def test_run_agent_forwards_join_token_to_signup(monkeypatch, tmp_path):
         def act(self, fn):
             return fn
 
-        def signup(self, run_id=None, game=None, max_concurrent_turns=1, join_token=None):
+        def signup(self, run_id=None, game=None, max_concurrent_turns=1, join_token=None, seat=None):
             captured["run_id"] = run_id
             captured["join_token"] = join_token
+            captured["seat"] = seat
             return SimpleNamespace(status="seated", seat=0, signup_id="su-1")
 
         def run_forever(self, signups):
@@ -181,11 +182,14 @@ def test_run_agent_forwards_join_token_to_signup(monkeypatch, tmp_path):
 
     monkeypatch.setattr(smoke, "ArenaAgent", _FakeAgent)
     cred = str(tmp_path / "cred.json")
-    smoke._run_agent("rand-0", COORD_A, "p_shard_0", cred=cred, join_token="JT-secret")
+    smoke._run_agent("rand-0", COORD_A, "p_shard_0", cred=cred, join_token="JT-secret", seat=2)
 
     assert captured["join_token"] == "JT-secret", (
         "the child's join_token must reach signup; without it the token-gated child returns "
         f"403 run_not_joinable. got {captured.get('join_token')!r}")
+    assert captured["seat"] == 2, (
+        "the roster index must reach signup as seat= so shard children seat deterministically "
+        f"(D5/V-7); got {captured.get('seat')!r}")
     assert captured["ran"] is True
 
 
@@ -236,8 +240,8 @@ def test_sharded_smoke_passes_child_join_token_to_agents(monkeypatch):
     monkeypatch.setattr(smoke.threading, "Thread", _InlineThread)
     monkeypatch.setattr(smoke.time, "sleep", lambda *_a, **_k: None)
 
-    def _capture_run_agent(name, server, run_id, cred=None, join_token=None):
-        seen.append((run_id, join_token))
+    def _capture_run_agent(name, server, run_id, cred=None, join_token=None, seat=None):
+        seen.append((run_id, join_token, seat))
 
     monkeypatch.setattr(smoke, "_run_agent", _capture_run_agent)
 
@@ -245,11 +249,16 @@ def test_sharded_smoke_passes_child_join_token_to_agents(monkeypatch):
     assert rc == 0  # rollup_parent_status == 'done'
 
     # Every shard's agents must sign up with THAT shard's join_token (and never None).
-    assert {run_id for run_id, _ in seen} == set(child_ids)
-    assert all(jt is not None for _, jt in seen), seen
-    by_child = {cid: {jt for r, jt in seen if r == cid} for cid in child_ids}
+    assert {run_id for run_id, _jt, _s in seen} == set(child_ids)
+    assert all(jt is not None for _r, jt, _s in seen), seen
+    by_child = {cid: {jt for r, jt, _s in seen if r == cid} for cid in child_ids}
     assert by_child[child_ids[0]] == {tokens[child_ids[0]]}, by_child
     assert by_child[child_ids[1]] == {tokens[child_ids[1]]}, by_child
+    # Each shard must seat its agents by roster index (D5/V-7), not arrival order, so the same
+    # identity lands in the same seat across shards: each shard sees seats {0..N_PLAYERS-1}.
+    seats_by_child = {cid: sorted(s for r, _jt, s in seen if r == cid) for cid in child_ids}
+    for cid in child_ids:
+        assert seats_by_child[cid] == list(range(smoke.N_PLAYERS)), seats_by_child
     # N_PLAYERS agents per shard, all token-bearing (would have been 403 without the token).
     assert len(seen) == smoke.N_PLAYERS * len(child_ids)
 
