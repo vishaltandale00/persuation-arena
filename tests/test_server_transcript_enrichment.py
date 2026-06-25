@@ -75,6 +75,110 @@ def test_transcript_enrichment_matches_visible_discussion_actions(monkeypatch):
     assert '"pass"' in passed["raw_model_output"]
 
 
+def test_transcript_enrichment_discards_hidden_passes_before_visible_turns(monkeypatch):
+    transcript = {
+        "phases": [
+            {
+                "name": "Discussion",
+                "events": [
+                    {"t": "say", "pid": 1, "text": "Visible rebuttal."},
+                    {"t": "pass", "pid": 1, "ms": 12, "stance": "done"},
+                ],
+            }
+        ]
+    }
+    completed = [
+        {
+            "game_instance_id": "run_x_game_001",
+            "type": "model_turn_completed",
+            "phase": "discussion",
+            "payload": {
+                "seat": 1,
+                "action": {"pass": True, "stance": "wait"},
+                "reasoning": "hidden wait reason",
+                "raw": '{"action":{"pass":true,"stance":"wait"}}',
+            },
+        },
+        {
+            "game_instance_id": "run_x_game_001",
+            "type": "model_turn_completed",
+            "phase": "discussion",
+            "payload": {
+                "seat": 1,
+                "action": {"speak": "Visible rebuttal.", "urgency": 3},
+                "reasoning": "visible speak reason",
+                "raw": '{"action":{"speak":"Visible rebuttal.","urgency":3}}',
+            },
+        },
+        {
+            "game_instance_id": "run_x_game_001",
+            "type": "model_turn_completed",
+            "phase": "discussion",
+            "payload": {
+                "seat": 1,
+                "action": {"pass": True, "stance": "done"},
+                "reasoning": "visible done reason",
+                "raw": '{"action":{"pass":true,"stance":"done"}}',
+            },
+        },
+    ]
+    monkeypatch.setattr(server.store, "list_run_events", lambda run_id, max_events=1000: completed)
+
+    enriched = server._enrich_transcript_turn_reasoning("run_x", 1, transcript)
+    say, passed = enriched["phases"][0]["events"]
+
+    assert say["declared_reasoning"] == "visible speak reason"
+    assert say["hidden_model_turns_before"][0]["action"] == {"pass": True, "stance": "wait"}
+    assert say["hidden_model_turns_before"][0]["reasoning"] == "hidden wait reason"
+    assert passed["declared_reasoning"] == "visible done reason"
+    assert '"stance":"done"' in passed["raw_model_output"]
+
+
+def test_transcript_enrichment_pass_stance_must_match_visible_event(monkeypatch):
+    transcript = {
+        "phases": [
+            {
+                "name": "Discussion",
+                "events": [
+                    {"t": "pass", "pid": 1, "ms": 12, "stance": "done"},
+                ],
+            }
+        ]
+    }
+    completed = [
+        {
+            "game_instance_id": "run_x_game_001",
+            "type": "model_turn_completed",
+            "phase": "discussion",
+            "payload": {
+                "seat": 1,
+                "action": {"pass": True, "stance": "wait"},
+                "reasoning": "hidden wait reason",
+                "raw": '{"action":{"pass":true,"stance":"wait"}}',
+            },
+        },
+        {
+            "game_instance_id": "run_x_game_001",
+            "type": "model_turn_completed",
+            "phase": "discussion",
+            "payload": {
+                "seat": 1,
+                "action": {"pass": True, "stance": "done"},
+                "reasoning": "visible done reason",
+                "raw": '{"action":{"pass":true,"stance":"done"}}',
+            },
+        },
+    ]
+    monkeypatch.setattr(server.store, "list_run_events", lambda run_id, max_events=1000: completed)
+
+    enriched = server._enrich_transcript_turn_reasoning("run_x", 1, transcript)
+    passed = enriched["phases"][0]["events"][0]
+
+    assert passed["declared_reasoning"] == "visible done reason"
+    assert passed["hidden_model_turns_before"][0]["action"] == {"pass": True, "stance": "wait"}
+    assert '"stance":"done"' in passed["raw_model_output"]
+
+
 def test_transcript_enrichment_skips_hidden_losing_bids(monkeypatch):
     transcript = {
         "phases": [

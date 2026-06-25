@@ -863,7 +863,11 @@ def _enrich_transcript_turn_reasoning(run_id: str, gid: int, transcript: dict) -
         if event_type == "say":
             return isinstance(action, dict) and normalized_text(action.get("speak")) == normalized_text(replay_event.get("text"))
         if event_type == "pass":
-            return isinstance(action, dict) and action.get("pass") is True
+            if not (isinstance(action, dict) and action.get("pass") is True):
+                return False
+            if replay_event.get("stance"):
+                return str(action.get("stance", "done")) == str(replay_event.get("stance"))
+            return True
         if event_type == "vote":
             try:
                 return int(action) == int(replay_event.get("tgt"))
@@ -885,7 +889,30 @@ def _enrich_transcript_turn_reasoning(run_id: str, gid: int, transcript: dict) -
             match_idx = next((i for i, candidate in enumerate(queue) if action_matches_event(candidate, event)), None)
             if match_idx is None:
                 continue
-            payload = queue.pop(match_idx)
+            # Earlier candidates for this seat/phase were hidden losing bids or otherwise did
+            # not surface in the replay. Keep them inspectable as audit-only context, but do not
+            # let a later visible replay event inherit their reasoning/raw output.
+            skipped = queue[:match_idx]
+            if skipped:
+                event["hidden_model_turns_before"] = [
+                    {
+                        k: candidate[k]
+                        for k in (
+                            "action",
+                            "reasoning",
+                            "provider_reasoning",
+                            "provider_reasoning_details",
+                            "raw",
+                            "action_kind",
+                            "model",
+                            "ms",
+                        )
+                        if k in candidate and candidate[k] is not None
+                    }
+                    for candidate in skipped
+                ]
+            payload = queue[match_idx]
+            del queue[:match_idx + 1]
             if payload.get("reasoning"):
                 event["declared_reasoning"] = payload["reasoning"]
             if payload.get("provider_reasoning") is not None:
