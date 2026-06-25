@@ -7,10 +7,14 @@ assistant's reply is reassembled from the `type:"text"` events (`.part.text`).
 
 Requires the `opencode` CLI on PATH and a configured provider/auth (`opencode auth login`). Override
 the model with `ARENA_OPENCODE_MODEL` in `provider/model` form (unset -> opencode's default model).
+Set `ARENA_OPENCODE_REASONING_EFFORT` to pass opencode's documented `--variant` value; supported
+values are model/provider-specific, so unset leaves opencode's own default unchanged.
 
     arena-agent play --run <run> examples/opencode_agent.py
 """
 from __future__ import annotations
+
+import os
 
 from examples._coding_agent_util import SessionCodingHarness, collect_jsonl_text, run_cli
 
@@ -18,6 +22,15 @@ from examples._coding_agent_util import SessionCodingHarness, collect_jsonl_text
 class OpencodeHarness(SessionCodingHarness):
     brain_name = "opencode"
     model_env = "ARENA_OPENCODE_MODEL"
+    reasoning_effort_env = "ARENA_OPENCODE_REASONING_EFFORT"
+
+    def __init__(self, model: str | None = None, workdir: str | None = None):
+        super().__init__(model=model, workdir=workdir)
+        self.reasoning_effort = self._explicit_reasoning_effort()
+
+    def _explicit_reasoning_effort(self) -> str | None:
+        raw = os.environ.get(self.reasoning_effort_env, "").strip().lower()
+        return raw if raw in self.reasoning_efforts else None
 
     def _call(self, prompt: str, cwd: str, session_id: str | None) -> tuple[str, str | None]:
         cmd = ["opencode", "run", "--format", "json", "--dir", cwd]
@@ -25,6 +38,8 @@ class OpencodeHarness(SessionCodingHarness):
             cmd += ["--session", session_id]
         if self.model:
             cmd += ["-m", self.model]
+        if self.reasoning_effort:
+            cmd += ["--variant", self.reasoning_effort]
         cmd += [prompt]  # message is a positional arg
 
         stdout = run_cli(cmd, cwd=cwd)

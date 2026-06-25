@@ -41,6 +41,7 @@ from examples._harness_util import (
 # deadline; this only bounds how long the harness waits on the tool before falling back to a legal
 # action, so a hung tool degrades to a pass rather than blocking the loop forever.
 BRAIN_TIMEOUT = float(os.environ.get("ARENA_AGENT_BRAIN_TIMEOUT", "150"))
+REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 _WORKSPACE_NOTE = (
     "Your working directory contains transcript.md, a running log of everything you have observed "
@@ -118,10 +119,16 @@ class SessionCodingHarness:
 
     brain_name = "coding-agent"
     model_env: str | None = None
+    reasoning_effort_env: str | None = None
+    reasoning_efforts = REASONING_EFFORTS
 
     def __init__(self, model: str | None = None, workdir: str | None = None):
         env_model = os.environ.get(self.model_env) if self.model_env else None
+        env_effort = os.environ.get(self.reasoning_effort_env) if self.reasoning_effort_env else None
+        effort = (env_effort or os.environ.get("ARENA_AGENT_REASONING_EFFORT")
+                  or os.environ.get("ARENA_REASONING_EFFORT") or "medium").strip().lower()
         self.model = model or env_model or None
+        self.reasoning_effort = effort if effort in self.reasoning_efforts else "medium"
         self.root = workdir or tempfile.mkdtemp(prefix=f"arena-{self.brain_name}-")
         self._pending: dict[str, list[str]] = {}      # game_instance_id -> rendered events not yet sent
         self._sessions: dict[str, str] = {}           # game_instance_id -> tool-native session id

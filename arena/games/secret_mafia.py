@@ -12,7 +12,7 @@ import random
 from collections import Counter
 
 from arena.identity import participant_label, seat_for_participant_ref
-from .base import Agent, agent_stats, team_of
+from .base import Agent, agent_call_log, agent_stats, team_of
 
 ROLE_DESC = {
     "Mafia": "You secretly kill one player each night. Win when the Mafia equals the number of remaining villagers.",
@@ -102,7 +102,7 @@ class SecretMafia:
             return t
 
         resp = agent.act(prompt, parse, default if default is not None else candidates[0])
-        return resp.action, resp.reasoning, resp.ms
+        return resp.action, resp.declared_reasoning, resp.ms
 
     def run_night(self, rnd, agents):
         events = [{"t": "sys", "text": f"Night {rnd}: the town sleeps."}]
@@ -168,7 +168,7 @@ class SecretMafia:
                         raise ValueError("empty")
                     return s
                 resp = agents[pid].act(prompt, parse, "pass")
-                reason[pid] = resp.reasoning
+                reason[pid] = resp.declared_reasoning
                 if resp.action.lower() in ("pass", "(pass)"):
                     events.append({"t": "pass", "pid": pid, "ms": resp.ms})
                     self.public.append(f"{self.names[pid]} passes.")
@@ -249,6 +249,7 @@ class SecretMafia:
             "game": self.GAME, "title": self.TITLE, "seed": self.seed,
             "meta": f"{self.n} agents · {self._composition()} · seed {self.seed}",
             "players": players,
+            "agentCallLog": agent_call_log(agents),
             "cardsInPlay": [[self.role[i], team_of(self.role[i])] for i in range(self.n)],
             "center": None, "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,
         }

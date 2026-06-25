@@ -109,16 +109,38 @@ def test_api_submit_claim_ingest_complete(tmp_path, monkeypatch):
         submitted = client.post("/api/runs", json={
             "owner": "alice", "game": "onuw", "games": 1, "rounds": 1,
             "deck_preset": "tanner", "agents": _agents(),
+            "reasoning_effort": "high",
+            "max_tokens_per_turn": 512,
+            "temperature": 0.2,
+            "retries": 3,
+            "prior_message_turns": 0,
         })
         assert submitted.status_code == 200
         run_id = submitted.json()["run_id"]
         job_id = submitted.json()["job_id"]
         assert submitted.json()["deck_preset"] == "tanner"
+        assert submitted.json()["run_config"] == {
+            "discussion_rounds": 1,
+            "reasoning_effort": "high",
+            "max_tokens_per_turn": 512,
+            "temperature": 0.2,
+            "retries": 3,
+            "prior_message_turns": 0,
+        }
 
         claimed = client.post("/api/jobs/claim", json={"owner": "alice", "worker_id": "w1"})
         assert claimed.status_code == 200
         assert claimed.json()["job"]["id"] == job_id
         assert claimed.json()["job"]["deck_preset"] == "tanner"
+        assert claimed.json()["job"]["agents"][0]["reasoning_effort"] == "high"
+        assert claimed.json()["job"]["agents"][0]["max_tokens_per_turn"] == 512
+        assert claimed.json()["job"]["agents"][0]["temperature"] == 0.2
+        assert claimed.json()["job"]["agents"][0]["retries"] == 3
+        assert claimed.json()["job"]["agents"][0]["prior_message_turns"] == 0
+
+        stored = store.get_run(run_id)
+        assert stored["metadata"]["run_config"] == submitted.json()["run_config"]
+        assert stored["agents"][0]["reasoning_effort"] == "high"
 
         ingested = client.post("/api/ingest", json={
             "owner": "alice", "job_id": job_id, "run_id": run_id, "gid": 1,
@@ -142,7 +164,29 @@ def test_api_submit_claim_ingest_complete(tmp_path, monkeypatch):
         run = client.get(f"/api/runs/{run_id}").json()
         assert run["status"] == "done"
         assert run["deckPreset"] == "tanner"
+        assert run["runConfig"] == submitted.json()["run_config"]
         assert len(run["games"]) == 1
+
+
+def test_api_submit_rejects_invalid_run_caps(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("INGEST_TOKENS", raising=False)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "arena.db")
+
+    from arena.server import app
+
+    with TestClient(app) as client:
+        bad_tokens = client.post("/api/runs", json={
+            "owner": "alice", "game": "onuw", "games": 1,
+            "max_tokens_per_turn": 0, "agents": _agents(),
+        })
+        assert bad_tokens.status_code == 400
+
+        bad_effort = client.post("/api/runs", json={
+            "owner": "alice", "game": "onuw", "games": 1,
+            "reasoning_effort": "extreme", "agents": _agents(),
+        })
+        assert bad_effort.status_code == 400
 
 
 def test_api_worker_token_owner_fence(tmp_path, monkeypatch):

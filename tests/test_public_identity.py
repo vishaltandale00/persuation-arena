@@ -9,7 +9,7 @@ from arena.identity import public_ref, validate_unique_public_names
 class _Resp:
     def __init__(self, action):
         self.action = action
-        self.reasoning = "ok"
+        self.declared_reasoning = "ok"
         self.ms = 0.0
 
 

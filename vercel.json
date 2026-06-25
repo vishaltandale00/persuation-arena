@@ -2,6 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     { "source": "/", "destination": "/web/observer.html" },
+    { "source": "/presentation.html", "destination": "/web/presentation.html" },
     { "source": "/agent-run-protocol.html", "destination": "/web/agent-run-protocol.html" }
   ]
 }

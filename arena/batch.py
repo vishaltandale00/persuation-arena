@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as _dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .config import SETTINGS
+from .config import Caps, SETTINGS, caps_with_overrides
 from .games.onuw import ONUW, normalize_deck_preset
 from .games.avalon import Avalon
 from .games.secret_mafia import SecretMafia
@@ -27,6 +27,34 @@ GAME_CORES = {"onuw": ONUW, "avalon": Avalon, "secret_mafia": SecretMafia}
 
 def _now() -> str:
     return _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def _agent_meta(spec, caps: Caps, discussion_rounds: int) -> dict:
+    return {
+        "name": spec.name,
+        "model": spec.model,
+        "harness": spec.harness,
+        "provider": "openrouter",
+        "reasoning_effort": caps.reasoning_effort,
+        "max_tokens": caps.max_tokens_per_turn,
+        "max_tokens_per_turn": caps.max_tokens_per_turn,
+        "temperature": caps.temperature,
+        "retries": caps.retries,
+        "prior_message_turns": caps.prior_message_turns,
+        "discussion_rounds": discussion_rounds,
+        "sessionful": False,
+    }
+
+
+def _run_config_meta(caps: Caps, discussion_rounds: int) -> dict:
+    return {
+        "discussion_rounds": discussion_rounds,
+        "reasoning_effort": caps.reasoning_effort,
+        "max_tokens_per_turn": caps.max_tokens_per_turn,
+        "temperature": caps.temperature,
+        "retries": caps.retries,
+        "prior_message_turns": caps.prior_message_turns,
+    }
 
 
 def fresh_deal_schedule(n_games: int, n_players: int, seed_base: int) -> list[tuple[int, int, int]]:
@@ -41,10 +69,13 @@ def fresh_deal_schedule(n_games: int, n_players: int, seed_base: int) -> list[tu
     return sched
 
 
-def _play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, deck_preset=None):
+def _play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, deck_preset=None,
+              caps: Caps | None = None):
+    caps = caps or SETTINGS.caps
     seat_to_spec = [specs[(i + rot) % n_players] for i in range(n_players)]
     names = {i: seat_to_spec[i].name for i in range(n_players)}
-    agents = {i: OpenRouterAgent(seat_to_spec[i].name, seat_to_spec[i].model, seat_to_spec[i].harness)
+    agents = {i: OpenRouterAgent(seat_to_spec[i].name, seat_to_spec[i].model, seat_to_spec[i].harness,
+                                  caps=caps)
               for i in range(n_players)}
     kwargs = {"discussion_rounds": discussion_rounds}
     if core_cls is ONUW:
@@ -53,14 +84,17 @@ def _play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, dec
     for p in t["players"]:
         s = seat_to_spec[p["seat"]]
         p["name"], p["model"] = s.name, s.model
-    meta = [{"name": seat_to_spec[i].name, "model": seat_to_spec[i].model} for i in range(n_players)]
+    meta = [_agent_meta(seat_to_spec[i], caps, discussion_rounds) for i in range(n_players)]
     return gid, t, meta
 
 
 def run_batch(game: str = "onuw", n_games: int = 20, seed_base: int = 9000,
               run_id: str | None = None, roster=None, workers: int = 8,
               discussion_rounds: int = 5, deck_preset: str | None = None,
-              skip_gids=None, on_game_saved=None) -> str:
+              skip_gids=None, on_game_saved=None, caps: Caps | None = None) -> str:
+    if discussion_rounds <= 0:
+        raise ValueError("discussion_rounds must be positive")
+    caps = caps_with_overrides(caps or SETTINGS.caps, discussion_rounds=discussion_rounds)
     specs = list(roster or SETTINGS.roster())
     core_cls = GAME_CORES[game]
     n_players = len(specs)  # the roster IS the table — one agent per seat, no fixed count
@@ -69,11 +103,12 @@ def run_batch(game: str = "onuw", n_games: int = 20, seed_base: int = 9000,
         raise ValueError(f"{core_cls.TITLE} supports {lo}–{hi} players, got {n_players}")
     deck_preset = normalize_deck_preset(deck_preset) if game == "onuw" else None
     run_id = run_id or f"run_{seed_base}"
-    agents_meta = [{"name": s.name, "model": s.model, "harness": s.harness} for s in specs]
+    agents_meta = [_agent_meta(s, caps, discussion_rounds) for s in specs]
     store.save_run({
         "id": run_id, "game": game, "label": core_cls.TITLE, "status": "running",
         "n_games": n_games, "players": n_players, "seed_base": seed_base,
         "created": _now(), "agents": agents_meta, "deck_preset": deck_preset,
+        "metadata": {"run_config": _run_config_meta(caps, discussion_rounds)},
     })
 
     skip_gids = set(skip_gids or [])
@@ -83,7 +118,7 @@ def run_batch(game: str = "onuw", n_games: int = 20, seed_base: int = 9000,
     with ThreadPoolExecutor(max_workers=workers) as ex:
         fut_to_gid = {
             ex.submit(_play_one, core_cls, specs, n_players, seed, gid, rot,
-                      discussion_rounds, deck_preset): gid
+                      discussion_rounds, deck_preset, caps): gid
             for (gid, seed, rot) in sched
         }
         done = len(skip_gids)

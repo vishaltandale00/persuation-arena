@@ -92,7 +92,7 @@ def test_connected_agent_creates_turn_and_waits_for_reply(tmp_path, monkeypatch)
     thread.join(timeout=2)
     assert not thread.is_alive()
     assert result["resp"].action == "hello"
-    assert result["resp"].reasoning == "test"
+    assert result["resp"].declared_reasoning == "test"
     assert agent.calls[-1]["ok"] is True
 
 
@@ -113,7 +113,7 @@ def test_onuw_vote_prepares_all_connected_votes_before_waiting():
         def wait(self):
             assert len(prepared) == 5
             waited.append(self.seat)
-            return type("Resp", (), {"action": -1, "reasoning": "vote", "ms": 0.0})()
+            return type("Resp", (), {"action": -1, "declared_reasoning": "vote", "ms": 0.0})()
 
     class Agent:
         model = "connected-agent"

@@ -17,7 +17,7 @@ from __future__ import annotations
 import random
 
 from arena.identity import participant_label, roster_line, seat_for_participant_ref
-from .base import Agent, agent_stats, team_of
+from .base import Agent, agent_call_log, agent_stats, team_of
 
 ROLE_DESC = {
     "Merlin": "You know who the evil players are, but if the Assassin identifies you at the end, evil wins. Stay hidden.",
@@ -193,7 +193,7 @@ class Avalon:
         default = (list(range(size)), "Proposing a balanced team.")
         resp = agent.act(prompt, parse, default)
         team, statement = resp.action
-        return team, statement, resp.reasoning, resp.ms
+        return team, statement, resp.declared_reasoning, resp.ms
 
     def _team_vote(self, pid: int, team: list[int], agent: Agent):
         prompt = self.base_prompt(pid) + (
@@ -209,7 +209,7 @@ class Avalon:
             return s
 
         resp = agent.act(prompt, parse, default_action="approve")
-        return resp.action, resp.reasoning
+        return resp.action, resp.declared_reasoning
 
     def _quest_card(self, pid: int, agent: Agent):
         prompt = self.base_prompt(pid) + (
@@ -225,7 +225,7 @@ class Avalon:
             return s
 
         resp = agent.act(prompt, parse, default_action="fail")  # evil defaults to failing
-        return resp.action, resp.reasoning
+        return resp.action, resp.declared_reasoning
 
     # ---- assassination -----------------------------------------------------
     def run_assassination(self, status: list[dict], agents: dict[int, Agent]):
@@ -257,7 +257,7 @@ class Avalon:
         ]
         synth = {"state": text, "key": "In Avalon the deception layer overrides the mission layer — Merlin can win every quest and still lose.",
                  "note": "Primary social-intelligence signal: did Merlin stay hidden?"}
-        return {"name": "Assassination", "kind": "result", "events": events, "reason": {self.assassin: resp.reasoning},
+        return {"name": "Assassination", "kind": "result", "events": events, "reason": {self.assassin: resp.declared_reasoning},
                 "synth": synth, "outcome": {"team": winner, "text": text},
                 "board": {"quests": [dict(s) for s in status]}}, winner
 
@@ -301,6 +301,7 @@ class Avalon:
             "game": self.GAME, "title": self.TITLE, "seed": self.seed,
             "meta": f"{self.n} agents · 3 good / 2 evil · 5 quests · seed {self.seed}",
             "players": players,
+            "agentCallLog": agent_call_log(agents),
             "cardsInPlay": [[self.role[i], team_of(self.role[i])] for i in range(self.n)],
             "center": None,
             "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,

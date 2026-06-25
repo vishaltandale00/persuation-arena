@@ -1,6 +1,7 @@
 """Shared game-core helpers: the Agent protocol, team map, and vote tallying."""
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Protocol
 
 
@@ -33,6 +34,19 @@ def agent_stats(agent: Any) -> dict:
     calls = getattr(agent, "calls", []) or []
     forfeits = sum(1 for c in calls if not c.get("ok", True))
     return {"calls": len(calls), "forfeits": forfeits}
+
+
+def agent_call_log(agents: dict[int, Any]) -> dict[str, list[dict]]:
+    """JSON-safe per-seat model call audit log.
+
+    This is intentionally separate from `game_players`: old leaderboard rows only need aggregate
+    calls/forfeits, while transcript JSON can carry richer debug data such as provider reasoning.
+    """
+    data: dict[str, list[dict]] = {}
+    for seat, agent in agents.items():
+        calls = getattr(agent, "calls", []) or []
+        data[str(seat)] = json.loads(json.dumps(calls, default=str))
+    return data
 
 
 NO_KILL = -1  # vote target meaning "point up / no one"

@@ -10,7 +10,9 @@ a clean game brain — it does NOT load this repo's CLAUDE.md, skills, or settin
 
 Requires `claude-agent-sdk` (the optional `harness-agents` extra: `uv sync --extra harness-agents`)
 and Claude auth (Claude subscription via the `claude` CLI, or `ANTHROPIC_API_KEY`). Override the
-model with `ARENA_CLAUDE_AGENT_MODEL` (unset -> the SDK's default model).
+model with `ARENA_CLAUDE_AGENT_MODEL` (unset -> the SDK's default model) and reasoning effort with
+`ARENA_CLAUDE_AGENT_REASONING_EFFORT` (fallback: `ARENA_AGENT_REASONING_EFFORT`, then
+`ARENA_REASONING_EFFORT`, then `medium`).
 
     arena-agent play --run <run> examples/claude_agent_sdk_agent.py
 """
@@ -24,6 +26,8 @@ from examples._coding_agent_util import SessionCodingHarness
 class ClaudeAgentSdkHarness(SessionCodingHarness):
     brain_name = "claude-agent-sdk"
     model_env = "ARENA_CLAUDE_AGENT_MODEL"
+    reasoning_effort_env = "ARENA_CLAUDE_AGENT_REASONING_EFFORT"
+    reasoning_efforts = {"low", "medium", "high", "xhigh", "max"}
 
     def _call(self, prompt: str, cwd: str, session_id: str | None) -> tuple[str, str | None]:
         # Import lazily so the harness module stays importable without the optional SDK installed.
@@ -37,7 +41,17 @@ class ClaudeAgentSdkHarness(SessionCodingHarness):
                 kwargs["resume"] = session_id
             if self.model:
                 kwargs["model"] = self.model
-            options = ClaudeAgentOptions(**kwargs)
+            if self.reasoning_effort:
+                kwargs["effort"] = self.reasoning_effort
+            try:
+                options = ClaudeAgentOptions(**kwargs)
+            except TypeError:
+                # Claude Agent SDK docs expose both a native effort option in current SDKs and
+                # extra_args for CLI passthrough. Keep older SDKs usable while still sending effort.
+                effort = kwargs.pop("effort", None)
+                if effort:
+                    kwargs.setdefault("extra_args", {})["effort"] = effort
+                options = ClaudeAgentOptions(**kwargs)
 
             texts: list[str] = []
             result: str | None = None

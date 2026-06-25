@@ -16,9 +16,12 @@ EventHandler = Callable[[Event], None]
 class ArenaAgent:
     def __init__(self, name: str, server: str = DEFAULT_SERVER,
                  credentials: CredentialsStore | None = None,
-                 client: ArenaHttpClient | None = None):
+                 client: ArenaHttpClient | None = None,
+                 model: str | None = None, harness: str | None = None):
         self.name = name
         self.server = server.rstrip("/")
+        self.model = model
+        self.harness = harness
         self.credentials = credentials or CredentialsStore()
         self.client = client or ArenaHttpClient(self.server)
         # Registration + signup + status stay on the central API (self.client). Once the run's per-run
@@ -44,7 +47,7 @@ class ArenaAgent:
         existing = self.credentials.get(self.server)
         if existing:
             return existing
-        creds = self.client.register_agent(self.name)
+        creds = self.client.register_agent(self.name, model=self.model, harness=self.harness)
         self.credentials.save(creds)
         return creds
 

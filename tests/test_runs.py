@@ -2,6 +2,9 @@
 and agent forfeit telemetry. No API calls (the model client / _play_one are stubbed)."""
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
 from types import SimpleNamespace
 
 from arena import batch, store
@@ -57,7 +60,8 @@ def test_every_scheduled_deal_has_a_wolf_in_play():
 
 
 # ---- batch resilience -------------------------------------------------------
-def _fake_play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, deck_preset=None):
+def _fake_play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, deck_preset=None,
+                   caps=None):
     if gid == 2:
         raise RuntimeError("boom")
     players = [{"seat": i, "dealt": "Villager", "end": "Villager", "team": "good",
@@ -78,6 +82,40 @@ def test_run_batch_survives_one_failing_game(tmp_path, monkeypatch):
     run = store.get_run(rid)
     assert run["status"] == "partial"                 # one game failed -> not 'done'
     assert store.distinct_gids(rid) == [1, 3, 4, 5]    # gid 2 dropped, rest persisted
+
+
+def test_run_batch_persists_effective_run_config(tmp_path, monkeypatch):
+    from arena.config import caps_with_overrides
+
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr(batch, "_play_one", _fake_play_one)
+    caps = caps_with_overrides(
+        reasoning_effort="high",
+        max_tokens_per_turn=1234,
+        temperature=0.2,
+        retries=3,
+        prior_message_turns=0,
+        discussion_rounds=2,
+    )
+
+    rid = batch.run_batch(game="onuw", n_games=1, seed_base=500, run_id="r_cfg",
+                          roster=SPECS, workers=1, discussion_rounds=2, caps=caps)
+
+    run = store.get_run(rid)
+    assert run["metadata"]["run_config"] == {
+        "discussion_rounds": 2,
+        "reasoning_effort": "high",
+        "max_tokens_per_turn": 1234,
+        "temperature": 0.2,
+        "retries": 3,
+        "prior_message_turns": 0,
+    }
+    assert run["agents"][0]["reasoning_effort"] == "high"
+    assert run["agents"][0]["max_tokens_per_turn"] == 1234
+    assert run["agents"][0]["temperature"] == 0.2
+    assert run["agents"][0]["retries"] == 3
+    assert run["agents"][0]["prior_message_turns"] == 0
+    assert run["agents"][0]["discussion_rounds"] == 2
 
 
 def test_run_batch_skips_existing_and_publishes_new_games(tmp_path, monkeypatch):
@@ -129,10 +167,27 @@ def test_score_run_reports_per_role_and_forfeit_rate(tmp_path, monkeypatch):
 
 
 # ---- agent forfeit telemetry ------------------------------------------------
-def _client_returning(content):
+def _client_returning(content, *, provider_reasoning=None):
     create = lambda **k: SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        choices=[SimpleNamespace(
+            finish_reason="stop",
+            message=SimpleNamespace(
+                content=content,
+                reasoning=provider_reasoning,
+                reasoning_details=[{"type": "summary", "text": provider_reasoning}] if provider_reasoning else None,
+            ),
+        )],
+        usage={"prompt_tokens": 1, "completion_tokens": 2},
+    )
     return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+
+def _set_structured_output(monkeypatch, openrouter, mode):
+    monkeypatch.setattr(
+        openrouter.SETTINGS,
+        "caps",
+        replace(openrouter.SETTINGS.caps, openrouter_structured_output=mode),
+    )
 
 
 def test_agent_records_forfeit_on_api_failure(monkeypatch):
@@ -162,8 +217,280 @@ def test_agent_defaults_when_parser_rejects_null_action(monkeypatch):
 def test_agent_records_ok_on_valid_response(monkeypatch):
     from arena import openrouter
     monkeypatch.setattr(openrouter, "client",
-                        lambda: _client_returning('{"reasoning":"r","action":3}'))
+                        lambda: _client_returning('{"reasoning":"r","action":3}',
+                                                  provider_reasoning="native trace"))
     a = openrouter.OpenRouterAgent("X", "m")
     resp = a.act("obs", lambda action, raw: int(action), default_action=0)
     assert resp.ok is True and resp.action == 3
     assert len(a.calls) == 1 and a.calls[0]["ok"] is True
+    assert resp.declared_reasoning == "r"
+    assert resp.provider_reasoning == "native trace"
+    assert a.calls[0]["declared_reasoning"] == "r"
+    assert a.calls[0]["provider_reasoning"] == "native trace"
+    assert a.calls[0]["reasoning_effort"] == openrouter.SETTINGS.caps.reasoning_effort
+    assert a.calls[0]["max_tokens"] == openrouter.SETTINGS.caps.max_tokens_per_turn
+    assert a.calls[0]["temperature"] == openrouter.SETTINGS.caps.temperature
+    assert a.calls[0]["retries"] == openrouter.SETTINGS.caps.retries
+    assert a.calls[0]["prior_message_turns"] == openrouter.SETTINGS.caps.prior_message_turns
+    assert a.calls[0]["finish_reason"] == "stop"
+    assert a.calls[0]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}
+
+
+def test_agent_requests_provider_reasoning(monkeypatch):
+    from arena import openrouter
+
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":3}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "m")
+    a.act("obs", lambda action, raw: int(action), default_action=0)
+
+    assert captured["extra_body"]["reasoning"] == {
+        "effort": openrouter.SETTINGS.caps.reasoning_effort,
+        "exclude": False,
+    }
+    assert captured["max_tokens"] == openrouter.SETTINGS.caps.max_tokens_per_turn
+
+
+def test_agent_does_not_request_structured_output_when_disabled(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "off")
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":{"target":2}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "openai/gpt-4o")
+    resp = a.act(
+        "obs",
+        lambda action, raw: int(action["target"]),
+        default_action=0,
+        action_kind="onuw.vote",
+        legal_action={"schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "integer", "enum": [1, 2]}},
+            "additionalProperties": False,
+        }},
+    )
+
+    assert resp.ok is True and resp.action == 2
+    assert "response_format" not in captured
+    assert a.calls[0]["structured_output"] == {
+        "configured": "off",
+        "requested": None,
+        "used": None,
+        "fallback": False,
+    }
+
+
+def test_agent_requests_json_schema_structured_output_when_enabled(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":{"target":2}}'),
+            )],
+            usage={},
+        )
+
+    action_schema = {
+        "type": "object",
+        "required": ["target"],
+        "properties": {"target": {"type": "integer", "enum": [1, 2]}},
+        "additionalProperties": False,
+    }
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "openai/gpt-4o")
+    resp = a.act(
+        "obs",
+        lambda action, raw: int(action["target"]),
+        default_action=0,
+        action_kind="onuw.vote",
+        legal_action={"schema": action_schema},
+    )
+
+    assert resp.ok is True and resp.action == 2
+    assert captured["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "onuw_vote",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "required": ["reasoning", "action"],
+                "properties": {
+                    "reasoning": {"type": "string"},
+                    "action": action_schema,
+                },
+                "additionalProperties": False,
+            },
+        },
+    }
+    assert a.calls[0]["structured_output"] == {
+        "configured": "json_schema",
+        "requested": "json_schema",
+        "used": "json_schema",
+        "fallback": False,
+    }
+
+
+def test_agent_falls_back_when_structured_output_is_rejected(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    response_formats = []
+
+    def create(**kwargs):
+        response_formats.append(kwargs.get("response_format"))
+        if kwargs.get("response_format") is not None:
+            raise ValueError("response_format json_schema is not supported by this provider")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"legacy","action":{"target":1}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "unknown/model")
+    resp = a.act(
+        "obs",
+        lambda action, raw: int(action["target"]),
+        default_action=0,
+        action_kind="onuw.vote",
+        legal_action={"schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "integer", "enum": [1, 2]}},
+            "additionalProperties": False,
+        }},
+    )
+
+    assert resp.ok is True and resp.action == 1
+    assert response_formats[0]["type"] == "json_schema"
+    assert response_formats[1] is None
+    assert "structured output rejected" in a.calls[0]["validation_error"]
+    assert a.calls[0]["structured_output"] == {
+        "configured": "json_schema",
+        "requested": "json_schema",
+        "used": None,
+        "fallback": True,
+    }
+
+
+def test_agent_uses_json_object_when_schema_is_unavailable(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":"approve"}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "openai/gpt-4o")
+    resp = a.act("obs", lambda action, raw: str(action), default_action="reject")
+
+    assert resp.ok is True and resp.action == "approve"
+    assert captured["response_format"] == {"type": "json_object"}
+
+
+def test_agent_passes_prior_provider_reasoning_as_assistant_message_fields(monkeypatch):
+    from arena import openrouter
+
+    messages_by_call = []
+    responses = [
+        '{"reasoning":"keep pressure on seat 2","action":3}',
+        '{"reasoning":"continue the plan","action":4}',
+    ]
+
+    def create(**kwargs):
+        messages_by_call.append(kwargs["messages"])
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(
+                    content=responses.pop(0),
+                    reasoning="provider plan",
+                    reasoning_details=[{"type": "reasoning.summary", "summary": "provider plan"}],
+                ),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "m")
+    a.act("first obs", lambda action, raw: int(action), default_action=0, action_kind="vote")
+    a.act("second obs", lambda action, raw: int(action), default_action=0, action_kind="vote")
+
+    assert messages_by_call[0] == [
+        {"role": "system", "content": openrouter.SYSTEM},
+        {"role": "user", "content": "first obs"},
+    ]
+    assert messages_by_call[1][1] == {"role": "user", "content": "first obs"}
+    assert messages_by_call[1][2]["role"] == "assistant"
+    assert messages_by_call[1][2]["content"] == '{"reasoning":"keep pressure on seat 2","action":3}'
+    assert messages_by_call[1][2]["reasoning_details"] == [
+        {"type": "reasoning.summary", "summary": "provider plan"}
+    ]
+    assert messages_by_call[1][3] == {"role": "user", "content": "second obs"}
+
+
+def test_agent_response_requires_explicit_declared_reasoning():
+    from arena.openrouter import AgentResponse
+
+    with pytest.raises(TypeError):
+        AgentResponse(reasoning="ambiguous", action=1, raw="{}", ok=True)
+
+    resp = AgentResponse(
+        declared_reasoning="arena rationale",
+        action=1,
+        raw="{}",
+        ok=True,
+        provider_reasoning="provider trace",
+        provider_reasoning_details=[{"type": "summary", "text": "provider trace"}],
+    )
+    assert resp.declared_reasoning == "arena rationale"
+    assert not hasattr(resp, "reasoning")
+    assert resp.provider_reasoning == "provider trace"
+    assert resp.provider_reasoning_details == [{"type": "summary", "text": "provider trace"}]

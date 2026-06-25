@@ -16,14 +16,70 @@ import socket
 import threading
 import time
 
-from .config import SETTINGS
+from .config import REASONING_EFFORTS, SETTINGS, caps_with_overrides
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be nonnegative")
+    return parsed
+
+
+def _nonnegative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be nonnegative")
+    return parsed
+
+
+def _run_caps_from_args(args):
+    return caps_with_overrides(
+        reasoning_effort=args.reasoning_effort,
+        max_tokens_per_turn=args.max_tokens_per_turn,
+        temperature=args.temperature,
+        retries=args.retries,
+        prior_message_turns=args.prior_message_turns,
+        discussion_rounds=args.rounds,
+    )
+
+
+def _run_caps_from_job(job: dict):
+    fields = {}
+    for agent in job.get("agents") or []:
+        for key in ("reasoning_effort", "max_tokens_per_turn", "temperature", "retries",
+                    "prior_message_turns"):
+            if key in agent and key not in fields:
+                fields[key] = agent[key]
+        if "max_tokens" in agent and "max_tokens_per_turn" not in fields:
+            fields["max_tokens_per_turn"] = agent["max_tokens"]
+        if len(fields) >= 5:
+            break
+    if "max_tokens_per_turn" in fields:
+        fields["max_tokens_per_turn"] = int(fields["max_tokens_per_turn"])
+    if "temperature" in fields:
+        fields["temperature"] = float(fields["temperature"])
+    if "retries" in fields:
+        fields["retries"] = int(fields["retries"])
+    if "prior_message_turns" in fields:
+        fields["prior_message_turns"] = int(fields["prior_message_turns"])
+    return caps_with_overrides(**fields, discussion_rounds=int(job["rounds"]))
 
 
 def _run(args):
     from .batch import run_batch
     rid = args.run_id or f"run_{args.seed}"
+    caps = _run_caps_from_args(args)
     run_batch(game=args.game, n_games=args.games, seed_base=args.seed, run_id=rid,
-              workers=args.workers, discussion_rounds=args.rounds, deck_preset=args.deck)
+              workers=args.workers, discussion_rounds=args.rounds, deck_preset=args.deck,
+              caps=caps)
     print(f"\nDone. View at http://localhost:{args.port}/observer.html  (run: {rid})")
     print(f"Score with: python -m arena.cli score --run {rid}")
 
@@ -125,7 +181,9 @@ def _run_claimed_job(args, job: dict, worker_id: str, token: str | None) -> None
         except Exception:
             existing = set()
 
-        roster = [AgentSpec(**a) for a in job["agents"]]
+        roster = [AgentSpec(name=a["name"], model=a["model"], harness=a.get("harness", "base"))
+                  for a in job["agents"]]
+        caps = _run_caps_from_job(job)
 
         def publish(gid: int, transcript: dict, agents: list[dict]) -> None:
             _worker_post(server, "/api/ingest", token, {
@@ -138,7 +196,7 @@ def _run_claimed_job(args, job: dict, worker_id: str, token: str | None) -> None
         run_batch(game=job["game"], n_games=int(job["n_games"]), seed_base=int(job["seed_base"]),
                   run_id=job["run_id"], roster=roster, workers=args.workers,
                   discussion_rounds=int(job["rounds"]), deck_preset=job.get("deck_preset"),
-                  skip_gids=existing,
+                  skip_gids=existing, caps=caps,
                   on_game_saved=publish)
         local = store.get_run(job["run_id"])
         status = (local or {}).get("status", "done")
@@ -195,8 +253,19 @@ def main():
     r.add_argument("--seed", type=int, default=9000)
     r.add_argument("--run-id", dest="run_id", default=None)
     r.add_argument("--workers", type=int, default=8)
-    r.add_argument("--rounds", type=int, default=5, help="max discussion rounds (ends early on all-pass)")
+    r.add_argument("--rounds", type=_positive_int, default=5, help="max discussion rounds (ends early on all-pass)")
     r.add_argument("--deck", default="arena", help="ONUW deck preset: arena, classic, or tanner")
+    r.add_argument("--reasoning-effort", choices=sorted(REASONING_EFFORTS), default=None,
+                   help="OpenRouter reasoning effort for this run")
+    r.add_argument("--max-tokens-per-turn", "--max-tokens", dest="max_tokens_per_turn",
+                   type=_positive_int, default=None,
+                   help="OpenRouter max_tokens cap for each model turn")
+    r.add_argument("--temperature", type=_nonnegative_float, default=None,
+                   help="OpenRouter temperature for this run")
+    r.add_argument("--retries", type=_nonnegative_int, default=None,
+                   help="model response retries per turn")
+    r.add_argument("--prior-message-turns", type=_nonnegative_int, default=None,
+                   help="previous user/assistant turns to resend to sessionful model calls")
     r.add_argument("--port", type=int, default=8000)
     r.set_defaults(func=_run)
 

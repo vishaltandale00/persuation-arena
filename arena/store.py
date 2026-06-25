@@ -40,7 +40,7 @@ SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
   players INTEGER, seed_base INTEGER, created TEXT, agents_json TEXT,
-  submitter TEXT, created_utc TEXT, deck_preset TEXT
+  submitter TEXT, created_utc TEXT, deck_preset TEXT, metadata_json TEXT
 );
 CREATE TABLE IF NOT EXISTS games (
   run_id TEXT, gid INTEGER, seed INTEGER, winner_team TEXT, line TEXT,
@@ -105,7 +105,8 @@ PG_SCHEMA_STMTS = [
     """CREATE TABLE IF NOT EXISTS runs (
          id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
          players INTEGER, seed_base BIGINT, created TEXT, agents_json TEXT,
-         submitter TEXT, created_utc TEXT, deck_preset TEXT, coordinator_url TEXT
+         submitter TEXT, created_utc TEXT, deck_preset TEXT, coordinator_url TEXT,
+         metadata_json TEXT
        )""",
     """CREATE TABLE IF NOT EXISTS games (
          run_id TEXT, gid INTEGER, seed BIGINT, winner_team TEXT, line TEXT,
@@ -172,7 +173,7 @@ _MIGRATIONS = {
     "game_players": [("calls", "INTEGER DEFAULT 0"), ("forfeits", "INTEGER DEFAULT 0"),
                      ("agent_id", "TEXT"), ("signup_id", "TEXT")],
     "runs": [("submitter", "TEXT"), ("created_utc", "TEXT"), ("deck_preset", "TEXT"),
-             ("coordinator_url", "TEXT")],
+             ("coordinator_url", "TEXT"), ("metadata_json", "TEXT")],
     "jobs": [("deck_preset", "TEXT")],
     "agents": [("declared_model", "TEXT"), ("declared_harness", "TEXT")],
 }
@@ -180,6 +181,7 @@ _MIGRATIONS = {
 PG_MIGRATION_STMTS = [
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS coordinator_url TEXT",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS metadata_json TEXT",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS agent_id TEXT",
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS signup_id TEXT",
@@ -230,6 +232,13 @@ def _job(row) -> dict | None:
     d = dict(row)
     d["agents"] = json.loads(d.pop("agents_json"))
     return d
+
+
+def _metadata_from_row(row) -> dict:
+    try:
+        return json.loads((dict(row).get("metadata_json") if row else None) or "{}")
+    except (TypeError, ValueError):
+        return {}
 
 
 def _migrate(c: sqlite3.Connection) -> None:
@@ -334,20 +343,23 @@ def init_schema() -> None:
 def save_run(meta: dict):
     """Upsert a run. MONOTONIC: never regress a finished ('done'/'partial') run back to 'running'."""
     ph = _ph()
+    metadata_json = json.dumps(meta.get("metadata") or {}) if "metadata" in meta else None
     with conn() as c:
         c.execute(
-            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
+            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
             f"ON CONFLICT (id) DO UPDATE SET "
             f"  game=excluded.game, label=excluded.label, "
             f"  status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END, "
             f"  n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base, "
             f"  created=excluded.created, agents_json=excluded.agents_json, "
             f"  submitter=excluded.submitter, created_utc=excluded.created_utc, "
-            f"  deck_preset=excluded.deck_preset",
+            f"  deck_preset=excluded.deck_preset, "
+            f"  metadata_json=COALESCE(excluded.metadata_json, runs.metadata_json)",
             (meta["id"], meta["game"], meta["label"], meta["status"], meta["n_games"],
              meta["players"], meta["seed_base"], meta["created"], json.dumps(meta["agents"]),
-             meta.get("submitter"), meta.get("created_utc"), meta.get("deck_preset")),
+             meta.get("submitter"), meta.get("created_utc"), meta.get("deck_preset"),
+             metadata_json),
         )
 
 
@@ -398,6 +410,7 @@ def enqueue_job(job: dict) -> dict:
         "n_games": job["n_games"], "players": job["players"], "seed_base": job["seed_base"],
         "created": job.get("created") or now[:16].replace("T", " "), "created_utc": now,
         "submitter": job["owner"], "agents": agents, "deck_preset": job.get("deck_preset"),
+        "metadata": job.get("metadata") or {},
     })
     ph = _ph()
     with conn() as c:
@@ -517,6 +530,7 @@ def list_runs() -> list[dict]:
             for w in wins:
                 split[w["team"]] = w["n"]
             out.append({**dict(r), "agents": agents, "team_split": split})
+            out[-1]["metadata"] = _metadata_from_row(r)
         return out
 
 
@@ -538,8 +552,8 @@ def get_run(run_id: str) -> dict | None:
         split = {"good": 0, "evil": 0}
         for g in games:
             split[g["winner_team"]] = split.get(g["winner_team"], 0) + 1
-        return {**dict(r), "agents": agents, "wins": wins, "team_split": split,
-                "games": [dict(g) for g in games]}
+        return {**dict(r), "agents": agents, "metadata": _metadata_from_row(r),
+                "wins": wins, "team_split": split, "games": [dict(g) for g in games]}
 
 
 def get_game(run_id: str, gid: int) -> dict | None:
@@ -808,6 +822,7 @@ def create_connected_run(meta: dict) -> dict:
         "submitter": meta.get("submitter", "connected"),
         "agents": meta.get("agents", []),
         "deck_preset": meta.get("deck_preset"),
+        "metadata": meta.get("metadata") or {},
     })
     return get_run(run_id)
 
