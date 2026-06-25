@@ -39,17 +39,15 @@ function isNoContest(seats) {
 }
 
 /**
- * agent -> scorecard. Reads game_players rows for the run and aggregates per agent:
- *   {overall, good, evil} cells, by_role:{dealt_role: cell}, and {calls, forfeits, forfeit_rate}.
+ * Port of arena/score.py _aggregate_rows: agent -> scorecard from a flat list of game_players rows.
+ * Rows are grouped by `gid` so no-contest games drop out; child shards carry DISJOINT global gids
+ * (SPEC D8), so unioning rows across several runs and grouping by gid is correct — no game is split
+ * or double-counted. This is the shared core of both scoreRun (one run) and scoreRuns (a sharded
+ * parent's children). Each scorecard has {w,n,rate,lo,hi} cells for overall/good/evil, a by_role map
+ * of {dealt_role: cell}, and reliability fields {calls, forfeits, forfeit_rate}.
  * Team bucket is r.team if in ('good','evil') else 'good'; dealt_role falls back to '?'.
  */
-export async function scoreRun(runId) {
-  const rows = await q(
-    `SELECT gid, agent, team, won, dealt_role, end_role, calls, forfeits
-       FROM game_players WHERE run_id = $1`,
-    [runId],
-  );
-
+export function aggregateScorecard(rows) {
   // group by game so no-contest games (no evil seat, no winner) drop out of scoring
   const games = {};
   for (const r of rows) (games[r.gid] ||= []).push(r);
@@ -100,6 +98,31 @@ export async function scoreRun(runId) {
     };
   }
   return out;
+}
+
+// game_players columns read for scoring (shared by scoreRun/scoreRuns).
+const _SCORE_COLS = 'gid, agent, team, won, dealt_role, end_role, calls, forfeits';
+
+/**
+ * Port of arena/score.py score_runs: agent -> scorecard aggregated across several runs (SPEC §6.3 /
+ * REQ-2). Unions game_players rows over every run id, then runs the same per-agent aggregation as a
+ * single run. Used to present a sharded parent (its child shards have disjoint global gids) as one
+ * logical scorecard. An empty list yields {}.
+ */
+export async function scoreRuns(runIds) {
+  if (!runIds || runIds.length === 0) return {};
+  const rows = [];
+  for (const runId of runIds) {
+    const r = await q(`SELECT ${_SCORE_COLS} FROM game_players WHERE run_id = $1`, [runId]);
+    rows.push(...r);
+  }
+  return aggregateScorecard(rows);
+}
+
+/** Port of arena/score.py score_run: agent -> scorecard for a single run. */
+export async function scoreRun(runId) {
+  const rows = await q(`SELECT ${_SCORE_COLS} FROM game_players WHERE run_id = $1`, [runId]);
+  return aggregateScorecard(rows);
 }
 
 // === 2. apiEvent — port of arena/server.py _api_event ===========================================

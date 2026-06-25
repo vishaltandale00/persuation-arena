@@ -145,16 +145,46 @@ def _spawn_shard_hosts(child_ids: list[str], creds_dir: str, args) -> list[subpr
 def _monitor_shards(parent_id: str, child_ids: list[str], procs: list[subprocess.Popen],
                     timeout_s: float) -> str:
     """Block-monitor the shards (non-load-bearing, D10): poll rollup_parent_status and per-shard
-    health until the parent rolls up to a terminal state or all hosts exit. Returns the final rollup."""
+    health until the parent rolls up to a terminal state or all hosts exit. Returns the final rollup.
+
+    A shard host can exit BEFORE its child run reaches a terminal state — e.g. `_run_shard_child`
+    returns nonzero because not enough agents activated, leaving the child 'waiting'/'ready_required'.
+    Once that host process is gone, nothing will ever advance that child, so the rollup would sit at
+    'running' forever and a naive wait would burn the whole games*rounds*deadline budget. So when ALL
+    host subprocesses have exited we stop waiting immediately: if the rollup is still non-terminal we
+    force the unfinished child(ren) to 'partial' (monotonic in the store, so a child that actually
+    reached 'done' is left untouched) and return the resolved rollup. The happy path — every host
+    exits cleanly and the children reach 'done' — still returns 'done'."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         status = rollup_parent_status(parent_id)
-        if status in {"done", "partial"} and all(p.poll() is not None for p in procs):
+        all_exited = all(p.poll() is not None for p in procs)
+        if status in {"done", "partial"} and all_exited:
             return status
+        if all_exited:
+            # Every host is dead but the rollup is non-terminal -> some child is stranded
+            # (no live process can ever finish it). Resolve it now instead of hanging.
+            return _resolve_dead_shards(parent_id, child_ids)
         time.sleep(1.0)
+    # Timed out with at least one host still running: terminate the stragglers, then resolve.
     for p in procs:
         if p.poll() is None:
             p.terminate()
+    status = rollup_parent_status(parent_id)
+    if status in {"done", "partial"}:
+        return status
+    return _resolve_dead_shards(parent_id, child_ids)
+
+
+def _resolve_dead_shards(parent_id: str, child_ids: list[str]) -> str:
+    """Mark every not-yet-terminal child 'partial' so the parent rolls up to a terminal state.
+
+    `update_run_status` is monotonic (it never overwrites a 'done'), so a child that truly finished
+    keeps 'done'; only the stranded ones flip to 'partial'. Returns the post-resolution rollup."""
+    for cid in child_ids:
+        run = store.get_run(cid) or {}
+        if run.get("status") not in {"done", "partial"}:
+            store.update_run_status(cid, "partial")
     return rollup_parent_status(parent_id)
 
 

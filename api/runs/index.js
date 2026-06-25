@@ -6,6 +6,29 @@
 //   server.api_submit_run -> _queue_run / _create_connected_run for CLI/registry parity.
 import { q, send, readBody, utcnow, newId, validateUniquePublicNames } from '../_db.js';
 import { DEFAULT_DECK_PRESET, normalizeDeckPreset } from '../_read.js';
+import { runKind, aggregateIndexRow } from '../_shards.js';
+
+// store.child_run_ids: the shard child run rows for a parent, in shard order (empty for a non-parent).
+// Returns the rows (id + status + winner-team split) the index parent branch needs to roll up.
+async function childRunsForIndex(parentId) {
+  const children = await q(
+    'SELECT id, status FROM runs WHERE parent_run_id = $1 ORDER BY shard_index',
+    [parentId],
+  );
+  for (const c of children) {
+    // team_split from the distinct winning team per recorded game (same derivation as a normal row).
+    const wins = await q(
+      `SELECT team, COUNT(*)::int AS n FROM (
+         SELECT DISTINCT run_id, gid, winner_team AS team FROM games WHERE run_id = $1
+       ) sub GROUP BY team`,
+      [c.id],
+    );
+    const split = { good: 0, evil: 0 };
+    for (const w of wins) split[w.team] = w.n;
+    c.team_split = split;
+  }
+  return children;
+}
 
 const GAME_LABELS = {
   onuw: 'One Night Ultimate Werewolf',
@@ -287,19 +310,38 @@ export default async function handler(req, res) {
     );
     const out = [];
     for (const r of runs) {
-      const wins = await q(
-        `SELECT team, COUNT(*)::int AS n FROM (
-           SELECT DISTINCT run_id, gid, winner_team AS team FROM games WHERE run_id = $1
-         ) sub GROUP BY team`,
-        [r.id],
-      );
-      const split = { good: 0, evil: 0 };
-      for (const w of wins) split[w.team] = w.n;
+      // SPEC D7 / INV-4: child shards are invisible in the observer — the parent renders as one
+      // normal run. (Parents and plain runs are listed; only run_kind='child' is hidden.)
+      const kind = runKind(r);
+      if (kind === 'child') continue;
+
+      let status = r.status;
+      let split;
+      if (kind === 'parent') {
+        // SPEC D7 / §6.9(a): the parent's OWN row never gets child progress written back, so roll
+        // status up and aggregate the children's team-split (the parent's own status is stale 'open'
+        // and its split is 0-0).
+        const children = await childRunsForIndex(r.id);
+        const agg = aggregateIndexRow(r, children);
+        status = agg.status;
+        split = agg.teamSplit;
+      } else {
+        // team_split from the distinct winning team per recorded game.
+        const wins = await q(
+          `SELECT team, COUNT(*)::int AS n FROM (
+             SELECT DISTINCT run_id, gid, winner_team AS team FROM games WHERE run_id = $1
+           ) sub GROUP BY team`,
+          [r.id],
+        );
+        split = { good: 0, evil: 0 };
+        for (const w of wins) split[w.team] = w.n;
+      }
+
       out.push({
         id: r.id,
         game: r.game,
         label: r.label,
-        status: r.status,
+        status,
         nGames: r.n_games == null ? r.n_games : Number(r.n_games),
         players: r.players == null ? r.players : Number(r.players),
         seed: r.seed_base == null ? r.seed_base : Number(r.seed_base),

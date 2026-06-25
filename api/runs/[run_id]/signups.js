@@ -6,6 +6,7 @@ import {
   OPEN_RUN_STATUSES, PROTOCOL_VERSION, newId, utcnow, utcAfter,
   publicRef, validateUniquePublicNames,
 } from '../../_db.js';
+import { signupGateError } from '../../_shards.js';
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
@@ -19,6 +20,13 @@ export default async function handler(req, res) {
 
   const run = await getRun(runId);
   if (!run) return send(res, 404, { error: 'run not found' });
+
+  // store.create_signup run_kind/join_token gate (INV-4 / SPEC D7). A shard parent is never joinable
+  // (presentational umbrella); a child is joinable ONLY with the matching per-parent join_token; a
+  // normal run ignores the token (byte-identical to pre-shard behavior, INV-2). server.api_signup_run
+  // maps run_not_joinable -> HTTP 403.
+  const gateErr = signupGateError(run, body.join_token);
+  if (gateErr) return send(res, 403, { error: gateErr });
 
   let s = (await q(
     `SELECT * FROM run_signups WHERE run_id=$1 AND agent_id=$2
