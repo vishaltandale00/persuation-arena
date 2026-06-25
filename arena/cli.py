@@ -73,12 +73,17 @@ def _run_caps_from_job(job: dict):
     return caps_with_overrides(**fields, discussion_rounds=int(job["rounds"]))
 
 
+def _use_local_store() -> None:
+    """Pin the LOCAL CLI commands (run/score/runs) to the local SQLite store by dropping
+    DATABASE_URL (which .env / the environment may set). These never touch the remote DB — the
+    only path to the prod leaderboard is `arena push`, which uses the Vercel JS API. Remote-by-design
+    commands (worker / serve / connected) are intentionally NOT routed through this."""
+    os.environ.pop("DATABASE_URL", None)
+
+
 def _run(args):
     from .batch import run_batch
-    # `arena run` is the LOCAL batch runner — it must NEVER write to a remote DB. Drop DATABASE_URL
-    # (which .env / the environment may set) so the store always uses local SQLite. The only path to
-    # the prod leaderboard is `arena push`, which talks to the Vercel JS API (never the DB directly).
-    os.environ.pop("DATABASE_URL", None)
+    _use_local_store()
     rid = args.run_id or f"run_{args.seed}"
     caps = _run_caps_from_args(args)
     run_batch(game=args.game, n_games=args.games, seed_base=args.seed, run_id=rid,
@@ -91,6 +96,7 @@ def _run(args):
 def _score(args):
     from .score import score_run
     from . import store
+    _use_local_store()
     run = store.get_run(args.run)
     if run is None:
         print("run not found")
@@ -122,6 +128,7 @@ def _score(args):
 
 def _runs(args):
     from . import store
+    _use_local_store()
     for r in store.list_runs():
         print(f"{r['id']:12} {r['game']:7} {r['status']:8} {r['n_games']:>3} games  "
               f"split {r['team_split']}  {r['created']}")

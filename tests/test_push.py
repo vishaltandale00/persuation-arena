@@ -215,3 +215,11 @@ def test_run_drops_database_url_local_only(monkeypatch):
 
     cli._run(_Args())
     assert captured["db_url_at_call"] is None  # DATABASE_URL was set, but `arena run` dropped it
+
+
+def test_use_local_store_pops_database_url(monkeypatch):
+    """The shared guard used by the local commands (run/score/runs) drops DATABASE_URL so they
+    never reach the remote DB."""
+    monkeypatch.setenv("DATABASE_URL", "postgres://bogus:bogus@localhost:1/none")
+    cli._use_local_store()
+    assert os.environ.get("DATABASE_URL") is None
