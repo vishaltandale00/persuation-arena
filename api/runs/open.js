@@ -1,5 +1,6 @@
 // GET /api/runs/open[?game=onuw] — open runs an agent can still join (not full, still in a lobby state).
 import { q, send, OPEN_RUN_STATUSES, utcAfter } from '../_db.js';
+import { isDiscoverableOpenRun } from '../_shards.js';
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
@@ -10,6 +11,8 @@ export default async function handler(req, res) {
   const out = [];
   for (const r of runs) {
     if (!OPEN_RUN_STATUSES.includes(r.status)) continue;
+    // INV-4: shard parents/children are never publicly discoverable or joinable.
+    if (!isDiscoverableOpenRun(r)) continue;
     const signed = (await q(
       `SELECT COUNT(*)::int AS n FROM run_signups WHERE run_id = $1
        AND status IN ('waiting','ready_required','ready','active')`, [r.id]))[0].n;

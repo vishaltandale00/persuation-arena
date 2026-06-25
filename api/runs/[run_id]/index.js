@@ -15,7 +15,10 @@
 //     emits plain numbers (BIGINT can arrive as a string from the driver).
 //   - game_players.won is INTEGER; SUM(won) (a bigint aggregate) is coerced with Number().
 import { q, send, utcnow } from '../../_db.js';
-import { scoreRun, deckForApi, DEFAULT_DECK_PRESET, apiEvent } from '../../_read.js';
+import { scoreRun, scoreRuns, deckForApi, DEFAULT_DECK_PRESET, apiEvent } from '../../_read.js';
+import {
+  runKind, sourceRunIds, aggregateParentDetail, parentSignups, parentRecentEvents,
+} from '../../_shards.js';
 
 // Port of store._expire_signup_if_needed (store.py:764-777), which store.list_run_signups
 // (store.py:873) applies to EVERY returned signup. Lazily flips a stale 'waiting' signup past its
@@ -61,41 +64,86 @@ export default async function handler(req, res) {
     metadata = {};
   }
 
-  // store.get_run: games for the run, ordered by gid.
-  const games = await q(
-    'SELECT gid, seed, winner_team, line FROM games WHERE run_id = $1 ORDER BY gid',
-    [runId],
-  );
-  const hasGames = games.length > 0;
+  // SPEC D7: a sharded PARENT presents as ONE normal run, sourcing every aggregate field from its
+  // children (the parent row owns no games/signups/events/wins of its own). source_ids = the child
+  // run ids in shard order for a parent, else [runId] for a normal/child run.
+  const isParent = runKind(r) === 'parent';
+  let childIds = [];
+  if (isParent) {
+    childIds = (await q('SELECT id FROM runs WHERE parent_run_id = $1 ORDER BY shard_index', [runId]))
+      .map((c) => c.id);
+  }
+  const sourceIds = sourceRunIds(r, childIds);
 
-  // store.get_run: per-agent wins across the run. Initialise every agent name to 0, then overlay
-  // SUM(won) per agent so unseen agents stay 0.
-  const wins = {};
-  for (const a of agentsSrc) wins[a.name] = 0;
-  const wr = await q(
-    'SELECT agent, SUM(won) w FROM game_players WHERE run_id = $1 GROUP BY agent',
-    [runId],
-  );
-  for (const row of wr) wins[row.agent] = Number(row.w) || 0;
-
-  // store.get_run: team_split keyed by winner_team, seeded with good/evil at 0.
-  const teamSplit = { good: 0, evil: 0 };
-  for (const g of games) {
-    teamSplit[g.winner_team] = (teamSplit[g.winner_team] || 0) + 1;
+  // store.get_run, per source run: games (ordered by gid), per-agent wins, and the winner-team split.
+  async function loadRunDetail(srcId, baseAgents) {
+    const detailGames = await q(
+      'SELECT gid, seed, winner_team, line FROM games WHERE run_id = $1 ORDER BY gid',
+      [srcId],
+    );
+    const detailWins = {};
+    for (const a of baseAgents) detailWins[a.name] = 0;
+    const wr = await q(
+      'SELECT agent, SUM(won) w FROM game_players WHERE run_id = $1 GROUP BY agent',
+      [srcId],
+    );
+    for (const row of wr) detailWins[row.agent] = Number(row.w) || 0;
+    const detailSplit = { good: 0, evil: 0 };
+    for (const g of detailGames) detailSplit[g.winner_team] = (detailSplit[g.winner_team] || 0) + 1;
+    return { id: srcId, games: detailGames, wins: detailWins, team_split: detailSplit };
   }
 
-  // store.list_run_signups: signups joined to agents, ordered seat-first.
-  const signups = await q(
-    `SELECT s.*, a.display_name, a.status AS agent_status, a.last_seen_utc
-       FROM run_signups s JOIN agents a ON a.id = s.agent_id
-      WHERE s.run_id = $1
-      ORDER BY s.seat IS NULL, s.seat, s.created_utc`,
-    [runId],
-  );
-  // store.list_run_signups runs _expire_signup_if_needed on every signup, lazily flipping
-  // deadline-expired 'waiting'/'ready_required' rows to 'expired' (and persisting). Apply it here so
-  // every downstream read of s.status (agents[].status, connectedSummary) sees the effective status.
-  for (const s of signups) await expireSignupIfNeeded(s);
+  let games;
+  let wins;
+  let teamSplit;
+  let status = r.status;
+  if (isParent) {
+    // children carry the same agents_json as the parent (REQ-5), so seed each child's wins map from
+    // the parent roster; aggregateParentDetail unions games (disjoint global gids, D8) and sums
+    // wins/team_split, and rolls the status up from the children.
+    const childRuns = [];
+    for (const cid of sourceIds) childRuns.push(await loadRunDetail(cid, agentsSrc));
+    const agg = aggregateParentDetail(r, childRuns);
+    games = agg.games;
+    wins = agg.wins;
+    teamSplit = agg.team_split;
+    status = agg.status;
+    // a parent's roster needs every name to default to 0 wins even if no shard recorded it yet.
+    for (const a of agentsSrc) if (!(a.name in wins)) wins[a.name] = 0;
+  } else {
+    const detail = await loadRunDetail(runId, agentsSrc);
+    games = detail.games;
+    wins = detail.wins;
+    teamSplit = detail.team_split;
+  }
+  const hasGames = games.length > 0;
+
+  // store.list_run_signups: signups joined to agents, ordered seat-first. For a parent the children
+  // share identities (REQ-5), so load each child's signups and collapse to one logical signup per
+  // agent_id (most-advanced status across shards) via parentSignups (server.py _parent_signups).
+  async function loadSignups(srcId) {
+    const rows = await q(
+      `SELECT s.*, a.display_name, a.status AS agent_status, a.last_seen_utc
+         FROM run_signups s JOIN agents a ON a.id = s.agent_id
+        WHERE s.run_id = $1
+        ORDER BY s.seat IS NULL, s.seat, s.created_utc`,
+      [srcId],
+    );
+    // store.list_run_signups runs _expire_signup_if_needed on every signup, lazily flipping
+    // deadline-expired 'waiting'/'ready_required' rows to 'expired' (and persisting), so every
+    // downstream read of s.status sees the effective status.
+    for (const s of rows) await expireSignupIfNeeded(s);
+    return rows;
+  }
+
+  let signups;
+  if (isParent) {
+    const signupsByChild = [];
+    for (const cid of sourceIds) signupsByChild.push(await loadSignups(cid));
+    signups = parentSignups(signupsByChild);
+  } else {
+    signups = await loadSignups(runId);
+  }
   const signupById = {};
   for (const s of signups) signupById[s.id] = s;
 
@@ -135,21 +183,40 @@ export default async function handler(req, res) {
     full: true,
   }));
 
-  // Partial scores while a run is in progress, full when done; {} until any game exists.
-  const scores = hasGames ? await scoreRun(runId) : {};
-  const recentEventRows = (r.status === 'running' || signups.length > 0)
-    ? await q(
-        `SELECT * FROM run_events WHERE run_id = $1 ORDER BY seq DESC LIMIT 120`,
+  // Partial scores while a run is in progress, full when done; {} until any game exists. A parent
+  // aggregates across its shards (scoreRuns unions game_players rows; disjoint global gids, D8).
+  const scores = hasGames ? (isParent ? await scoreRuns(sourceIds) : await scoreRun(runId)) : {};
+
+  // Recent events: a normal/child run streams its own last 120; a parent unions its children's
+  // recent events, globally ordered (created_utc, then per-shard seq) and capped to the last 120
+  // (server.py _parent_recent_events). Gate on the rolled-up status (running) or any signup.
+  let recentEventRows = [];
+  if (status === 'running' || signups.length > 0) {
+    if (isParent) {
+      const eventsByChild = [];
+      for (const cid of sourceIds) {
+        const rows = await q(
+          'SELECT * FROM run_events WHERE run_id = $1 ORDER BY seq DESC LIMIT 120',
+          [cid],
+        );
+        rows.reverse();
+        eventsByChild.push(rows);
+      }
+      recentEventRows = parentRecentEvents(eventsByChild);
+    } else {
+      recentEventRows = await q(
+        'SELECT * FROM run_events WHERE run_id = $1 ORDER BY seq DESC LIMIT 120',
         [runId],
-      )
-    : [];
-  recentEventRows.reverse();
+      );
+      recentEventRows.reverse();
+    }
+  }
 
   return send(res, 200, {
     id: r.id,
     game: r.game,
     label: r.label,
-    status: r.status,
+    status,
     nGames: Number(r.n_games),
     players: Number(r.players),
     seedBase: Number(r.seed_base),
