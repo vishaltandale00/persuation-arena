@@ -24,6 +24,57 @@ export const utcAfter = (seconds) => micros(new Date(Date.now() + seconds * 1000
 export const sha256hex = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 export const newId = (prefix) => prefix + crypto.randomBytes(8).toString('hex'); // ~uuid4().hex[:16]
 export const issueToken = () => 'pa_live_' + crypto.randomBytes(24).toString('base64url');
+export const NO_ONE_REF = '@no-one';
+export const MAX_PUBLIC_NAME_LENGTH = 64;
+
+export function normalizePublicName(value) {
+  return String(value || '').trim().split(/\s+/).filter(Boolean).join(' ');
+}
+
+export function publicHandle(name) {
+  return normalizePublicName(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+export function publicRef(name) {
+  const handle = publicHandle(name);
+  return handle ? `@${handle}` : '';
+}
+
+export function publicParticipant(name) {
+  const clean = normalizePublicName(name);
+  return { name: clean, ref: publicRef(clean) };
+}
+
+export function validatePublicName(value) {
+  const name = normalizePublicName(value);
+  if (!name) return { error: 'display_name required' };
+  if (name.length > MAX_PUBLIC_NAME_LENGTH)
+    return { error: `display_name must be ${MAX_PUBLIC_NAME_LENGTH} characters or fewer` };
+  if (!publicHandle(name)) return { error: 'display_name must contain at least one ASCII letter or number' };
+  if (publicRef(name).toLocaleLowerCase() === NO_ONE_REF)
+    return { error: `${NO_ONE_REF} is reserved for abstention votes` };
+  return { name };
+}
+
+export function validateUniquePublicNames(names) {
+  const seenNames = new Map();
+  const seenRefs = new Map();
+  for (const raw of names) {
+    const checked = validatePublicName(raw);
+    if (checked.error) return checked.error;
+    const name = checked.name;
+    const nameKey = name.toLocaleLowerCase();
+    const refKey = publicRef(name).toLocaleLowerCase();
+    if (seenNames.has(nameKey)) return `duplicate public participant name: ${name}`;
+    if (seenRefs.has(refKey)) return `ambiguous public participant names: ${seenRefs.get(refKey)} and ${name}`;
+    seenNames.set(nameKey, name);
+    seenRefs.set(refKey, name);
+  }
+  return null;
+}
 
 export function bearer(req) {
   const a = req.headers['authorization'] || req.headers['Authorization'] || '';

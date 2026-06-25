@@ -1,11 +1,13 @@
 import random
 
+from arena.identity import NO_ONE_REF
+
 
 _rng = random.Random(7)
 
 
 def _players(turn):
-    return [p["seat"] for p in (turn.legal_action.get("choices", {}).get("players") or [])]
+    return [p.get("ref", p.get("seat")) for p in (turn.legal_action.get("choices", {}).get("players") or [])]
 
 
 def act(turn):
@@ -17,7 +19,7 @@ def act(turn):
         return {"action": {"speak": "I am not certain yet, but I want pressure on quiet seats."},
                 "reasoning": "Random baseline chose to speak."}
     if kind == "onuw.vote":
-        return {"action": {"target": _rng.choice(players + [-1])}, "reasoning": "Random legal vote."}
+        return {"action": {"target": _rng.choice(players + [NO_ONE_REF])}, "reasoning": "Random legal vote."}
     if kind == "onuw.seer.inspect":
         if players and _rng.random() < 0.5:
             return {"action": {"mode": "player", "target": _rng.choice(players)}, "reasoning": "Random player inspect."}

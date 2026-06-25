@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import random
 
+from arena.identity import participant_label, roster_line, seat_for_participant_ref
 from .base import Agent, agent_call_log, agent_stats, team_of
 
 ROLE_DESC = {
@@ -78,7 +79,7 @@ class Avalon:
 
     # ---- prompts (information-filtered) -----------------------------------
     def _roster(self) -> str:
-        return ", ".join(f"{self.names[i]}(seat {i})" for i in range(self.n))
+        return roster_line(self.names)
 
     def _knowledge(self, pid: int) -> list[str]:
         role = self.role[pid]
@@ -98,7 +99,7 @@ class Avalon:
     def base_prompt(self, pid: int) -> str:
         n_evil = len(self.evil)
         lines = [
-            f"You are {self.names[pid]}, seat {pid}, in a {self.n}-player game of The Resistance: Avalon "
+            f"You are {participant_label(self.names, pid)} in a {self.n}-player game of The Resistance: Avalon "
             f"({self.n - n_evil} good, {n_evil} evil).",
             f"Your role: {self.role[pid]}. {ROLE_DESC[self.role[pid]]}",
         ]
@@ -107,6 +108,7 @@ class Avalon:
             f"Players: {self._roster()}.",
             "Good wins by passing 3 quests AND keeping Merlin hidden. Evil wins by failing 3 quests OR by the Assassin naming Merlin at the end.",
             f"Quest team sizes in order: {self.team_sizes}.",
+            "When naming another participant in speech, use their @handle so references stay unambiguous.",
         ]
         if self.public:
             lines.append("Discussion and events so far:")
@@ -179,11 +181,11 @@ class Avalon:
         prompt = self.base_prompt(leader) + (
             f"\n\nYou are the leader. Propose a quest team of EXACTLY {size} players (you may include yourself) "
             "and say one sentence to justify it.\n"
-            f'Reply JSON {{"reasoning":"...","action":{{"team":[<{size} seats>],"statement":"<one sentence>"}}}}.'
+            f'Reply JSON {{"reasoning":"...","action":{{"team":["@participant", ... {size} total],"statement":"<one sentence>"}}}}.'
         )
 
         def parse(a, raw):
-            team = sorted({int(x) for x in a["team"]})
+            team = sorted({seat_for_participant_ref(x, self.names, seats) for x in a["team"]})
             if len(team) != size or any(t not in seats for t in team):
                 raise ValueError("bad team")
             return (team, str(a.get("statement", "")).strip() or "Here is my team.")
@@ -231,12 +233,12 @@ class Avalon:
         prompt = self.base_prompt(self.assassin) + (
             "\n\nGood has completed 3 quests. As the Assassin you get ONE guess: name the player you believe is MERLIN. "
             "If correct, evil steals the win.\n"
-            f"Candidates (good players): {', '.join(f'{self.names[g]}(seat {g})' for g in good_seats)}.\n"
-            'Reply JSON {"reasoning":"...","action":<seat number>}.'
+            f"Candidates (good players): {', '.join(participant_label(self.names, g) for g in good_seats)}.\n"
+            'Reply JSON {"reasoning":"...","action":"@participant"}.'
         )
 
         def parse(a, raw):
-            t = int(a)
+            t = seat_for_participant_ref(a, self.names, good_seats)
             if t not in good_seats:
                 raise ValueError("must name a good player")
             return t

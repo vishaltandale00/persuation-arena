@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .config import STORE_DIR
+from .identity import validate_unique_public_names
 
 DB_PATH = STORE_DIR / "arena.db"
 
@@ -965,6 +966,13 @@ def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
             return None, "run_full"
         if run["status"] not in OPEN_RUN_STATUSES:
             return None, "run_not_open"
+        agent = c.execute(f"SELECT display_name FROM agents WHERE id={ph}", (agent_id,)).fetchone()
+        if not agent:
+            return None, "agent_not_found"
+        identity_err = validate_unique_public_names([s["display_name"] for s in active] +
+                                                    [agent["display_name"]])
+        if identity_err:
+            return None, identity_err
         signup_id = f"signup_{uuid.uuid4().hex[:16]}"
         c.execute(
             f"INSERT INTO run_signups (id,run_id,agent_id,status,seat,created_utc,updated_utc,"
@@ -1164,6 +1172,23 @@ def list_events_for_signup(signup_id: str, after_event_id: str | None = None,
         else:
             c.execute(f"UPDATE run_signups SET last_poll_utc={ph} WHERE id={ph}", (_utcnow(), signup_id))
         return out
+
+
+def list_game_rosters(run_id: str) -> dict[str, dict[int, str]]:
+    ph = _ph()
+    with conn() as c:
+        rows = c.execute(
+            f"SELECT game_instance_id, payload_json FROM run_events "
+            f"WHERE run_id={ph} AND type='game_setup' AND game_instance_id IS NOT NULL "
+            f"ORDER BY seq",
+            (run_id,),
+        ).fetchall()
+    out: dict[str, dict[int, str]] = {}
+    for row in rows:
+        payload = json.loads(row["payload_json"])
+        roster = payload.get("roster") or {}
+        out[row["game_instance_id"]] = {int(seat): str(name) for seat, name in roster.items()}
+    return out
 
 
 def list_run_events(run_id: str, max_events: int = 200) -> list[dict]:

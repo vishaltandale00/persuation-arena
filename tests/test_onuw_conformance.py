@@ -126,7 +126,7 @@ def test_runtime_prompt_includes_comprehensive_onuw_rules_payload():
     assert "does not look at the new card" in payload["action_rules"]["drunk"]
     assert payload["discussion_rules"]["visibility"].startswith("Discussion is public")
     assert "simultaneous" in payload["vote_rules"]["timing"]
-    assert "target -1" in payload["vote_rules"]["legal_targets"]
+    assert "@no-one" in payload["vote_rules"]["legal_targets"]
     for key in ("tanner", "hunter", "minion", "werewolf", "village"):
         assert payload["win_conditions"][key]
     assert payload["current_step"] == {"phase": "night", "action_kind": "onuw.robber.swap_or_decline"}
@@ -140,7 +140,8 @@ def test_rules_payload_does_not_leak_other_dealt_roles_or_center_identities():
     prompt = core.base_prompt(0, phase="discussion", action_kind="onuw.discussion.speak_or_pass")
     payload = _rules_payload_from_prompt(prompt)
 
-    assert "P1(seat 1)" in prompt
+    assert "P1 (@p1)" in prompt
+    assert "seat 1" not in prompt
     assert payload["game_setup"]["deck_counts"] == {
         "Drunk": 1,
         "Hunter": 1,

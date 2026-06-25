@@ -4,7 +4,7 @@
 // POST /api/runs — queue a central job for a laptop worker, or (body.connected) create an open
 //   connected run agents can sign up for. The observer never POSTs here; this mirrors
 //   server.api_submit_run -> _queue_run / _create_connected_run for CLI/registry parity.
-import { q, send, readBody, utcnow, newId } from '../_db.js';
+import { q, send, readBody, utcnow, newId, validateUniquePublicNames } from '../_db.js';
 import { DEFAULT_DECK_PRESET, normalizeDeckPreset } from '../_read.js';
 
 const GAME_LABELS = {
@@ -142,7 +142,10 @@ async function queueRun(payload, owner, res) {
   }
   const seed = parseInt(payload.seed || Math.floor((Date.now()) % 1000000), 10);
   const runId = String(payload.run_id || `run_${seed}_${newId('').slice(0, 6)}`).trim();
-  const agents = annotateRunAgents(rosterFromPayload(payload), runConfig);
+  const rawAgents = rosterFromPayload(payload);
+  const identityErr = validateUniquePublicNames(rawAgents.map((a) => a.name));
+  if (identityErr) return send(res, 400, { error: identityErr });
+  const agents = annotateRunAgents(rawAgents, runConfig);
   const core = GAME_CORES[game];
   const nPlayers = agents.length; // the roster IS the table — no fixed player count
   if (!(core.min <= nPlayers && nPlayers <= core.max)) {
