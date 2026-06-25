@@ -555,7 +555,7 @@
               <div class="control"><label>Prior turns</label>
                 <input type="text" id="nf-prior" placeholder="all"></div>
             </div>
-            <div class="run-mode" id="nf-mode">Local server runs immediately; hosted deployments queue for a worker.</div>
+            <div class="run-mode" id="nf-mode">The local server runs this comparison immediately, in-process.</div>
           </div>
         </section>
         </div>
@@ -627,6 +627,8 @@ function renderMentions(text,m){
 
 /* ===== RUNS — each has its own agent roster (same agents only within the run) ===== */
 const API="/api";  // same-origin Vercel serverless functions under /api
+// Diagonal: localhost serves the Python app (static in-process runs); prod (Vercel) is connected-only.
+const IS_LOCAL=["localhost","127.0.0.1","[::1]","::1"].includes(location.hostname)||location.hostname.endsWith(".local");
 let RUNS={}, RUN_ORDER=[];
 let curDebug=null;
 const TRANSCRIPTS={};
@@ -1298,7 +1300,7 @@ function setPlayUI(on){ const i=document.getElementById("playicon"),t=document.g
 
 /* STATIC RUN — fixed model roster, persisted transcripts/reasoning/results */
 let MODEL_CATALOG=[], modelCatalogLoaded=false;
-let nfMode="static";
+let nfMode=IS_LOCAL?"static":"connected";  // diagonal: localhost=static, prod=connected
 let nfRows=[
   {name:"GPT-5.5",model:"openai/gpt-5.5"},
   {name:"Grok 4.20",model:"x-ai/grok-4.20"},
@@ -1334,6 +1336,7 @@ function renderNewRun(){
   document.getElementById("nf-deal-field").style.display=g==="onuw"?"":"none";
   const cg=document.getElementById("cf-game").value;
   document.getElementById("cf-deck-field").style.display=cg==="onuw"?"":"none";
+  document.getElementById("nf-mode-tabs").style.display="none";  // diagonal: one mode per environment
   document.getElementById("nf-static").classList.toggle("on",nfMode==="static");
   document.getElementById("nf-connected").classList.toggle("on",nfMode==="connected");
   document.querySelectorAll("#nf-mode-tabs button").forEach(b=>b.classList.toggle("on",b.dataset.mode===nfMode));
@@ -1409,12 +1412,8 @@ function runPayload(){
   return payload;
 }
 async function launchStaticRun(payload){
-  try{
-    return await jpost("/run",payload);
-  }catch(e){
-    if(e.status===404||e.status===405) return await jpost("/runs",payload);
-    throw e;
-  }
+  // localhost only: the Python server runs this comparison in-process. Prod (Vercel) has no /api/run.
+  return await jpost("/run",payload);
 }
 function connectedPayload(){
   const game=document.getElementById("cf-game").value;
@@ -1466,8 +1465,7 @@ document.getElementById("nf-launch").onclick=async ()=>{
     const payload=nfMode==="static"?runPayload():connectedPayload();
     const d=nfMode==="static"?await launchStaticRun(payload):await jpost("/runs",payload);
     if(nfMode==="static"){
-      const queued=d.status==="queued";
-      toast((queued?"Run queued: ":"Run started: ")+d.run_id+" — "+payload.agents.length+" models, "+payload.games+" games · "+payload.rounds+" discussion messages.");
+      toast("Run started: "+d.run_id+" — "+payload.agents.length+" models, "+payload.games+" games · "+payload.rounds+" discussion messages.");
     }else{
       toast("Lobby opened: "+d.run_id+" — "+payload.players+" seats, "+payload.games+" games · "+payload.rounds+" discussion messages.");
     }

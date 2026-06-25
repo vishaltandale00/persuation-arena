@@ -132,7 +132,7 @@ def cleanup_test_runs(prefix: str = "modal_smoke_") -> dict:
     with store.conn() as c:
         c.execute(f"DELETE FROM turn_replies WHERE turn_id IN "
                   f"(SELECT id FROM turns WHERE run_id IN ({placeholders}))", tuple(ids))
-        for t in ("run_signups", "run_events", "game_players", "games", "jobs", "turns"):
+        for t in ("run_signups", "run_events", "game_players", "games", "turns"):
             c.execute(f"DELETE FROM {t} WHERE run_id IN ({placeholders})", tuple(ids))
         c.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", tuple(ids))
     print(f"[cleanup] deleted {len(ids)} runs: {ids}", flush=True)
