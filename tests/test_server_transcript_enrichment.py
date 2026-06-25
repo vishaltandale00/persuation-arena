@@ -1,6 +1,33 @@
 from arena import server
 
 
+def test_usage_cost_accepts_agent_call_log_and_legacy_call_log():
+    current = {
+        "agentCallLog": {
+            "0": [
+                {"usage": {"cost": 0.1, "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}},
+                {"usage": {"cost": 0.25, "prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23}},
+            ],
+        },
+    }
+    legacy = {
+        "callLog": {
+            "1": [
+                {"usage": {"cost": 0.05, "prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}},
+            ],
+        },
+    }
+
+    assert server._usage_cost_for_transcript(current) == {
+        "cost": 0.35,
+        "calls": 2,
+        "prompt_tokens": 30,
+        "completion_tokens": 5,
+        "total_tokens": 35,
+    }
+    assert server._usage_cost_for_transcript(legacy)["cost"] == 0.05
+
+
 def test_transcript_enrichment_matches_visible_discussion_actions(monkeypatch):
     transcript = {
         "phases": [

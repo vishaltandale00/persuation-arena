@@ -904,6 +904,7 @@ function renderRunOverview(){
     (curRun.game==="onuw"?cfgItem("Deal schedule",((curRun.dealSchedule||{}).mode==="balanced"?"Balanced roles":"Random")):"")+
     (curRun.deck&&curRun.deck.length?cfgItem("Roles",curRun.deck.join(", ")):"")+
     cfgItem("Status",curRun.status==="done"?"Completed":curRun.status==="partial"?"Partial":running?("Running · "+prog):runStatusLabel(curRun))+
+    cfgItem("Total cost",formatCost(curRun.usage&&curRun.usage.cost))+
     cfgItem("Reasoning effort",rc.reasoning_effort||"—")+
     cfgItem("Max tokens / response",rc.max_tokens_per_turn||"—")+
     cfgItem("Temperature",rc.temperature!=null?rc.temperature:"—")+
@@ -978,6 +979,7 @@ function agentRow(a){
 }
 function cfgItem(k,v){ return '<div class="c"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'; }
 function formatPriorTurns(v){ return v===-1?"All":(v!=null?v:"—"); }
+function formatCost(v){ return v!=null?"$"+Number(v).toFixed(4):"—"; }
 function relTime(ts){
   if(!ts) return "never";
   const t=Date.parse(ts); if(!Number.isFinite(t)) return ts;

@@ -686,6 +686,49 @@ def api_turn_reply(turn_id: str, payload: dict, authorization: str | None = Head
     return {"ok": True, "accepted": True}
 
 
+def _usage_cost_for_transcript(transcript: dict) -> dict:
+    logs = transcript.get("agentCallLog") or transcript.get("callLog") or {}
+    total = 0.0
+    calls = 0
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    for seat_calls in logs.values() if isinstance(logs, dict) else []:
+        if not isinstance(seat_calls, list):
+            continue
+        for call in seat_calls:
+            usage = call.get("usage") if isinstance(call, dict) else None
+            if not isinstance(usage, dict):
+                continue
+            cost = usage.get("cost")
+            if isinstance(cost, (int, float)):
+                total += float(cost)
+                calls += 1
+            prompt_tokens += int(usage.get("prompt_tokens") or 0)
+            completion_tokens += int(usage.get("completion_tokens") or 0)
+            total_tokens += int(usage.get("total_tokens") or 0)
+    return {
+        "cost": round(total, 6),
+        "calls": calls,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _run_usage_cost(run: dict) -> dict:
+    total = {"cost": 0.0, "calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    for game in run.get("games") or []:
+        transcript = store.get_game(run["id"], game["gid"])
+        if not transcript:
+            continue
+        usage = _usage_cost_for_transcript(transcript)
+        for key in total:
+            total[key] += usage[key]
+    total["cost"] = round(total["cost"], 6)
+    return total
+
+
 @app.get("/api/runs/{run_id}")
 def api_run(run_id: str):
     r = store.get_run(run_id)
@@ -728,6 +771,7 @@ def api_run(run_id: str):
         "created": r["created"], "agents": agents, "teamSplit": r["team_split"], "games": games,
         "runConfig": (r.get("metadata") or {}).get("run_config", {}),
         "runConfigOverrides": (r.get("metadata") or {}).get("run_config_overrides", {}),
+        "usage": _run_usage_cost(r),
         "dealSchedule": (r.get("metadata") or {}).get("deal_schedule", {"mode": default_deal_schedule(r["game"])}),
         "recentEvents": [_api_event(e) for e in recent_events],
         "connected": bool(signups),
