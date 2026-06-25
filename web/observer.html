@@ -167,6 +167,9 @@
   .pc1 .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis} .pc1 .seat{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint)}
   .pc-model{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .pc-role{margin-top:7px;display:flex;align-items:center;gap:6px}
+  .pc-states{margin-top:7px;display:grid;gap:3px}
+  .pc-state{display:grid;grid-template-columns:34px minmax(0,1fr);align-items:center;gap:4px}
+  .pc-state .k{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
   .roletag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
   .roletag.good{background:var(--good-soft);color:var(--good)} .roletag.evil{background:var(--evil-soft);color:var(--evil)}
   .deadtag{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--evil)}
@@ -209,6 +212,9 @@
   .cards{display:flex;flex-wrap:wrap;gap:5px}
   .card{font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:4px;border:1px solid var(--line-2);color:var(--ink-2)}
   .card.good{color:var(--good);border-color:#cfe6df;background:var(--good-soft)} .card.evil{color:var(--evil);border-color:#ecccca;background:var(--evil-soft)}
+  .state-subhead{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:10px 0 5px;font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint)}
+  .state-subhead:first-child{margin-top:0}
+  .state-subhead .note{font-size:9px;letter-spacing:0;text-transform:none;text-align:right}
   .trow{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)} .trow:last-child{border-bottom:0} .trow .who{font-size:13px}
   .ledger{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
   .ledger li{font-size:12px;color:var(--ink-2);display:flex;gap:8px} .ledger .n{font-family:var(--mono);font-size:11px;color:var(--faint);flex:none}
@@ -592,8 +598,10 @@
 
 <div class="toast" id="toast">Saved</div>
 
-<script>
+<script type="module">
 "use strict";
+
+import { onuwStartingCenter, roleTeam } from "./observer-state.js";
 
 const DECK_LABELS={arena:"Arena pressure",classic:"Classic",tanner:"Tanner puzzle"};
 function tagOf(n){ return (n[0]+(n[1]||"")).toUpperCase(); }
@@ -1158,9 +1166,15 @@ function renderStrip(){
     b.className="pcard"+(selected===pid?" sel":"")+(dead.includes(pid)?" dead":"");
     b.onclick=()=>{ selected=(selected===pid?null:pid); renderStrip(); renderState(); };
     const act=lastActionFor(pid);
+    const roles=curRun.game==="onuw"
+      ? '<div class="pc-states">'+
+          '<div class="pc-state"><span class="k">start</span><span><span class="roletag '+teamCls(roleTeam(m,pl.dealt))+'">'+pl.dealt+'</span></span></div>'+
+          '<div class="pc-state"><span class="k">end</span><span><span class="roletag '+teamCls(roleTeam(m,pl.end))+'">'+pl.end+'</span>'+(dead.includes(pid)?'<span class="deadtag"> eliminated</span>':'')+'</span></div>'+
+        '</div>'
+      : '<div class="pc-role"><span class="roletag '+teamCls(pl.team)+'">'+pl.end+'</span>'+(dead.includes(pid)?'<span class="deadtag">eliminated</span>':'')+'</div>';
     b.innerHTML='<div class="pc1"><span class="dot '+teamCls(pl.team)+'"></span><span class="nm">'+nm(pid)+'</span><span class="seat">s'+pl.seat+'</span></div>'+
       '<div class="pc-model">'+modelOf(pid)+'</div>'+
-      '<div class="pc-role"><span class="roletag '+teamCls(pl.team)+'">'+pl.end+'</span>'+(dead.includes(pid)?'<span class="deadtag">eliminated</span>':'')+'</div>'+
+      roles+
       (act?('<div class="pc-act"><span class="k">'+act.k+'</span>'+act.v+'</div>'):'');
     s.appendChild(b); });
 }
@@ -1229,9 +1243,17 @@ function synthBlock(p){ return block("Phase summary",
 function stateONUW(m){
   const cur=curPhase(); const p=m.phases[cur]; let h=synthBlock(p);
   h+=block("Cards in play (8)",'<div class="cards">'+m.cardsInPlay.map(c=>'<span class="card '+teamCls(c[1])+'">'+c[0]+'</span>').join("")+'</div>');
-  let rows=m.players.map((pl,pid)=>'<div class="trow"><span class="who">'+nm(pid)+'</span><span class="roletag '+teamCls(pl.team)+'">'+pl.end+'</span></div>').join("");
-  rows+='<div class="cards" style="margin-top:7px">'+m.center.map((c,i)=>'<span class="card '+teamCls(c[1])+'">center '+(i+1)+': '+c[0]+'</span>').join("")+'</div>';
-  h+=block("End-of-night truth",rows);
+  const startingCenter=onuwStartingCenter(m);
+  const startingRows=m.players.map((pl,pid)=>'<div class="trow"><span class="who">'+nm(pid)+'</span><span class="roletag '+teamCls(roleTeam(m,pl.dealt))+'">'+pl.dealt+'</span></div>').join("");
+  const endingRows=m.players.map((pl,pid)=>'<div class="trow"><span class="who">'+nm(pid)+'</span><span class="roletag '+teamCls(roleTeam(m,pl.end))+'">'+pl.end+'</span></div>').join("");
+  h+=block("Starting state",
+    '<div class="state-subhead"><span>Players</span></div>'+startingRows+
+    '<div class="state-subhead"><span>Center cards</span><span class="note">original order unavailable</span></div>'+
+    '<div class="cards">'+startingCenter.map(c=>'<span class="card '+teamCls(c[1])+'">'+c[0]+'</span>').join("")+'</div>');
+  h+=block("Ending state",
+    '<div class="state-subhead"><span>Players</span></div>'+endingRows+
+    '<div class="state-subhead"><span>Center cards</span></div>'+
+    '<div class="cards">'+m.center.map((c,i)=>'<span class="card '+teamCls(c[1])+'">center '+(i+1)+': '+c[0]+'</span>').join("")+'</div>');
   const acts=m.phases[0].events.filter(e=>e.t==="act");
   h+=block("Night actions",'<ul class="ledger">'+acts.map((e,i)=>'<li><span class="n">'+(i+1)+'</span>'+e.text+'</li>').join("")+'</ul>');
   if(cur>=2){ const t=m.phases[2].tally; const mx=Math.max.apply(null,t.map(x=>x.n));
