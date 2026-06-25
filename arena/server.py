@@ -10,6 +10,7 @@ Run with:  uvicorn arena.server:app --port 8000
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import copy
 import hashlib
 import hmac
 import os
@@ -29,7 +30,7 @@ from . import config
 from .config import ROOT, SETTINGS, OPENROUTER_BASE_URL, AgentSpec, caps_with_overrides
 from . import openrouter as _or
 from . import store
-from .batch import GAME_CORES
+from .batch import GAME_CORES, default_deal_schedule
 from .games.onuw import DEFAULT_DECK_PRESET, deck_for_preset, deck_preset_options, normalize_deck_preset
 from .identity import NO_ONE_REF, participant, validate_public_name, validate_unique_public_names
 from .score import score_run
@@ -41,12 +42,26 @@ GAME_LABELS = {
     "secret_mafia": "Secret Mafia",
 }
 PROTOCOL_VERSION = "arena-agent-v1"
+_local_run_lock = threading.Lock()
+_local_active_runs: set[str] = set()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     store.init_schema()
-    yield
+    recovered = store.mark_orphaned_local_runs_partial() if not os.environ.get("DATABASE_URL") else 0
+    if recovered:
+        print(f"[startup] marked {recovered} orphaned local run(s) partial", flush=True)
+    try:
+        yield
+    finally:
+        if not os.environ.get("DATABASE_URL"):
+            with _local_run_lock:
+                active = list(_local_active_runs)
+            for run_id in active:
+                store.update_run_status(run_id, "partial")
+            if active:
+                print(f"[shutdown] marked {len(active)} active local run(s) partial", flush=True)
 
 
 app = FastAPI(title="Persuasion Arena", lifespan=lifespan)
@@ -150,6 +165,16 @@ def _deck_for_api(game: str, players: int, deck_preset: str | None) -> list[str]
         return None  # out-of-range player count (e.g. a partially-configured run) -> no deck preview
 
 
+def _deal_schedule_from_payload(game: str, payload: dict, *, default: str | None = None) -> str:
+    raw = _payload_get(payload, "deal_schedule", "dealSchedule")
+    value = (raw or default or default_deal_schedule(game)).strip().lower()
+    if value not in {"random", "balanced"}:
+        raise HTTPException(400, "deal_schedule must be random or balanced")
+    if value == "balanced" and game != "onuw":
+        raise HTTPException(400, "balanced deal scheduling currently supports onuw only")
+    return value
+
+
 def _payload_get(payload: dict, *names: str):
     for name in names:
         if name in payload and payload[name] is not None:
@@ -187,6 +212,21 @@ def _payload_float(payload: dict, names: tuple[str, ...], default: float | None 
     return value
 
 
+def _payload_prior_message_turns(payload: dict) -> int | None:
+    raw = _payload_get(payload, "prior_message_turns", "priorMessageTurns")
+    if raw is None:
+        return None
+    if isinstance(raw, str) and raw.strip().lower() in {"", "all", "infinite", "inf"}:
+        return -1
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, "prior_message_turns must be -1, all, or a nonnegative integer") from e
+    if value < -1:
+        raise HTTPException(400, "prior_message_turns must be -1 for all history, or nonnegative")
+    return value
+
+
 def _caps_from_payload(payload: dict, rounds: int):
     try:
         return caps_with_overrides(
@@ -197,10 +237,7 @@ def _caps_from_payload(payload: dict, rounds: int):
             ),
             temperature=_payload_float(payload, ("temperature",), nonnegative=True),
             retries=_payload_int(payload, ("retries",), nonnegative=True),
-            prior_message_turns=_payload_int(
-                payload, ("prior_message_turns", "priorMessageTurns"),
-                nonnegative=True,
-            ),
+            prior_message_turns=_payload_prior_message_turns(payload),
             discussion_rounds=rounds,
         )
     except ValueError as e:
@@ -215,6 +252,13 @@ def _run_config_meta(caps, rounds: int) -> dict:
         "temperature": caps.temperature,
         "retries": caps.retries,
         "prior_message_turns": caps.prior_message_turns,
+    }
+
+
+def _run_config_overrides(payload: dict) -> dict:
+    return {
+        "temperature": _payload_get(payload, "temperature") is not None,
+        "prior_message_turns": _payload_get(payload, "prior_message_turns", "priorMessageTurns") is not None,
     }
 
 
@@ -242,7 +286,7 @@ def _queue_run(payload: dict, owner: str) -> dict:
     if game not in GAME_LABELS:
         raise HTTPException(400, f"unknown game: {game}")
     games = max(1, int(payload.get("games", payload.get("n_games", 6))))
-    rounds = _payload_int(payload, ("rounds",), 5, positive=True)
+    rounds = _payload_int(payload, ("rounds",), 20, positive=True)
     caps = _caps_from_payload(payload, rounds)
     seed = int(payload.get("seed") or (time.time() * 1000) % 1000000)
     run_id = (payload.get("run_id") or f"run_{seed}_{uuid.uuid4().hex[:6]}").strip()
@@ -256,6 +300,8 @@ def _queue_run(payload: dict, owner: str) -> dict:
     if not (core.MIN_PLAYERS <= n_players <= core.MAX_PLAYERS):
         raise HTTPException(400, f"{core.TITLE} supports {core.MIN_PLAYERS}–{core.MAX_PLAYERS} "
                                  f"players, got {n_players}")
+    if _deal_schedule_from_payload(game, payload, default="random") != "random":
+        raise HTTPException(400, "balanced deal scheduling is currently only supported for local runs")
     deck_preset = _deck_preset_from_payload(game, payload)
     job = store.enqueue_job({
         "id": f"job_{uuid.uuid4().hex[:12]}",
@@ -269,7 +315,10 @@ def _queue_run(payload: dict, owner: str) -> dict:
         "rounds": rounds,
         "agents": agents,
         "deck_preset": deck_preset,
-        "metadata": {"run_config": _run_config_meta(caps, rounds)},
+        "metadata": {
+            "run_config": _run_config_meta(caps, rounds),
+            "run_config_overrides": _run_config_overrides(payload),
+        },
     })
     return {"run_id": run_id, "job_id": job["id"], "status": "queued", "owner": owner,
             "game": game, "games": games, "rounds": rounds, "deck_preset": deck_preset,
@@ -326,11 +375,13 @@ def _create_connected_run(payload: dict) -> dict:
         raise HTTPException(400, f"{core.TITLE} supports {core.MIN_PLAYERS}–{core.MAX_PLAYERS} "
                                  f"players, got {players}")
     games = max(1, int(payload.get("games", payload.get("n_games", 6))))
-    rounds = _payload_int(payload, ("rounds",), 5, positive=True)
+    rounds = _payload_int(payload, ("rounds",), 20, positive=True)
     caps = _caps_from_payload(payload, rounds)
     seed = int(payload.get("seed") or (time.time() * 1000) % 1000000)
     run_id = (payload.get("run_id") or f"run_{seed}_{uuid.uuid4().hex[:6]}").strip()
     deck_preset = _deck_preset_from_payload(game, payload)
+    if _deal_schedule_from_payload(game, payload, default="random") != "random":
+        raise HTTPException(400, "balanced deal scheduling is currently only supported for local static runs")
     run_config = {
         "id": run_id,
         "game": game,
@@ -341,7 +392,10 @@ def _create_connected_run(payload: dict) -> dict:
         "seed_base": seed,
         "submitter": payload.get("owner") or payload.get("submitter") or "connected",
         "deck_preset": deck_preset,
-        "metadata": {"run_config": _run_config_meta(caps, rounds)},
+        "metadata": {
+            "run_config": _run_config_meta(caps, rounds),
+            "run_config_overrides": _run_config_overrides(payload),
+        },
     }
     store.create_connected_run(run_config)
     _spawn_coordinator(run_config, rounds)  # no-op unless ARENA_MODAL_COORDINATOR
@@ -665,6 +719,7 @@ def api_run(run_id: str):
              for g in r["games"]]
     # partial scores while a run is in progress, full when done
     scores = score_run(run_id) if has_games else {}
+    recent_events = store.list_run_events(run_id, max_events=120) if r["status"] == "running" or signups else []
     return {
         "id": r["id"], "game": r["game"], "label": r["label"], "status": r["status"],
         "nGames": r["n_games"], "players": r["players"], "seedBase": r["seed_base"],
@@ -672,6 +727,9 @@ def api_run(run_id: str):
         "deck": _deck_for_api(r["game"], int(r["players"]), r.get("deck_preset")),
         "created": r["created"], "agents": agents, "teamSplit": r["team_split"], "games": games,
         "runConfig": (r.get("metadata") or {}).get("run_config", {}),
+        "runConfigOverrides": (r.get("metadata") or {}).get("run_config_overrides", {}),
+        "dealSchedule": (r.get("metadata") or {}).get("deal_schedule", {"mode": default_deal_schedule(r["game"])}),
+        "recentEvents": [_api_event(e) for e in recent_events],
         "connected": bool(signups),
         "connectedSummary": {
             "signups": len(signups),
@@ -737,12 +795,75 @@ def api_run_debug(run_id: str):
     }
 
 
+def _enrich_transcript_turn_reasoning(run_id: str, gid: int, transcript: dict) -> dict:
+    """Attach exact per-turn model telemetry to stored replay events when available."""
+    enriched = copy.deepcopy(transcript)
+    game_instance_id = f"{run_id}_game_{gid:03d}"
+    queues: dict[tuple[str, int], list[dict]] = {}
+    for event in store.list_run_events(run_id, max_events=1000):
+        if event.get("game_instance_id") != game_instance_id or event.get("type") != "model_turn_completed":
+            continue
+        payload = event.get("payload") or {}
+        seat = payload.get("seat")
+        phase = str(event.get("phase") or "").lower()
+        if seat is None or not phase:
+            continue
+        queues.setdefault((phase, int(seat)), []).append(payload)
+
+    def normalized_text(value) -> str:
+        return " ".join(str(value or "").split())
+
+    def action_matches_event(payload: dict, replay_event: dict) -> bool:
+        action = payload.get("action")
+        event_type = replay_event.get("t")
+        if event_type == "say":
+            return isinstance(action, dict) and normalized_text(action.get("speak")) == normalized_text(replay_event.get("text"))
+        if event_type == "pass":
+            return isinstance(action, dict) and action.get("pass") is True
+        if event_type == "vote":
+            try:
+                return int(action) == int(replay_event.get("tgt"))
+            except (TypeError, ValueError):
+                return False
+        if event_type == "act":
+            return payload.get("ok") is True
+        return False
+
+    for phase in enriched.get("phases", []):
+        phase_key = str(phase.get("name") or phase.get("kind") or "").lower()
+        for event in phase.get("events", []):
+            pid = event.get("pid")
+            if pid is None or event.get("t") not in {"act", "say", "pass", "vote"}:
+                continue
+            queue = queues.get((phase_key, int(pid))) or []
+            if not queue:
+                continue
+            match_idx = next((i for i, candidate in enumerate(queue) if action_matches_event(candidate, event)), None)
+            if match_idx is None:
+                continue
+            payload = queue.pop(match_idx)
+            if payload.get("reasoning"):
+                event["declared_reasoning"] = payload["reasoning"]
+            if payload.get("provider_reasoning") is not None:
+                event["provider_reasoning"] = payload["provider_reasoning"]
+            if payload.get("provider_reasoning_details") is not None:
+                event["provider_reasoning_details"] = payload["provider_reasoning_details"]
+            if payload.get("raw"):
+                event["raw_model_output"] = payload["raw"]
+            if payload.get("action_kind"):
+                event["action_kind"] = payload["action_kind"]
+            if payload.get("model"):
+                event["model"] = payload["model"]
+    return enriched
+
+
 @app.get("/api/runs/{run_id}/games/{gid}")
 def api_game(run_id: str, gid: int):
     t = store.get_game(run_id, gid)
     if not t:
         raise HTTPException(404, "game not found")
-    return t
+    return _enrich_transcript_turn_reasoning(run_id, gid, t)
+
 
 
 def _roster_models() -> list[str]:
@@ -860,28 +981,37 @@ def api_launch(payload: dict):
 
     game = payload.get("game", "onuw")
     games = int(payload.get("games", 6))
-    rounds = _payload_int(payload, ("rounds",), 5, positive=True)
+    rounds = _payload_int(payload, ("rounds",), 20, positive=True)
     caps = _caps_from_payload(payload, rounds)
     deck_preset = _deck_preset_from_payload(game, payload)
-    seed = int(time.time()) % 1000000
-    run_id = f"run_{seed}"
+    deal_schedule = _deal_schedule_from_payload(game, payload)
+    seed = int(payload.get("seed") or int(time.time()) % 1000000)
+    run_id = (payload.get("run_id") or f"run_{seed}_{uuid.uuid4().hex[:6]}").strip()
     agents = payload.get("agents")
     roster = [AgentSpec(name=a["name"], model=a["model"], harness=a.get("harness", "base"))
               for a in agents] if agents else None
 
     def go():
         from .batch import run_batch
+        with _local_run_lock:
+            _local_active_runs.add(run_id)
         try:
             run_batch(game=game, n_games=games, seed_base=seed, run_id=run_id,
                       roster=roster, workers=8, discussion_rounds=rounds,
-                      deck_preset=deck_preset, caps=caps)
+                      deck_preset=deck_preset, caps=caps,
+                      run_config_overrides=_run_config_overrides(payload),
+                      stream_events=True, deal_schedule=deal_schedule)
         except Exception as e:  # surface a failed run rather than vanishing
-            store.update_run_status(run_id, "done")
+            store.update_run_status(run_id, "partial")
             print(f"[{run_id}] run failed: {e}", flush=True)
+        finally:
+            with _local_run_lock:
+                _local_active_runs.discard(run_id)
 
     threading.Thread(target=go, daemon=True).start()
     return {"run_id": run_id, "status": "running", "game": game, "games": games,
-            "deck_preset": deck_preset, "run_config": _run_config_meta(caps, rounds)}
+            "deck_preset": deck_preset, "deal_schedule": deal_schedule,
+            "run_config": _run_config_meta(caps, rounds)}
 
 
 @app.post("/api/jobs/claim")
@@ -948,7 +1078,13 @@ def api_complete_job(payload: dict, authorization: str | None = Header(None)):
 
 @app.get("/")
 def index():
-    return FileResponse(WEB / "observer.html")
+    return FileResponse(
+        WEB / "observer.html",
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
 
 
 app.mount("/", StaticFiles(directory=str(WEB)), name="web")

@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,6 +34,7 @@ from .config import STORE_DIR
 from .identity import validate_unique_public_names
 
 DB_PATH = STORE_DIR / "arena.db"
+_event_seq_lock = threading.Lock()
 
 # --- schema ------------------------------------------------------------------
 # SQLite: a single script (run on every conn() — cheap, local).
@@ -391,6 +393,24 @@ def update_run_status(run_id: str, status: str):
     ph = _ph()
     with conn() as c:
         c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'", (status, run_id))
+
+
+def mark_orphaned_local_runs_partial() -> int:
+    """Recover in-process local runs left as running by a server shutdown/crash.
+
+    Static local runs execute in a background thread owned by the server process. If that process
+    exits before the thread finishes, no worker can resume it. Connected runs and queued worker jobs
+    have external coordination state, so leave those alone.
+    """
+    ph = _ph()
+    with conn() as c:
+        cur = c.execute(
+            f"UPDATE runs SET status='partial' "
+            f"WHERE status='running' "
+            f"AND NOT EXISTS (SELECT 1 FROM run_signups s WHERE s.run_id = runs.id) "
+            f"AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.run_id = runs.id)",
+        )
+        return cur.rowcount or 0
 
 
 def save_game(run_id: str, gid: int, transcript: dict, agents: list[dict]):
@@ -1169,9 +1189,10 @@ def append_event_tx(c, run_id: str, event_type: str, payload: dict,
 def append_event(run_id: str, event_type: str, payload: dict,
                  visibility: str = "public", target_signup_id: str | None = None,
                  game_instance_id: str | None = None, phase: str | None = None) -> dict:
-    with conn() as c:
-        return append_event_tx(c, run_id, event_type, payload, visibility, target_signup_id,
-                               game_instance_id, phase)
+    with _event_seq_lock:
+        with conn() as c:
+            return append_event_tx(c, run_id, event_type, payload, visibility, target_signup_id,
+                                   game_instance_id, phase)
 
 
 def list_events_for_signup(signup_id: str, after_event_id: str | None = None,

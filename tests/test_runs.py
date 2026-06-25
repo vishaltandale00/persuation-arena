@@ -2,6 +2,7 @@
 and agent forfeit telemetry. No API calls (the model client / _play_one are stubbed)."""
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 
 import pytest
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 
 from arena import batch, store
 from arena.config import AgentSpec
+from arena.games.onuw import default_deck
 
 
 SPECS = [AgentSpec(name=f"A{i}", model=f"m{i}") for i in range(5)]
@@ -45,6 +47,21 @@ def test_schedule_rotation_gives_each_agent_each_seat_once_per_cycle():
     assert all(seats == {0, 1, 2, 3, 4} for seats in seats_for_agent.values())
 
 
+def test_balanced_onuw_schedule_balances_model_role_exposure():
+    deck = default_deck(5, "arena")
+    sched = batch.balanced_onuw_deal_schedule(n_games=40, n_players=5, seed_base=9000, deck=deck)
+    assert len(sched) == 40
+    for _, _, _, deal in sched:
+        assert deal is not None
+        assert Counter(deal) == Counter(deck)
+        assert "Werewolf" in deal[:5]
+
+    exposure = batch.schedule_role_exposure(sched, 5, SPECS)
+    for role in set(deck):
+        counts = [exposure[spec.name].get(role, 0) for spec in SPECS]
+        assert max(counts) - min(counts) <= 1
+
+
 def test_every_scheduled_deal_has_a_wolf_in_play():
     # require_wolf_in_play guarantees at least one Werewolf is dealt (never all benched in the
     # center), so no scheduled game is an unrateable no-wolf round. This seed_base previously led
@@ -61,7 +78,7 @@ def test_every_scheduled_deal_has_a_wolf_in_play():
 
 # ---- batch resilience -------------------------------------------------------
 def _fake_play_one(core_cls, specs, n_players, seed, gid, rot, discussion_rounds, deck_preset=None,
-                   caps=None):
+                   caps=None, run_id=None, stream_events=False, deal_override=None):
     if gid == 2:
         raise RuntimeError("boom")
     players = [{"seat": i, "dealt": "Villager", "end": "Villager", "team": "good",
@@ -110,6 +127,7 @@ def test_run_batch_persists_effective_run_config(tmp_path, monkeypatch):
         "retries": 3,
         "prior_message_turns": 0,
     }
+    assert run["metadata"]["deal_schedule"]["mode"] == "balanced"
     assert run["agents"][0]["reasoning_effort"] == "high"
     assert run["agents"][0]["max_tokens_per_turn"] == 1234
     assert run["agents"][0]["temperature"] == 0.2
@@ -130,6 +148,30 @@ def test_run_batch_skips_existing_and_publishes_new_games(tmp_path, monkeypatch)
     assert rid == "r1"
     assert store.distinct_gids(rid) == [1, 3]
     assert published == [1, 3]
+
+
+def test_run_batch_persists_balanced_schedule_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr(batch, "_play_one", _fake_play_one)
+
+    rid = batch.run_batch(game="onuw", n_games=10, seed_base=500, run_id="r_bal",
+                          roster=SPECS, workers=1, deal_schedule="balanced")
+
+    meta = store.get_run(rid)["metadata"]["deal_schedule"]
+    assert meta["mode"] == "balanced"
+    assert meta["algorithm"] == "role_deficit_v1"
+    assert set(meta["role_exposure"]) == {s.name for s in SPECS}
+    assert all(sum(roles.values()) == 10 for roles in meta["role_exposure"].values())
+
+
+def test_run_batch_preserves_explicit_random_schedule(tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr(batch, "_play_one", _fake_play_one)
+
+    rid = batch.run_batch(game="onuw", n_games=1, seed_base=500, run_id="r_random",
+                          roster=SPECS, workers=1, deal_schedule="random")
+
+    assert store.get_run(rid)["metadata"]["deal_schedule"] == {"mode": "random"}
 
 
 # ---- per-role + forfeit scoring --------------------------------------------

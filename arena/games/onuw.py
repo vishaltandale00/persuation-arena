@@ -752,68 +752,125 @@ class ONUW:
 
     # ---- discussion --------------------------------------------------------
     def run_discussion(self, agents: dict[int, Agent]):
-        # discussion_rounds is a CAP: discussion runs round-robin until a full round is all-passes
-        # (conversation died) or the cap is reached. So lively games run long, dead ones end early.
-        max_rounds = self.discussion_rounds
-        events: list[dict] = [{"t": "sys", "text": f"Day breaks. Round-robin discussion (up to {max_rounds} rounds; ends once a full round passes in silence)."}]
+        # Responsive discussion: on each pass every seat decides whether it wants to speak and how
+        # urgently. The highest urgency speaker gets the floor; ties are randomized. Agents can
+        # pass because they are waiting for someone else, or mark themselves done. Discussion ends
+        # naturally when everybody is done, after repeated no-speaker deadlock, or at the message
+        # budget. The configured discussion_rounds value is retained for API compatibility, but
+        # ONUW now interprets it as a total discussion-message budget.
+        max_messages = self.discussion_rounds
+        events: list[dict] = [{
+            "t": "sys",
+            "text": (
+                "Day breaks. Responsive discussion begins: each pass asks who wants the floor; "
+                "highest urgency speaks, randomizing ties. Passing can mean waiting or being done. "
+                f"Discussion ends once everyone is done or {max_messages} messages have been spoken."
+            ),
+        }]
         reason: dict[int, str] = {}
         self._emit("phase_started", {"phase": "discussion", "text": "Day discussion begins."},
                    phase="discussion")
-        order = list(range(self.n))
-        self.rng.shuffle(order)
         msgs = 0
-        rnd = 0
-        for rnd in range(max_rounds):
-            events.append({"t": "round", "text": f"Round {rnd+1}"})
-            spoke = 0
+        passes = 0
+        idle_no_speaker_passes = 0
+        while msgs < max_messages:
+            passes += 1
+            events.append({"t": "round", "text": f"Pass {passes}"})
+            bids = []
+            pass_events = []
+            order = list(range(self.n))
+            self.rng.shuffle(order)
             for pid in order:
-                txt, r, passed, ms = self._speak(pid, agents[pid]); reason[pid] = r
-                if passed:
-                    events.append({"t": "pass", "pid": pid, "ms": ms}); self.public.append(f"{self.names[pid]} passes.")
-                    self._emit("pass", {"actor_seat": pid}, phase="discussion")
+                txt, urgency, r, pass_stance, ms = self._speech_bid(pid, agents[pid])
+                if pass_stance:
+                    pass_events.append((pid, ms, r, pass_stance))
                 else:
-                    events.append({"t": "say", "pid": pid, "text": txt, "ms": ms}); self.public.append(f"{self.names[pid]}: {txt}"); msgs += 1; spoke += 1
-                    self._emit("speech", {"actor_seat": pid, "text": txt}, phase="discussion")
-            if spoke == 0:
-                events.append({"t": "sys", "text": "A full round passed in silence — discussion ends."})
-                break
-        events.append({"t": "sys", "text": f"Discussion closes ({msgs} messages over {rnd+1} round(s)). Moving to the vote."})
-        self._emit("phase_ended", {"phase": "discussion", "messages": msgs, "rounds": rnd + 1},
+                    bids.append((urgency, self.rng.random(), pid, txt, r, ms))
+            if not bids:
+                for pid, ms, r, stance in pass_events:
+                    reason[pid] = r
+                    events.append({"t": "pass", "pid": pid, "ms": ms, "stance": stance})
+                    if stance == "done":
+                        self.public.append(f"{self.names[pid]} is ready to end discussion.")
+                    else:
+                        self.public.append(f"{self.names[pid]} passes for now, waiting for more discussion.")
+                    self._emit("pass", {"actor_seat": pid, "stance": stance}, phase="discussion")
+                if pass_events and all(stance == "done" for _, _, _, stance in pass_events):
+                    events.append({"t": "sys", "text": "Everyone is done — discussion ends."})
+                    break
+                idle_no_speaker_passes += 1
+                if idle_no_speaker_passes >= 2:
+                    events.append({"t": "sys", "text": "No one took the floor twice — discussion ends to avoid deadlock."})
+                    break
+                nudge = (
+                    "No one took the floor, but at least one player is still waiting rather than done. "
+                    "Discussion remains open: speak now if you have a defense, rebuttal, or unresolved claim; "
+                    "otherwise mark yourself done."
+                )
+                events.append({"t": "sys", "text": nudge})
+                self.public.append(nudge)
+                self._emit("discussion_notice", {"text": nudge}, phase="discussion")
+                continue
+            idle_no_speaker_passes = 0
+            urgency, _, pid, txt, r, ms = max(bids)
+            reason[pid] = r
+            events.append({"t": "say", "pid": pid, "text": txt, "urgency": urgency, "ms": ms})
+            self.public.append(f"{self.names[pid]}: {txt}")
+            msgs += 1
+            self._emit("speech", {"actor_seat": pid, "text": txt, "urgency": urgency}, phase="discussion")
+        else:
+            events.append({"t": "sys", "text": f"Message budget reached ({max_messages}) — discussion ends."})
+        events.append({"t": "sys", "text": f"Discussion closes ({msgs} messages over {passes} pass(es)). Moving to the vote."})
+        self._emit("phase_ended", {"phase": "discussion", "messages": msgs, "passes": passes},
                    phase="discussion")
         synth = {
-            "state": f"Round-robin discussion ran {rnd+1} round(s) (cap {max_rounds}); agents claim roles and accuse.",
+            "state": f"Responsive discussion produced {msgs} message(s) over {passes} pass(es).",
             "key": "Claims are cheap once cards can move; players weigh hard night-info against unverifiable stories.",
             "note": "Watch who anchors on real information vs who deflects.",
         }
         return {"name": "Discussion", "kind": "talk", "events": events, "reason": reason, "synth": synth}
 
-    def _speak(self, pid: int, agent: Agent):
+    def _speech_bid(self, pid: int, agent: Agent):
         prompt = self.base_prompt(pid, phase="discussion", action_kind="onuw.discussion.speak_or_pass") + (
-            "\n\nIt is your turn to speak to the whole table. Say something persuasive that helps your team — "
-            "claim a role, share (or fake) information, accuse, or defend yourself. You may stay silent.\n"
-            "Use @handles when referring to participants.\n"
-            'Reply JSON {"reasoning":"...","action":"<what you say>"} or {"action":"pass"} to stay silent.'
+            "\n\nThe table is deciding who, if anyone, should speak next. If you have something useful "
+            "to say now, provide the message and an urgency from 1 to 3. Use 3 only for immediate "
+            "corrections, direct rebuttals, or critical claims; use 1 for low-priority contributions. "
+            "You may pass with stance \"wait\" if you specifically want more discussion before voting, "
+            "or stance \"done\" if you are ready to end discussion and vote.\n"
+            'Reply JSON {"reasoning":"...","action":{"speak":"<what you say>","urgency":1|2|3}} '
+            'or {"reasoning":"...","action":{"pass":true,"stance":"wait"|"done"}}.'
         )
 
         def parse(a, raw):
             if isinstance(a, dict):
                 if a.get("pass") is True:
-                    return "pass"
+                    stance = str(a.get("stance", "done")).strip().lower()
+                    if stance not in {"wait", "done"}:
+                        raise ValueError("pass stance must be wait or done")
+                    return {"pass": True, "stance": stance}
                 if "speak" in a:
                     s = str(a["speak"]).strip()
+                    urgency = int(a.get("urgency", 1))
+                    if urgency < 1 or urgency > 3:
+                        raise ValueError("urgency must be 1, 2, or 3")
+                    if not s:
+                        raise ValueError("empty")
+                    return {"speak": s, "urgency": urgency}
                 else:
                     raise ValueError("bad speech action")
             else:
                 s = str(a).strip()
-            if not s:
-                raise ValueError("empty")
-            return s
+                if s.lower() in ("pass", "(pass)", "stay silent", "silent"):
+                    return {"pass": True}
+                if not s:
+                    raise ValueError("empty")
+                return {"speak": s, "urgency": 1}
 
         resp = self._act(
             agent,
             prompt,
             parse,
-            default_action="pass",
+            default_action={"pass": True},
             phase="discussion",
             action_kind="onuw.discussion.speak_or_pass",
             legal_action={
@@ -821,26 +878,37 @@ class ONUW:
                     "oneOf": [
                         {
                             "type": "object",
-                            "required": ["speak"],
-                            "properties": {"speak": {"type": "string", "minLength": 1, "maxLength": 1000}},
+                            "required": ["speak", "urgency"],
+                            "properties": {
+                                "speak": {"type": "string", "minLength": 1, "maxLength": 1000},
+                                "urgency": {"type": "integer", "enum": [1, 2, 3]},
+                            },
                             "additionalProperties": False,
                         },
                         {
                             "type": "object",
                             "required": ["pass"],
-                            "properties": {"pass": {"enum": [True]}},
+                            "properties": {
+                                "pass": {"enum": [True]},
+                                "stance": {"enum": ["wait", "done"]},
+                            },
                             "additionalProperties": False,
                         },
                     ]
                 },
-                "choices": {"pass": True},
+                "choices": {"pass": True, "stances": ["wait", "done"]},
             },
-            default_wire_action={"pass": True},
+            default_wire_action={"pass": True, "stance": "done"},
         )
-        s = resp.action
+        action = resp.action
+        if isinstance(action, dict) and action.get("pass") is True:
+            return "", 0, resp.declared_reasoning, action.get("stance", "done"), resp.ms
+        if isinstance(action, dict):
+            return str(action["speak"]), int(action.get("urgency", 1)), resp.declared_reasoning, None, resp.ms
+        s = str(action)
         if s.lower() in ("pass", "(pass)", "stay silent", "silent"):
-            return "", resp.declared_reasoning, True, resp.ms
-        return s, resp.declared_reasoning, False, resp.ms
+            return "", 0, resp.declared_reasoning, "done", resp.ms
+        return s, 1, resp.declared_reasoning, None, resp.ms
 
     # ---- vote --------------------------------------------------------------
     def run_vote(self, agents: dict[int, Agent]):

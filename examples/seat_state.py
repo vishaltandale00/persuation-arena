@@ -81,7 +81,14 @@ class SeatState:
         elif etype == "speech":
             self.public.append(f"{self._actor_name(p)}: {p.get('text', '')}")
         elif etype == "pass":
-            self.public.append(f"{self._actor_name(p)} passes.")
+            if p.get("stance") == "done":
+                self.public.append(f"{self._actor_name(p)} is ready to end discussion.")
+            elif p.get("stance") == "wait":
+                self.public.append(f"{self._actor_name(p)} passes for now, waiting for more discussion.")
+            else:
+                self.public.append(f"{self._actor_name(p)} passes.")
+        elif etype == "discussion_notice":
+            self.public.append(p.get("text", ""))
         elif etype in ("phase_started", "phase_ended"):
             self.phase = p.get("phase", self.phase)
         elif etype == "game_result":

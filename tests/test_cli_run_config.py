@@ -23,6 +23,7 @@ def test_run_cli_passes_run_level_caps(monkeypatch):
         "--run-id", "r_cli",
         "--workers", "1",
         "--rounds", "3",
+        "--deal-schedule", "balanced",
         "--reasoning-effort", "high",
         "--max-tokens-per-turn", "777",
         "--temperature", "0.1",
@@ -35,6 +36,7 @@ def test_run_cli_passes_run_level_caps(monkeypatch):
     caps = captured["caps"]
     assert captured["run_id"] == "r_cli"
     assert captured["discussion_rounds"] == 3
+    assert captured["deal_schedule"] == "balanced"
     assert caps.reasoning_effort == "high"
     assert caps.max_tokens_per_turn == 777
     assert caps.temperature == 0.1

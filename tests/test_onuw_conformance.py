@@ -30,6 +30,35 @@ class RecordingAgent:
         return Resp()
 
 
+class SpeechAgent:
+    name = "Speech"
+    model = "scripted"
+
+    def __init__(self, message: str | None = None, urgency: int = 1, pass_stance: str = "done"):
+        self.message = message
+        self.urgency = urgency
+        self.pass_stance = pass_stance
+        self.calls = 0
+
+    def act(self, observation, parse_action, default_action, **turn_meta):
+        self.calls += 1
+        raw = (
+            {"pass": True, "stance": self.pass_stance}
+            if self.message is None
+            else {"speak": f"{self.message} #{self.calls}", "urgency": self.urgency}
+        )
+        action = parse_action(raw, "")
+
+        class Resp:
+            declared_reasoning = "(speech)"
+            ms = 0.0
+
+            def __init__(self, action):
+                self.action = action
+
+        return Resp(action)
+
+
 def _rules_payload_from_prompt(prompt: str) -> dict:
     start = "ONUW_RULES_PAYLOAD_BEGIN"
     end = "ONUW_RULES_PAYLOAD_END"
@@ -158,6 +187,81 @@ def test_rules_payload_does_not_leak_other_dealt_roles_or_center_identities():
     assert "center #1: Hunter" not in prompt
     assert "center #2: Drunk" not in prompt
     assert "center #3: Villager" not in prompt
+
+
+def test_responsive_discussion_ends_when_everyone_passes():
+    core = ONUW(NAMES, seed=11, discussion_rounds=20)
+    core.deal()
+    phase = core.run_discussion({i: SpeechAgent() for i in range(5)})
+
+    assert [e["t"] for e in phase["events"]].count("say") == 0
+    assert [e["t"] for e in phase["events"]].count("pass") == 5
+    assert all(e.get("stance") == "done" for e in phase["events"] if e["t"] == "pass")
+    assert any("Everyone is done" in e.get("text", "") for e in phase["events"])
+
+
+def test_responsive_discussion_wait_passes_do_not_immediately_end():
+    core = ONUW(NAMES, seed=11, discussion_rounds=20)
+    core.deal()
+    phase = core.run_discussion({i: SpeechAgent(pass_stance="wait") for i in range(5)})
+
+    assert [e["t"] for e in phase["events"]].count("say") == 0
+    assert [e["t"] for e in phase["events"]].count("pass") == 10
+    assert any("Discussion remains open" in e.get("text", "") for e in phase["events"])
+    assert any("No one took the floor twice" in e.get("text", "") for e in phase["events"])
+
+
+def test_responsive_discussion_wait_allows_later_speaker():
+    class WaitThenSpeakAgent(SpeechAgent):
+        def act(self, observation, parse_action, default_action, **turn_meta):
+            self.calls += 1
+            raw = (
+                {"pass": True, "stance": "wait"}
+                if self.calls == 1
+                else {"speak": f"late defense #{self.calls}", "urgency": 3}
+            )
+            action = parse_action(raw, "")
+
+            class Resp:
+                declared_reasoning = "(wait then speak)"
+                ms = 0.0
+
+                def __init__(self, action):
+                    self.action = action
+
+            return Resp(action)
+
+    core = ONUW(NAMES, seed=11, discussion_rounds=1)
+    core.deal()
+    agents = {i: SpeechAgent(pass_stance="wait") for i in range(5)}
+    agents[1] = WaitThenSpeakAgent(pass_stance="wait")
+
+    phase = core.run_discussion(agents)
+    says = [e for e in phase["events"] if e["t"] == "say"]
+
+    assert len(says) == 1
+    assert says[0]["pid"] == 1
+    assert "late defense" in says[0]["text"]
+
+
+def test_responsive_discussion_uses_urgency_and_message_budget():
+    core = ONUW(NAMES, seed=11, discussion_rounds=2)
+    core.deal()
+    agents = {
+        0: SpeechAgent("low", urgency=1),
+        1: SpeechAgent("high", urgency=3),
+        2: SpeechAgent("medium", urgency=2),
+        3: SpeechAgent(),
+        4: SpeechAgent(),
+    }
+
+    phase = core.run_discussion(agents)
+    says = [e for e in phase["events"] if e["t"] == "say"]
+
+    assert len(says) == 2
+    assert all(e["pid"] == 1 for e in says)
+    assert all(e["urgency"] == 3 for e in says)
+    assert any("Message budget reached (2)" in e.get("text", "") for e in phase["events"])
 
 
 def test_full_game_completes_and_is_consistent():

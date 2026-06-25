@@ -242,11 +242,11 @@ export async function fetchModels() {
 // === 5. ROSTER_FALLBACK — known competitor models so the picker is never blank ===================
 
 export const ROSTER_FALLBACK = [
-  { id: 'openai/gpt-5.4-mini', name: 'openai/gpt-5.4-mini' },
-  { id: 'anthropic/claude-haiku-4.5', name: 'anthropic/claude-haiku-4.5' },
-  { id: 'google/gemini-3.1-flash', name: 'google/gemini-3.1-flash' },
-  { id: 'openai/gpt-5.5', name: 'openai/gpt-5.5' },
-  { id: 'anthropic/claude-sonnet-4.6', name: 'anthropic/claude-sonnet-4.6' },
+  { id: 'openai/gpt-5.5', name: 'OpenAI: GPT-5.5' },
+  { id: 'x-ai/grok-4.20', name: 'xAI: Grok 4.20' },
+  { id: 'deepseek/deepseek-v4-pro', name: 'DeepSeek: DeepSeek V4 Pro' },
+  { id: 'anthropic/claude-opus-4.8', name: 'Anthropic: Claude Opus 4.8' },
+  { id: 'google/gemini-3.1-pro-preview', name: 'Google: Gemini 3.1 Pro Preview' },
 ];
 
 /** Just the ids of ROSTER_FALLBACK. */

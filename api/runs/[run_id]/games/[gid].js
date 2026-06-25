@@ -4,6 +4,42 @@
 // before returning. 404 {error:"game not found"} when the row is missing.
 import { q, send } from '../../../_db.js';
 
+function gameInstanceId(runId, gid) {
+  return `${runId}_game_${String(gid).padStart(3, '0')}`;
+}
+
+function enrichTranscriptTurnReasoning(transcript, events, runId, gid) {
+  const enriched = JSON.parse(JSON.stringify(transcript));
+  const iid = gameInstanceId(runId, gid);
+  const queues = new Map();
+  for (const event of events) {
+    if (event.game_instance_id !== iid || event.type !== 'model_turn_completed') continue;
+    let payload = {};
+    try { payload = JSON.parse(event.payload_json || '{}'); } catch (_) { payload = {}; }
+    if (payload.seat == null || !event.phase) continue;
+    const key = `${String(event.phase).toLowerCase()}:${Number(payload.seat)}`;
+    if (!queues.has(key)) queues.set(key, []);
+    queues.get(key).push(payload);
+  }
+
+  for (const phase of enriched.phases || []) {
+    const phaseKey = String(phase.name || phase.kind || '').toLowerCase();
+    for (const event of phase.events || []) {
+      if (event.pid == null || !['act', 'say', 'pass', 'vote'].includes(event.t)) continue;
+      const queue = queues.get(`${phaseKey}:${Number(event.pid)}`) || [];
+      if (!queue.length) continue;
+      const payload = queue.shift();
+      if (payload.reasoning) event.declared_reasoning = payload.reasoning;
+      if (payload.provider_reasoning != null) event.provider_reasoning = payload.provider_reasoning;
+      if (payload.provider_reasoning_details != null) event.provider_reasoning_details = payload.provider_reasoning_details;
+      if (payload.raw) event.raw_model_output = payload.raw;
+      if (payload.action_kind) event.action_kind = payload.action_kind;
+      if (payload.model) event.model = payload.model;
+    }
+  }
+  return enriched;
+}
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
 
@@ -17,5 +53,10 @@ export default async function handler(req, res) {
   const row = rows[0];
   if (!row) return send(res, 404, { error: 'game not found' });
 
-  return send(res, 200, JSON.parse(row.transcript_json));
+  const transcript = JSON.parse(row.transcript_json);
+  const events = await q(
+    'SELECT * FROM run_events WHERE run_id = $1 ORDER BY seq ASC LIMIT 1000',
+    [runId],
+  );
+  return send(res, 200, enrichTranscriptTurnReasoning(transcript, events, runId, gid));
 }

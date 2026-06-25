@@ -56,7 +56,7 @@ def _run_caps_from_job(job: dict):
     for agent in job.get("agents") or []:
         for key in ("reasoning_effort", "max_tokens_per_turn", "temperature", "retries",
                     "prior_message_turns"):
-            if key in agent and key not in fields:
+            if key in agent and agent[key] is not None and key not in fields:
                 fields[key] = agent[key]
         if "max_tokens" in agent and "max_tokens_per_turn" not in fields:
             fields["max_tokens_per_turn"] = agent["max_tokens"]
@@ -79,7 +79,7 @@ def _run(args):
     caps = _run_caps_from_args(args)
     run_batch(game=args.game, n_games=args.games, seed_base=args.seed, run_id=rid,
               workers=args.workers, discussion_rounds=args.rounds, deck_preset=args.deck,
-              caps=caps)
+              caps=caps, deal_schedule=args.deal_schedule)
     print(f"\nDone. View at http://localhost:{args.port}/observer.html  (run: {rid})")
     print(f"Score with: python -m arena.cli score --run {rid}")
 
@@ -439,8 +439,11 @@ def main():
     r.add_argument("--seed", type=int, default=9000)
     r.add_argument("--run-id", dest="run_id", default=None)
     r.add_argument("--workers", type=int, default=8)
-    r.add_argument("--rounds", type=_positive_int, default=5, help="max discussion rounds (ends early on all-pass)")
+    r.add_argument("--rounds", type=_positive_int, default=20,
+                   help="discussion budget: max ONUW messages; round cap for other games")
     r.add_argument("--deck", default="arena", help="ONUW deck preset: arena, classic, or tanner")
+    r.add_argument("--deal-schedule", choices=["random", "balanced"], default=None,
+                   help="initial deal scheduling; default is balanced for ONUW and random for other games")
     r.add_argument("--reasoning-effort", choices=sorted(REASONING_EFFORTS), default=None,
                    help="OpenRouter reasoning effort for this run")
     r.add_argument("--max-tokens-per-turn", "--max-tokens", dest="max_tokens_per_turn",

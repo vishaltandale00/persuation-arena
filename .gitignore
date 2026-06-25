@@ -4,6 +4,7 @@
 .vercel/
 .venv/
 store/
+logs/
 __pycache__/
 *.pyc
 mocks/data/
