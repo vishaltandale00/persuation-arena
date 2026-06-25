@@ -70,6 +70,7 @@
   .panel .body{padding:14px 16px}
   .livepanel{margin-top:18px}
   .ovside{display:flex;flex-direction:column;gap:16px}
+  .results-panel{margin-top:18px}
   .cfg{display:grid;grid-template-columns:1fr 1fr;gap:12px 18px}
   .cfg .c .k{font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint)}
   .cfg .c .v{margin-top:2px;font-size:13.5px}
@@ -84,13 +85,18 @@
   .agrow .meta,.agrow .conn{font-family:var(--mono);font-size:11px;color:var(--faint);overflow-wrap:anywhere}
   .agrow .conn{line-height:1.45}
   .pending{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
-  .winbars{display:flex;flex-direction:column;gap:8px}
-  .wb{display:flex;align-items:center;gap:9px}
-  .wb .nm{width:78px;font-size:13px} .wb .bar{height:8px;border-radius:4px;background:var(--accent)} .wb .c{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
-  .factions{display:flex;flex-direction:column;gap:9px}
-  .frow{border-top:1px solid var(--line);padding-top:9px}
-  .frow:first-child{border-top:0;padding-top:0}
-  .fname{font-weight:600;font-size:12px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .winbars{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px}
+  .wb{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px 10px;align-items:center;border:1px solid var(--line);border-radius:8px;background:#fcfcfc;padding:10px 12px}
+  .wb .nm{font-weight:600;font-size:13px;line-height:1.25;min-width:0}
+  .wb .pct{grid-column:2;grid-row:1;font-family:var(--mono);font-size:14px;font-weight:650;text-align:right;font-variant-numeric:tabular-nums}
+  .wb .barwrap{height:8px;border-radius:5px;background:var(--line);overflow:hidden}
+  .wb .bar{display:block;height:100%;min-width:2px;border-radius:5px;background:var(--accent)}
+  .wb .barwrap,.wb .c{grid-column:1/-1}
+  .wb .c{font-family:var(--mono);font-size:11px;color:var(--ink-2);line-height:1.35}
+  .wb .c .muted{color:var(--faint)}
+  .factions{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px}
+  .frow{border:1px solid var(--line);border-radius:8px;background:#fcfcfc;padding:10px}
+  .fname{font-weight:600;font-size:12.5px;margin-bottom:8px;line-height:1.25;overflow-wrap:anywhere}
   .fpairs{display:grid;grid-template-columns:1fr 1fr;gap:7px}
   .fcell{border:1px solid var(--line-2);border-radius:7px;padding:7px 8px;min-width:0;background:#fcfcfc}
   .fcell.good{background:var(--good-soft);border-color:#cfe6df}
@@ -100,7 +106,7 @@
   .fcell.good .fpct{color:var(--good)}
   .fcell.evil .fpct{color:var(--evil)}
   .fn{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:1px}
-  .teamsplit{display:flex;gap:8px;margin-bottom:4px}
+  .teamsplit{display:flex;gap:10px;margin-bottom:12px}
   .ts{flex:1;border:1px solid var(--line-2);border-radius:8px;padding:10px;text-align:center}
   .ts .n{font-size:18px;font-weight:600} .ts.good{background:var(--good-soft);border-color:#cfe6df} .ts.good .n{color:var(--good)} .ts.evil{background:var(--evil-soft);border-color:#ecccca} .ts.evil .n{color:var(--evil)}
   .ts .k{font-family:var(--mono);font-size:11px;text-transform:uppercase;color:var(--faint);margin-top:2px}
@@ -130,7 +136,7 @@
   .grow2:last-child{border-bottom:0} .grow2:hover{background:var(--hover)} .grow2:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   .grow2.live{color:var(--ink)}
   .grow2 .gid{font-family:var(--mono);font-size:12px} .grow2 .gseed{font-family:var(--mono);font-size:11px;color:var(--faint)}
-  .grow2 .gline{font-size:13px;color:var(--ink-2)}
+  .grow2 .gline{font-size:13px;color:var(--ink-2);min-width:0;line-height:1.35}
   .wtag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:5px;justify-self:start}
   .wtag.good{background:var(--good-soft);color:var(--good)} .wtag.evil{background:var(--evil-soft);color:var(--evil)} .wtag.void{background:var(--sel);color:var(--faint)}
   .replay{font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid var(--line-2);border-radius:5px;padding:1px 6px;justify-self:end}
@@ -303,7 +309,7 @@
     .livegame{grid-template-columns:1fr;height:auto}
     .ovgrid{grid-template-columns:1fr}
     .rt-head,.rt-row{grid-template-columns:16px minmax(92px,.7fr) minmax(0,1fr) 96px;gap:10px} .rt-head span:nth-child(n+4),.rt-ng,.rt-when{display:none}
-    .gh,.grow2{grid-template-columns:16px 70px 1fr 96px;gap:10px} .gh span:nth-child(n+5),.grow2 .gseed,.replay{display:none}
+    .gh,.grow2{grid-template-columns:16px 70px minmax(0,1fr) 96px;gap:10px} .gh span:nth-child(n+5),.grow2 .gseed,.replay{display:none}
     .keyrow{grid-template-columns:1fr}
     .run-settings{grid-template-columns:repeat(3,minmax(0,1fr))}
     .lobby-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -332,8 +338,13 @@
     .connrow .sub{overflow-wrap:anywhere}
     .ev{grid-template-columns:38px minmax(0,1fr);gap:5px 8px}
     .ev .pay{grid-column:1/-1}
-    .gh,.grow2{grid-template-columns:16px 1fr;gap:10px}
-    .gh span:nth-child(n+3),.grow2 .gline,.grow2 .wtag{display:none}
+    .teamsplit{flex-direction:column}
+    .fpairs{grid-template-columns:1fr}
+    .gh,.grow2{grid-template-columns:16px minmax(0,1fr) auto;gap:5px 10px}
+    .gh span:nth-child(n+3){display:none}
+    .grow2 .gid{grid-column:2;grid-row:1}
+    .grow2 .gline{grid-column:2/-1;grid-row:2;display:block}
+    .grow2 .wtag{grid-column:3;grid-row:1;display:inline-block}
     .run-settings{grid-template-columns:1fr}
     .lobby-grid{grid-template-columns:1fr}
     .advanced{grid-template-columns:1fr}
@@ -434,11 +445,11 @@
           <div class="gh"><span></span><span>Game</span><span>Seed</span><span>Result</span><span>Winner</span><span></span></div>
           <div id="ovgames"></div>
         </div>
+        <div class="panel results-panel"><h3>Results</h3><div class="body" id="ovresults"></div></div>
       </div>
       <div class="ovside">
         <div class="panel"><h3>Agents</h3><div class="body"><div class="agtable" id="ovagents"></div><div id="ovpending"></div></div></div>
         <div class="panel"><h3>Settings</h3><div class="body"><div class="cfg" id="ovcfg"></div></div></div>
-        <div class="panel"><h3>Results</h3><div class="body" id="ovresults"></div></div>
       </div>
     </div>
   </div>
@@ -924,7 +935,10 @@ function renderRunOverview(){
         const s=(sc[a.name]&&sc[a.name].overall)||{rate:0,lo:0,hi:0,n:0};
         const rel=sc[a.name]||{calls:0,forfeits:0,forfeit_rate:0};
         const pct=Math.round(s.rate*100),lo=Math.round(s.lo*100),hi=Math.round(s.hi*100);
-        return '<div class="wb"><span class="nm">'+esc(a.name)+'</span><span class="bar" style="width:'+(s.rate*120)+'px"></span><span class="c">'+pct+'% <span style="color:var(--faint)">('+lo+'–'+hi+'%, n='+s.n+' · forfeits '+rel.forfeits+'/'+rel.calls+')</span></span></div>';
+        return '<div class="wb"><span class="nm">'+esc(a.name)+'</span>'+
+          '<span class="pct">'+pct+'%</span>'+
+          '<span class="barwrap" aria-hidden="true"><span class="bar" style="width:'+pct+'%"></span></span>'+
+          '<span class="c"><span class="muted">CI</span> '+lo+'–'+hi+'% · <span class="muted">n</span> '+s.n+' · <span class="muted">forfeits</span> '+rel.forfeits+'/'+rel.calls+'</span></div>';
       }).join("")+'</div>'+
       '<div class="lbl" style="margin:16px 0 6px">By faction · win-rate</div>'+
       '<div class="factions">'+curRun.agents.map(a=>{
@@ -1155,16 +1169,34 @@ function reasoningText(v){
   if(v==null || v==="") return "";
   return typeof v==="string" ? v : JSON.stringify(v,null,2);
 }
+function hiddenModelTurnsHtml(turns){
+  if(!Array.isArray(turns)||!turns.length) return "";
+  const items=turns.map((t,i)=>{
+    const action=reasoningText(t.action);
+    const reason=reasoningText(t.reasoning);
+    const provider=reasoningText(t.provider_reasoning || t.provider_reasoning_details);
+    const raw=reasoningText(t.raw);
+    let inner="";
+    if(action) inner+='<div><div class="rk">Action</div><pre class="rtxt">'+esc(action)+'</pre></div>';
+    if(reason) inner+='<div><div class="rk">Declared reasoning</div><div class="rtxt">'+esc(reason)+'</div></div>';
+    if(provider) inner+='<div><div class="rk">Provider reasoning</div><div class="rtxt">'+esc(provider)+'</div></div>';
+    if(raw) inner+='<details><summary>Raw model output</summary><pre class="rtxt">'+esc(raw)+'</pre></details>';
+    return '<details><summary>Hidden model turn '+(i+1)+'</summary>'+inner+'</details>';
+  }).join("");
+  return '<div><div class="rk">Earlier hidden turns</div>'+items+'</div>';
+}
 function turnReasoningHtml(e){
   const declared=reasoningText(e.declared_reasoning);
   const provider=reasoningText(e.provider_reasoning || e.provider_reasoning_details);
   const raw=reasoningText(e.raw_model_output);
-  if(!declared && !provider && !raw) return "";
+  const hidden=hiddenModelTurnsHtml(e.hidden_model_turns_before);
+  if(!declared && !provider && !raw && !hidden) return "";
   let body="";
   if(declared) body+='<div><div class="rk">Declared reasoning</div><div class="rtxt">'+esc(declared)+'</div></div>';
   if(provider) body+='<div><div class="rk">Provider reasoning</div><div class="rtxt">'+esc(provider)+'</div></div>';
   if(raw) body+='<details><summary>Raw model output</summary><pre class="rtxt">'+esc(raw)+'</pre></details>';
-  const summary=provider&&declared?"Reasoning · declared + provider":(provider?"Reasoning · provider":"Reasoning · declared");
+  if(hidden) body+=hidden;
+  const summary=provider&&declared?"Reasoning · declared + provider":(provider?"Reasoning · provider":(declared?"Reasoning · declared":"Reasoning · hidden"));
   return '<details class="turn-reason"><summary>'+summary+'</summary><div class="rbody">'+body+'</div></details>';
 }
 function convoItem(m,e){

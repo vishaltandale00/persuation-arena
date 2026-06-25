@@ -22,13 +22,59 @@ function enrichTranscriptTurnReasoning(transcript, events, runId, gid) {
     queues.get(key).push(payload);
   }
 
+  function normalizedText(value) {
+    return String(value || '').split(/\s+/).filter(Boolean).join(' ');
+  }
+
+  function actionMatchesEvent(payload, replayEvent) {
+    const action = payload.action;
+    if (replayEvent.t === 'say') {
+      return action && typeof action === 'object'
+        && normalizedText(action.speak) === normalizedText(replayEvent.text);
+    }
+    if (replayEvent.t === 'pass') {
+      if (!action || typeof action !== 'object' || action.pass !== true) return false;
+      if (replayEvent.stance) return String(action.stance || 'done') === String(replayEvent.stance);
+      return true;
+    }
+    if (replayEvent.t === 'vote') {
+      return Number(action) === Number(replayEvent.tgt);
+    }
+    if (replayEvent.t === 'act') {
+      return payload.ok === true;
+    }
+    return false;
+  }
+
   for (const phase of enriched.phases || []) {
     const phaseKey = String(phase.name || phase.kind || '').toLowerCase();
     for (const event of phase.events || []) {
       if (event.pid == null || !['act', 'say', 'pass', 'vote'].includes(event.t)) continue;
       const queue = queues.get(`${phaseKey}:${Number(event.pid)}`) || [];
       if (!queue.length) continue;
-      const payload = queue.shift();
+      const matchIdx = queue.findIndex((candidate) => actionMatchesEvent(candidate, event));
+      if (matchIdx < 0) continue;
+      const skipped = queue.slice(0, matchIdx);
+      if (skipped.length) {
+        event.hidden_model_turns_before = skipped.map((candidate) => {
+          const out = {};
+          for (const key of [
+            'action',
+            'reasoning',
+            'provider_reasoning',
+            'provider_reasoning_details',
+            'raw',
+            'action_kind',
+            'model',
+            'ms',
+          ]) {
+            if (candidate[key] != null) out[key] = candidate[key];
+          }
+          return out;
+        });
+      }
+      const payload = queue[matchIdx];
+      queue.splice(0, matchIdx + 1);
       if (payload.reasoning) event.declared_reasoning = payload.reasoning;
       if (payload.provider_reasoning != null) event.provider_reasoning = payload.provider_reasoning;
       if (payload.provider_reasoning_details != null) event.provider_reasoning_details = payload.provider_reasoning_details;
