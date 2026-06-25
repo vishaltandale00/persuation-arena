@@ -33,7 +33,9 @@ from . import store
 from .batch import GAME_CORES, default_deal_schedule
 from .games.onuw import DEFAULT_DECK_PRESET, deck_for_preset, deck_preset_options, normalize_deck_preset
 from .identity import NO_ONE_REF, participant, validate_public_name, validate_unique_public_names
-from .score import score_run
+from .score import score_run, score_runs
+from . import sharded
+from .sharded import rollup_parent_status
 
 WEB = ROOT / "web"
 GAME_LABELS = {
@@ -397,6 +399,21 @@ def _create_connected_run(payload: dict) -> dict:
             "run_config_overrides": _run_config_overrides(payload),
         },
     }
+    # SPEC §6.9(a) / D3: shards>1 fans the run out into a parent + K child shards; default/1 keeps
+    # today's single connected run byte-identical (INV-2). K is validated/capped in create_sharded_run.
+    shards = _payload_int(payload, ("shards", "num_shards"), 1, positive=True)
+    if shards > 1:
+        try:
+            child_ids = sharded.create_sharded_run(run_config, shards)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        for cid in child_ids:
+            child_run = store.get_run(cid)
+            _spawn_coordinator(child_run, rounds)  # one coordinator per shard (no-op unless Modal)
+        return {"run_id": run_id, "status": "open", "game": game, "games": games,
+                "players": players, "rounds": rounds, "deck_preset": deck_preset,
+                "shards": shards, "child_run_ids": child_ids,
+                "run_config": _run_config_meta(caps, rounds)}
     store.create_connected_run(run_config)
     _spawn_coordinator(run_config, rounds)  # no-op unless ARENA_MODAL_COORDINATOR
     return {"run_id": run_id, "status": "open", "game": game, "games": games,
@@ -408,6 +425,10 @@ def _create_connected_run(payload: dict) -> dict:
 def api_runs():
     out = []
     for r in store.list_runs():
+        # SPEC D7 / INV-4: child shards are invisible in the observer — the parent renders as one
+        # normal run. (Parents and plain runs are listed; only run_kind='child' is hidden.)
+        if (r.get("run_kind") or "normal") == "child":
+            continue
         out.append({
             "id": r["id"], "game": r["game"], "label": r["label"], "status": r["status"],
             "nGames": r["n_games"], "players": r["players"], "seed": r["seed_base"],
@@ -686,11 +707,32 @@ def api_turn_reply(turn_id: str, payload: dict, authorization: str | None = Head
     return {"ok": True, "accepted": True}
 
 
+def _source_run_ids(run: dict) -> list[str]:
+    """The run ids whose games/scores/events back a run's observer view (SPEC D7).
+
+    A normal/child run is backed by itself. A sharded PARENT is backed by its children: the observer
+    sees a parent as one run whose games are the union across shards and whose scorecard is
+    score_runs(children). (A parent never has games of its own.)"""
+    if (run.get("run_kind") or "normal") == "parent":
+        return store.child_run_ids(run["id"]) or []
+    return [run["id"]]
+
+
 @app.get("/api/runs/{run_id}")
 def api_run(run_id: str):
     r = store.get_run(run_id)
     if not r:
         raise HTTPException(404, "run not found")
+    is_parent = (r.get("run_kind") or "normal") == "parent"
+    source_ids = _source_run_ids(r)
+    if is_parent:
+        # Aggregate the children's games (disjoint global gids, D8) into the parent's view, ordered
+        # by global gid; the parent's own `games`/`wins` are empty (it owns no games).
+        agg_games = []
+        for cid in source_ids:
+            agg_games.extend(store.get_run(cid)["games"])
+        agg_games.sort(key=lambda g: g["gid"])
+        r = {**r, "games": agg_games, "status": rollup_parent_status(run_id)}
     has_games = len(r["games"]) > 0
     signups = store.list_run_signups(run_id)
     signup_by_id = {s["id"]: s for s in signups}
@@ -717,8 +759,8 @@ def api_run(run_id: str):
         })
     games = [{"gid": g["gid"], "seed": g["seed"], "win": g["winner_team"], "line": g["line"], "full": True}
              for g in r["games"]]
-    # partial scores while a run is in progress, full when done
-    scores = score_run(run_id) if has_games else {}
+    # partial scores while a run is in progress, full when done; a parent aggregates across shards.
+    scores = (score_runs(source_ids) if is_parent else score_run(run_id)) if has_games else {}
     recent_events = store.list_run_events(run_id, max_events=120) if r["status"] == "running" or signups else []
     return {
         "id": r["id"], "game": r["game"], "label": r["label"], "status": r["status"],
@@ -859,10 +901,16 @@ def _enrich_transcript_turn_reasoning(run_id: str, gid: int, transcript: dict) -
 
 @app.get("/api/runs/{run_id}/games/{gid}")
 def api_game(run_id: str, gid: int):
-    t = store.get_game(run_id, gid)
-    if not t:
-        raise HTTPException(404, "game not found")
-    return _enrich_transcript_turn_reasoning(run_id, gid, t)
+    r = store.get_run(run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    # SPEC D7: a sharded parent's game lives on whichever child holds that global gid; resolve it
+    # there. A normal/child run resolves against itself.
+    for sid in _source_run_ids(r):
+        t = store.get_game(sid, gid)
+        if t:
+            return _enrich_transcript_turn_reasoning(sid, gid, t)
+    raise HTTPException(404, "game not found")
 
 
 

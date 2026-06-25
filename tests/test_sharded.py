@@ -1,0 +1,649 @@
+"""Verifiers for the parallel-shards feature (SPEC-parallel-shards.md).
+
+Step 1 (SPEC §6.1) — schema + store plumbing: the new run_kind/parent_run_id/
+shard_index/num_shards columns, save_run threading, child_run_ids, the
+list_open_runs discovery filter (INV-4), and init_schema idempotency (INV-5).
+
+Steps 3+4 (SPEC §6.3-6.4, REQ-2) — score aggregation across runs (score_runs),
+parent status rollup (rollup_parent_status), and the discovery filter restated as
+test_children_not_discoverable (INV-4 / V-2).
+"""
+from __future__ import annotations
+
+import threading
+import time
+
+from fastapi.testclient import TestClient
+
+from arena import score, store
+from arena.connected import run_connected_batch
+from arena.identity import NO_ONE_REF
+from arena.sharded import create_sharded_run, rollup_parent_status
+from arena.server import app
+
+
+def _sqlite_store(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "sharded.db")
+    store.init_schema()
+
+
+def _base_run(run_id: str, **extra) -> dict:
+    meta = {
+        "id": run_id, "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 4, "players": 3, "seed_base": 7,
+        "created": "2026-06-25 00:00", "created_utc": "2026-06-25T00:00:00Z",
+        "agents": [],
+    }
+    meta.update(extra)
+    return meta
+
+
+def test_normal_run_defaults_run_kind_and_null_shard_cols(tmp_path, monkeypatch):
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("run_normal"))
+    row = store.get_run("run_normal")
+    assert row is not None
+    assert row["run_kind"] == "normal"
+    assert row["parent_run_id"] is None
+    assert row["shard_index"] is None
+    assert row["num_shards"] is None
+
+
+def test_create_connected_run_is_normal_by_default(tmp_path, monkeypatch):
+    _sqlite_store(tmp_path, monkeypatch)
+    store.create_connected_run({
+        "id": "run_conn", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 2, "players": 1, "seed_base": 1,
+    })
+    row = store.get_run("run_conn")
+    assert row["run_kind"] == "normal"
+    assert row["parent_run_id"] is None
+    assert row["shard_index"] is None
+    assert row["num_shards"] is None
+
+
+def test_create_connected_run_reads_shard_meta(tmp_path, monkeypatch):
+    _sqlite_store(tmp_path, monkeypatch)
+    store.create_connected_run({
+        "id": "child_meta", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 6, "players": 3, "seed_base": 99,
+        "run_kind": "child", "parent_run_id": "parent_meta",
+        "shard_index": 1, "num_shards": 2,
+    })
+    row = store.get_run("child_meta")
+    assert row["run_kind"] == "child"
+    assert row["parent_run_id"] == "parent_meta"
+    assert row["shard_index"] == 1
+    assert row["num_shards"] == 2
+
+
+def test_parent_and_child_excluded_from_list_open_runs(tmp_path, monkeypatch):
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("run_normal_open"))
+    store.save_run(_base_run("run_parent", run_kind="parent", num_shards=2))
+    store.save_run(_base_run(
+        "run_child", run_kind="child", parent_run_id="run_parent",
+        shard_index=0, num_shards=2))
+
+    open_ids = {r["run_id"] for r in store.list_open_runs()}
+    assert "run_normal_open" in open_ids
+    assert "run_parent" not in open_ids
+    assert "run_child" not in open_ids
+
+    # game-filtered path must apply the same filter
+    open_ids_filtered = {r["run_id"] for r in store.list_open_runs(game="onuw")}
+    assert open_ids_filtered == {"run_normal_open"}
+
+
+def test_child_run_ids_ordered_by_shard_index(tmp_path, monkeypatch):
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("parent_x", run_kind="parent", num_shards=3))
+    # insert out of shard order to prove ORDER BY shard_index
+    store.save_run(_base_run(
+        "child_x2", run_kind="child", parent_run_id="parent_x",
+        shard_index=2, num_shards=3))
+    store.save_run(_base_run(
+        "child_x0", run_kind="child", parent_run_id="parent_x",
+        shard_index=0, num_shards=3))
+    store.save_run(_base_run(
+        "child_x1", run_kind="child", parent_run_id="parent_x",
+        shard_index=1, num_shards=3))
+    # an unrelated child of a different parent must not leak in
+    store.save_run(_base_run(
+        "child_other", run_kind="child", parent_run_id="parent_other",
+        shard_index=0, num_shards=1))
+
+    assert store.child_run_ids("parent_x") == ["child_x0", "child_x1", "child_x2"]
+    assert store.child_run_ids("parent_other") == ["child_other"]
+    assert store.child_run_ids("no_such_parent") == []
+
+
+def test_init_schema_idempotent_preserves_rows(tmp_path, monkeypatch):
+    """INV-5: opening the store twice (re-running init_schema) is a no-op and rows survive."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("run_persist", run_kind="parent", num_shards=2))
+    store.save_run(_base_run(
+        "child_persist", run_kind="child", parent_run_id="run_persist",
+        shard_index=0, num_shards=2))
+
+    # Re-run init_schema (idempotent migrations) and re-open a conn — must not error.
+    store.init_schema()
+    with store.conn():
+        pass
+
+    parent = store.get_run("run_persist")
+    child = store.get_run("child_persist")
+    assert parent is not None and parent["run_kind"] == "parent"
+    assert parent["num_shards"] == 2
+    assert child is not None and child["run_kind"] == "child"
+    assert child["parent_run_id"] == "run_persist"
+    assert child["shard_index"] == 0
+    assert store.child_run_ids("run_persist") == ["child_persist"]
+
+
+# --- Steps 3+4: rollup, score aggregation, discovery (REQ-2 / V-2; score half of V-4/V-5) ----
+
+
+def _seat(seat: int, role: str, team: str, won: bool) -> dict:
+    return {"seat": seat, "dealt": role, "end": role, "team": team, "won": won}
+
+
+def _save_two_seat_game(run_id: str, gid: int, *, a_won: bool, b_won: bool) -> None:
+    """Save one 2-seat game: seat 0 = agent A (good), seat 1 = agent B (evil)."""
+    transcript = {
+        "seed": 1000 + gid,
+        "winner_team": "good" if a_won else "evil",
+        "outcome": {"text": f"game {gid}"},
+        "players": [
+            _seat(0, "Villager", "good", a_won),
+            _seat(1, "Werewolf", "evil", b_won),
+        ],
+    }
+    agents = [
+        {"name": "A", "model": "connected-agent"},
+        {"name": "B", "model": "connected-agent"},
+    ]
+    store.save_game(run_id, gid, transcript, agents)
+
+
+def test_rollup_parent_status(tmp_path, monkeypatch):
+    """REQ-2 / V-2: rollup reflects children — all done->done, any partial->partial,
+    any not-yet-done->running, child-with-failures->partial, no children->open."""
+    _sqlite_store(tmp_path, monkeypatch)
+
+    def _parent_with_children(parent_id: str, child_statuses: list[str]) -> str:
+        store.save_run(_base_run(parent_id, run_kind="parent",
+                                 num_shards=len(child_statuses)))
+        for k, st in enumerate(child_statuses):
+            store.save_run(_base_run(
+                f"{parent_id}_c{k}", status=st, run_kind="child",
+                parent_run_id=parent_id, shard_index=k,
+                num_shards=len(child_statuses)))
+        return parent_id
+
+    assert rollup_parent_status(
+        _parent_with_children("p_dd", ["done", "done"])) == "done"
+    assert rollup_parent_status(
+        _parent_with_children("p_dp", ["done", "partial"])) == "partial"
+    assert rollup_parent_status(
+        _parent_with_children("p_dr", ["done", "running"])) == "running"
+    # a single partial child rolls the parent up to partial even if others run
+    assert rollup_parent_status(
+        _parent_with_children("p_pr", ["partial", "running"])) == "partial"
+
+    # no children started yet -> open
+    store.save_run(_base_run("p_empty", run_kind="parent", num_shards=2))
+    assert rollup_parent_status("p_empty") == "open"
+
+
+def test_score_runs_aggregates_across_disjoint_runs(tmp_path, monkeypatch):
+    """Score half of V-4/V-5: score_runs unions player_rows across run_ids and runs the
+    existing per-agent aggregation. Child runs carry DISJOINT global gids, so per-agent
+    overall.n sums across both runs."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.create_connected_run(_base_run("shard_a", run_kind="child",
+                                         parent_run_id="P", shard_index=0, num_shards=2))
+    store.create_connected_run(_base_run("shard_b", run_kind="child",
+                                         parent_run_id="P", shard_index=1, num_shards=2))
+    # disjoint global gids: even gids on shard_a, odd gids on shard_b
+    _save_two_seat_game("shard_a", 2, a_won=True, b_won=False)
+    _save_two_seat_game("shard_a", 4, a_won=False, b_won=True)
+    _save_two_seat_game("shard_b", 1, a_won=True, b_won=False)
+    _save_two_seat_game("shard_b", 3, a_won=True, b_won=False)
+    _save_two_seat_game("shard_b", 5, a_won=False, b_won=True)
+
+    a_only = score.score_run("shard_a")
+    b_only = score.score_run("shard_b")
+    assert a_only["A"]["overall"]["n"] == 2
+    assert b_only["A"]["overall"]["n"] == 3
+
+    combined = score.score_runs(["shard_a", "shard_b"])
+    # overall.n sums across both shards (2 + 3 = 5 games per agent)
+    assert combined["A"]["overall"]["n"] == 5
+    assert combined["B"]["overall"]["n"] == 5
+    # A is good in every game; won 3 of 5 (gids 2,1,3) -> w == 3
+    assert combined["A"]["good"]["n"] == 5
+    assert combined["A"]["good"]["w"] == 3
+    assert combined["A"]["overall"]["w"] == 3
+    # B is evil in every game; won 2 of 5 (gids 4,5) -> w == 2
+    assert combined["B"]["evil"]["n"] == 5
+    assert combined["B"]["evil"]["w"] == 2
+
+    # single-run call is unchanged: score_run(id) == score_runs([id])
+    assert score.score_runs(["shard_a"]) == a_only
+
+
+def test_children_not_discoverable(tmp_path, monkeypatch):
+    """INV-4 / V-2: list_open_runs excludes parents and children; only normal runs surface."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("normal_open"))
+    store.save_run(_base_run("parent_open", run_kind="parent", num_shards=2))
+    store.save_run(_base_run(
+        "child_open", run_kind="child", parent_run_id="parent_open",
+        shard_index=0, num_shards=2))
+
+    open_ids = {r["run_id"] for r in store.list_open_runs()}
+    assert open_ids == {"normal_open"}
+    open_ids_filtered = {r["run_id"] for r in store.list_open_runs(game="onuw")}
+    assert open_ids_filtered == {"normal_open"}
+
+
+# --- Steps 5+6: end-to-end, K=1 no-op, and the equivalence keystone (REQ-3/9/4; V-3/V-9/V-4) ----
+#
+# Driven by the scripted-responder pattern from tests/test_connected_runner.py:135-223 — no LLMs,
+# no network, no real concurrency: each child's run_connected_batch is coordinated SEQUENTIALLY
+# (D6) by spawning a responder thread that polls pending_turn_for_signup and replies deterministically.
+
+
+def _scripted_action(turn: dict):
+    """A DETERMINISTIC policy: same observation -> same wire action. (No randomness, so the saved
+    transcript for a given seed is reproducible across runs — required for the equivalence keystone.)"""
+    kind = turn["action_kind"]
+    legal = turn["legal_action"]
+    players = legal.get("choices", {}).get("players") or []
+    if kind == "onuw.discussion.speak_or_pass":
+        return {"pass": True}
+    if kind == "onuw.vote":
+        return {"target": NO_ONE_REF}
+    if kind == "onuw.seer.inspect":
+        return {"mode": "center", "indices": [0, 1]}
+    if kind == "onuw.troublemaker.swap_two_or_decline":
+        return {"a": None, "b": None}
+    if kind in {"onuw.doppelganger.copy_player", "onuw.robber.swap_or_decline"}:
+        return {"target": players[0].get("ref", players[0].get("seat")) if players else None}
+    if kind == "onuw.drunk.swap_center":
+        return {"index": 0}
+    raise AssertionError(kind)
+
+
+def _seat_run(run_id: str, creds: list[tuple[str, str]]) -> dict[str, str]:
+    """Register/sign up identities (in the given fixed order) and ready them.
+
+    `creds` is an ordered list of (display_name, agent_id); the same agent_id may be reused across
+    runs (shared credentials, REQ-5/D9). Signing up in the SAME fixed order gives the SAME
+    arrival-order seat assignment in every run (controls V-4's seats without an explicit-seat
+    feature, which is a later step). Returns {signup_id: agent_id}."""
+    agent_by_signup: dict[str, str] = {}
+    for name, agent_id in creds:
+        if store.get_agent(agent_id) is None:
+            store.register_agent(name, f"hash_{agent_id}", "arena-agent-v1", "test", agent_id=agent_id)
+        signup, err = store.create_signup(run_id, agent_id)
+        assert err is None, err
+        agent_by_signup[signup["id"]] = agent_id
+    for signup_id, agent_id in agent_by_signup.items():
+        _, err = store.mark_signup_ready(signup_id, agent_id)
+        assert err is None or err == "not_ready_required"
+    return agent_by_signup
+
+
+def _coordinate(run_id: str, agent_by_signup: dict[str, str], rounds: int = 1) -> None:
+    """Run one child/normal run to completion against a scripted responder thread."""
+    stop = threading.Event()
+
+    def responder():
+        while not stop.is_set():
+            for signup_id, agent_id in agent_by_signup.items():
+                turn = store.pending_turn_for_signup(signup_id)
+                if turn:
+                    store.reply_to_turn(turn["id"], agent_id, _scripted_action(turn), "scripted", 1)
+            if {s["status"] for s in store.list_run_signups(run_id)} == {"completed"}:
+                return
+            time.sleep(0.005)
+
+    thread = threading.Thread(target=responder)
+    thread.start()
+    try:
+        run_connected_batch(run_id, discussion_rounds=rounds)
+    finally:
+        stop.set()
+    thread.join(timeout=5)
+
+
+def _distinct_gids(run_id: str) -> set[int]:
+    return {r["gid"] for r in store.player_rows(run_id)}
+
+
+def _outcome_by_gid(run_id: str) -> dict[int, dict]:
+    """{gid: {winner_team, line, seats:{agent_id:(dealt_role,end_role,won)}}} for one run's saved games."""
+    out: dict[int, dict] = {}
+    rows = store.player_rows(run_id)
+    for g in store.get_run(run_id)["games"]:
+        seats = {
+            r["agent_id"]: (r["dealt_role"], r["end_role"], int(r["won"]))
+            for r in rows if r["gid"] == g["gid"]
+        }
+        out[g["gid"]] = {"winner_team": g["winner_team"], "line": g["line"], "seats": seats}
+    return out
+
+
+def test_sharded_run_end_to_end(tmp_path, monkeypatch):
+    """REQ-3 / V-3: a K=2 sharded run completes; every global game appears exactly once across
+    children; parent rolls up to done; score_runs(children) yields one scorecard per agent."""
+    _sqlite_store(tmp_path, monkeypatch)
+    N = 5
+    parent_cfg = _base_run("e2e", n_games=N, players=5, seed_base=11)
+    children = create_sharded_run(parent_cfg, 2)
+    assert children == ["e2e_shard_0", "e2e_shard_1"]
+
+    # parent + 2 children written with correct run_kind / shard cols
+    parent = store.get_run("e2e")
+    assert parent["run_kind"] == "parent" and parent["num_shards"] == 2
+    for k, cid in enumerate(children):
+        ch = store.get_run(cid)
+        assert ch["run_kind"] == "child"
+        assert ch["parent_run_id"] == "e2e"
+        assert ch["shard_index"] == k and ch["num_shards"] == 2
+        assert int(ch["n_games"]) == N  # GLOBAL N stored on the child (D8)
+
+    # shared creds: the SAME 5 agent_ids are seated in BOTH children (one competitor per identity)
+    creds = [(f"P{i}", f"agent_{i}") for i in range(5)]
+    for cid in children:
+        agent_by_signup = _seat_run(cid, creds)
+        _coordinate(cid, agent_by_signup)
+
+    gids0, gids1 = _distinct_gids("e2e_shard_0"), _distinct_gids("e2e_shard_1")
+    assert store.get_run("e2e_shard_0")["status"] == "done"
+    assert store.get_run("e2e_shard_1")["status"] == "done"
+    assert gids0 | gids1 == set(range(1, N + 1))  # every global game present
+    assert gids0 & gids1 == set()                 # no gid in two children
+    assert gids0 == {1, 3, 5} and gids1 == {2, 4}  # stride slice g%2==k on gid-1
+
+    assert rollup_parent_status("e2e") == "done"
+
+    scorecard = score.score_runs(children)
+    assert set(scorecard) == {f"P{i}" for i in range(5)}
+    for i in range(5):
+        # each identity played every global game once across the two shards
+        assert scorecard[f"P{i}"]["overall"]["n"] == N
+
+
+def test_k1_matches_plain_run(tmp_path, monkeypatch):
+    """REQ-9 / V-9 (INV-1): a K=1 sharded run yields the SAME saved games as a direct
+    run_connected_batch of the same N/seed/roster — same gids, winner_team, per-seat
+    dealt_role/end_role/won."""
+    _sqlite_store(tmp_path, monkeypatch)
+    N, seed = 3, 11
+    creds = [(f"P{i}", f"agent_{i}") for i in range(5)]
+
+    # plain run
+    store.create_connected_run({
+        "id": "plain", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": N, "players": 5, "seed_base": seed,
+    })
+    _coordinate("plain", _seat_run("plain", creds))
+
+    # K=1 sharded run with the same roster/seed/N
+    children = create_sharded_run(
+        _base_run("k1", n_games=N, players=5, seed_base=seed), 1)
+    assert children == ["k1_shard_0"]
+    _coordinate("k1_shard_0", _seat_run("k1_shard_0", creds))
+
+    assert store.get_run("k1_shard_0")["status"] == "done"
+    assert rollup_parent_status("k1") == "done"
+    assert _distinct_gids("plain") == _distinct_gids("k1_shard_0") == set(range(1, N + 1))
+    assert _outcome_by_gid("plain") == _outcome_by_gid("k1_shard_0")
+
+
+def test_equivalence_sharded_vs_unsharded(tmp_path, monkeypatch):
+    """REQ-4 / V-4 KEYSTONE: with identical roster, seed, deck, rounds and a deterministic scripted
+    policy, sharded(K) == unsharded(N) in game outcomes AND scores.
+
+    Seats are controlled by signing identities up in the SAME fixed order for the unsharded run and
+    for each child (arrival-order seating; no explicit-seat feature — that is a later step). Elo
+    equality is NOT asserted (replay order differs by design, D4)."""
+    _sqlite_store(tmp_path, monkeypatch)
+    N, seed = 6, 23
+    creds = [(f"P{i}", f"agent_{i}") for i in range(5)]
+
+    # Run A: one unsharded run of N games
+    store.create_connected_run({
+        "id": "A", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": N, "players": 5, "seed_base": seed,
+    })
+    _coordinate("A", _seat_run("A", creds))
+
+    # Run B: K=3 sharded run (children sum to N), same roster/seed/rounds/policy
+    children = create_sharded_run(
+        _base_run("B", n_games=N, players=5, seed_base=seed), 3)
+    for cid in children:
+        _coordinate(cid, _seat_run(cid, creds))
+
+    # every child done; union of gids == {1..N}, pairwise disjoint
+    child_gids = [_distinct_gids(c) for c in children]
+    assert all(store.get_run(c)["status"] == "done" for c in children)
+    assert set().union(*child_gids) == set(range(1, N + 1))
+    union_count = sum(len(s) for s in child_gids)
+    assert union_count == N  # disjoint
+
+    # per global gid the saved transcript outcome is IDENTICAL between A and B
+    a_outcomes = _outcome_by_gid("A")
+    b_outcomes: dict[int, dict] = {}
+    for c in children:
+        b_outcomes.update(_outcome_by_gid(c))
+    assert a_outcomes == b_outcomes
+
+    # scores identical per agent across overall/good/evil/by_role (w, n)
+    a_scores = score.score_run("A")
+    b_scores = score.score_runs(children)
+    assert set(a_scores) == set(b_scores)
+    for agent in a_scores:
+        for bucket in ("overall", "good", "evil"):
+            assert (a_scores[agent][bucket]["w"], a_scores[agent][bucket]["n"]) == \
+                   (b_scores[agent][bucket]["w"], b_scores[agent][bucket]["n"])
+        assert {r: (c["w"], c["n"]) for r, c in a_scores[agent]["by_role"].items()} == \
+               {r: (c["w"], c["n"]) for r, c in b_scores[agent]["by_role"].items()}
+
+
+# --- Step 9 (SPEC §6.9, D7, observer): server parent read-paths + run-creation `shards` field ---
+#
+# The observer must treat a sharded parent as ONE normal run: /api/runs hides children and lists the
+# parent; /api/runs/{parent} aggregates the children's games and scorecard; run-creation routes
+# shards>1 to create_sharded_run. Normal-run responses stay byte-identical (INV-2).
+
+
+def _save_child_game(child_id: str, gid: int) -> None:
+    """One 2-seat game on a child shard (seat 0 good agent A, seat 1 evil agent B)."""
+    transcript = {
+        "seed": 2000 + gid,
+        "winner_team": "good",
+        "outcome": {"text": f"shard game {gid}"},
+        "players": [
+            _seat(0, "Villager", "good", True),
+            _seat(1, "Werewolf", "evil", False),
+        ],
+    }
+    agents = [
+        {"name": "A", "model": "connected-agent", "agent_id": "agent_A"},
+        {"name": "B", "model": "connected-agent", "agent_id": "agent_B"},
+    ]
+    store.save_game(child_id, gid, transcript, agents)
+
+
+def _seed_parent_with_children(parent_id: str, k: int, games_per_child: int) -> list[str]:
+    """Seed a parent + K children, each with a couple of saved games on disjoint global gids
+    (stride slice g%K==shard on gid-1, matching the runner)."""
+    store.create_connected_run({
+        "id": parent_id, "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": k * games_per_child, "players": 2, "seed_base": 7,
+        "created": "2026-06-25 00:00", "created_utc": "2026-06-25T00:00:00Z",
+        "run_kind": "parent", "num_shards": k,
+    })
+    child_ids = []
+    for shard in range(k):
+        cid = f"{parent_id}_shard_{shard}"
+        store.create_connected_run({
+            "id": cid, "game": "onuw", "label": "ONUW", "status": "done",
+            "n_games": k * games_per_child, "players": 2, "seed_base": 7,
+            "created": "2026-06-25 00:00", "created_utc": "2026-06-25T00:00:00Z",
+            "run_kind": "child", "parent_run_id": parent_id,
+            "shard_index": shard, "num_shards": k,
+        })
+        # global gids striped to this shard: 1-indexed gid with (gid-1) % k == shard
+        for i in range(games_per_child):
+            gid = shard + 1 + i * k
+            _save_child_game(cid, gid)
+        child_ids.append(cid)
+    return child_ids
+
+
+def test_api_runs_index_shows_parent_hides_children(tmp_path, monkeypatch):
+    """SPEC D7 / §6.9(a): GET /api/runs lists the parent (presented as one normal run) and never the
+    children; a plain normal run still appears, unchanged."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.create_connected_run({
+        "id": "plain_idx", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 2, "players": 2, "seed_base": 1,
+    })
+    children = _seed_parent_with_children("parent_idx", 2, 2)
+
+    with TestClient(app) as client:
+        rows = client.get("/api/runs").json()
+    ids = {r["id"] for r in rows}
+    assert "parent_idx" in ids          # parent shows
+    assert "plain_idx" in ids           # normal run shows
+    assert ids.isdisjoint(set(children))  # children hidden
+
+
+def test_api_run_parent_aggregates_children(tmp_path, monkeypatch):
+    """SPEC D7 / §6.9(a): GET /api/runs/{parent} returns the UNION of the children's games and an
+    aggregated scorecard (score_runs across children)."""
+    _sqlite_store(tmp_path, monkeypatch)
+    children = _seed_parent_with_children("parent_agg", 2, 2)  # gids 1,3 on shard0; 2,4 on shard1
+
+    with TestClient(app) as client:
+        detail = client.get("/api/runs/parent_agg").json()
+
+    # union of games across both children: global gids 1..4, no duplicates, ordered
+    gids = [g["gid"] for g in detail["games"]]
+    assert gids == [1, 2, 3, 4]
+    # aggregated scorecard: each agent played every global game once across shards
+    assert detail["scores"]["A"]["overall"]["n"] == 4
+    assert detail["scores"]["B"]["overall"]["n"] == 4
+    # status rolls up across children (both done -> done)
+    assert detail["status"] == "done"
+
+
+def test_api_run_normal_unchanged(tmp_path, monkeypatch):
+    """INV-2: a normal run's /api/runs/{id} response is unaffected by the parent-aggregation path."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.create_connected_run({
+        "id": "plain_detail", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 2, "players": 2, "seed_base": 1,
+    })
+    _save_child_game("plain_detail", 1)
+    _save_child_game("plain_detail", 2)
+
+    with TestClient(app) as client:
+        detail = client.get("/api/runs/plain_detail").json()
+    assert [g["gid"] for g in detail["games"]] == [1, 2]
+    assert detail["scores"]["A"]["overall"]["n"] == 2
+    assert detail["status"] == "open"
+
+
+def test_api_run_parent_game_transcript(tmp_path, monkeypatch):
+    """SPEC §6.9(a): a parent's per-game transcript resolves across children (the game lives on a
+    child run_id, but the observer asks the parent)."""
+    _sqlite_store(tmp_path, monkeypatch)
+    _seed_parent_with_children("parent_tx", 2, 2)  # gid 2 lives on shard_1
+    with TestClient(app) as client:
+        tx = client.get("/api/runs/parent_tx/games/2").json()
+    assert tx["winner_team"] == "good"
+    assert tx["outcome"]["text"] == "shard game 2"
+
+
+def test_api_create_run_routes_shards_to_sharded(tmp_path, monkeypatch):
+    """SPEC §6.9(a): POST /api/runs with connected + shards>1 creates a parent + K children via
+    create_sharded_run; shards<=1 keeps today's single-run behavior (INV-2)."""
+    _sqlite_store(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        resp = client.post("/api/runs", json={
+            "connected": True, "game": "onuw", "players": 5, "games": 6,
+            "seed": 42, "run_id": "shardy", "shards": 3,
+        })
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+    assert body["run_id"] == "shardy"
+    assert body.get("shards") == 3
+    parent = store.get_run("shardy")
+    assert parent["run_kind"] == "parent" and parent["num_shards"] == 3
+    children = store.child_run_ids("shardy")
+    assert children == ["shardy_shard_0", "shardy_shard_1", "shardy_shard_2"]
+    for k, cid in enumerate(children):
+        ch = store.get_run(cid)
+        assert ch["run_kind"] == "child" and ch["shard_index"] == k
+        assert int(ch["n_games"]) == 6  # GLOBAL N on each child (D8)
+    # the parent is never publicly discoverable / joinable (INV-4)
+    open_ids = {r["run_id"] for r in store.list_open_runs()}
+    assert "shardy" not in open_ids and open_ids.isdisjoint(set(children))
+
+
+def test_api_create_run_shards_one_is_single_run(tmp_path, monkeypatch):
+    """INV-2: shards omitted or 1 -> a plain single connected run, no parent/child rows."""
+    _sqlite_store(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        resp = client.post("/api/runs", json={
+            "connected": True, "game": "onuw", "players": 5, "games": 4,
+            "seed": 7, "run_id": "single",
+        })
+        assert resp.status_code == 200, resp.text
+    row = store.get_run("single")
+    assert row["run_kind"] == "normal"
+    assert row["parent_run_id"] is None and row["num_shards"] is None
+    assert store.child_run_ids("single") == []
+
+
+# --- Step 9 (SPEC §6.9(b)): launcher --shards wiring (light; real bring-up is the Modal smoke) ---
+
+
+def test_launcher_shards_creates_parent_and_children(tmp_path, monkeypatch):
+    """SPEC §6.9(b): tools/coding_agent_run with --shards K calls create_sharded_run with K and the
+    K children exist; the per-shard subprocess bring-up is covered by the manual Modal smoke, so we
+    stub the spawn/monitor and assert only the orchestration plumbing."""
+    _sqlite_store(tmp_path, monkeypatch)
+    import tools.coding_agent_run as launcher
+
+    seen = {}
+    real_create = launcher.create_sharded_run
+
+    def spy_create(parent_cfg, k):
+        seen["k"] = k
+        seen["parent_id"] = parent_cfg["id"]
+        return real_create(parent_cfg, k)
+
+    monkeypatch.setattr(launcher, "create_sharded_run", spy_create)
+    # never touch the network / spawn real subprocesses / block-monitor in a light test; the real
+    # cred pre-registration + subprocess bring-up is covered by the manual Modal smoke (V-10).
+    monkeypatch.setattr(launcher, "_pre_register_creds", lambda *a, **k: {})
+    monkeypatch.setattr(launcher, "_spawn_shard_hosts", lambda *a, **k: [])
+    monkeypatch.setattr(launcher, "_monitor_shards", lambda *a, **k: "done")
+
+    rc = launcher.main([
+        "--run-id", "L", "--games", "6", "--rounds", "2", "--shards", "3",
+        "--server", "http://127.0.0.1:8000", "--ready-timeout", "0.1",
+    ])
+    assert rc == 0
+    assert seen["k"] == 3 and seen["parent_id"] == "L"
+    parent = store.get_run("L")
+    assert parent["run_kind"] == "parent" and parent["num_shards"] == 3
+    assert store.child_run_ids("L") == ["L_shard_0", "L_shard_1", "L_shard_2"]

@@ -33,14 +33,12 @@ def _cell(w: int, n: int) -> dict:
     return {"w": w, "n": n, "rate": round(p, 3), "lo": round(lo, 3), "hi": round(hi, 3)}
 
 
-def score_run(run_id: str) -> dict:
-    """agent -> scorecard.
+def _aggregate_rows(rows: list[dict]) -> dict:
+    """agent -> scorecard, from a flat list of game_players rows.
 
-    Each scorecard has {w,n,rate,lo,hi} cells for `overall`, `good`, `evil`, plus a `by_role`
-    map of {dealt_role: cell} (the realized per-role histogram is visible as each cell's n), and
-    reliability fields {calls, forfeits, forfeit_rate}.
+    Rows are grouped by `gid`; child shards carry DISJOINT global gids (SPEC D8), so unioning
+    rows across multiple runs and grouping by gid is correct — no game is split or double-counted.
     """
-    rows = store.player_rows(run_id)
     games: dict[int, list[dict]] = {}
     for r in rows:
         games.setdefault(r["gid"], []).append(r)
@@ -79,3 +77,23 @@ def score_run(run_id: str) -> dict:
             "forfeit_rate": round(forfeits / calls, 3) if calls else 0.0,
         }
     return out
+
+
+def score_runs(run_ids: list[str]) -> dict:
+    """agent -> scorecard, aggregated across several runs (SPEC §6.3 / REQ-2).
+
+    Unions `store.player_rows` over every run id, then runs the same per-agent aggregation as a
+    single run. Used to present a sharded parent run (its child shards have disjoint global gids)
+    as one logical scorecard. Each scorecard has {w,n,rate,lo,hi} cells for `overall`, `good`,
+    `evil`, a `by_role` map of {dealt_role: cell}, and reliability fields {calls, forfeits,
+    forfeit_rate}.
+    """
+    rows: list[dict] = []
+    for run_id in run_ids:
+        rows.extend(store.player_rows(run_id))
+    return _aggregate_rows(rows)
+
+
+def score_run(run_id: str) -> dict:
+    """agent -> scorecard for a single run (see `score_runs`)."""
+    return score_runs([run_id])

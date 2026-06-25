@@ -42,7 +42,8 @@ SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
   players INTEGER, seed_base INTEGER, created TEXT, agents_json TEXT,
-  submitter TEXT, created_utc TEXT, deck_preset TEXT, metadata_json TEXT
+  submitter TEXT, created_utc TEXT, deck_preset TEXT, metadata_json TEXT,
+  run_kind TEXT DEFAULT 'normal', parent_run_id TEXT, shard_index INTEGER, num_shards INTEGER
 );
 CREATE TABLE IF NOT EXISTS games (
   run_id TEXT, gid INTEGER, seed INTEGER, winner_team TEXT, line TEXT,
@@ -70,6 +71,7 @@ CREATE TABLE IF NOT EXISTS run_signups (
   id TEXT PRIMARY KEY, run_id TEXT, agent_id TEXT, status TEXT, seat INTEGER,
   created_utc TEXT, updated_utc TEXT, waiting_expires_utc TEXT, ready_deadline_utc TEXT,
   last_poll_utc TEXT, last_event_id TEXT, max_concurrent_turns INTEGER DEFAULT 1,
+  roster_index INTEGER,
   UNIQUE (run_id, agent_id)
 );
 CREATE TABLE IF NOT EXISTS run_events (
@@ -108,7 +110,8 @@ PG_SCHEMA_STMTS = [
          id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
          players INTEGER, seed_base BIGINT, created TEXT, agents_json TEXT,
          submitter TEXT, created_utc TEXT, deck_preset TEXT, coordinator_url TEXT,
-         metadata_json TEXT
+         metadata_json TEXT,
+         run_kind TEXT DEFAULT 'normal', parent_run_id TEXT, shard_index INTEGER, num_shards INTEGER
        )""",
     """CREATE TABLE IF NOT EXISTS games (
          run_id TEXT, gid INTEGER, seed BIGINT, winner_team TEXT, line TEXT,
@@ -136,6 +139,7 @@ PG_SCHEMA_STMTS = [
          id TEXT PRIMARY KEY, run_id TEXT, agent_id TEXT, status TEXT, seat INTEGER,
          created_utc TEXT, updated_utc TEXT, waiting_expires_utc TEXT, ready_deadline_utc TEXT,
          last_poll_utc TEXT, last_event_id TEXT, max_concurrent_turns INTEGER DEFAULT 1,
+         roster_index INTEGER,
          UNIQUE (run_id, agent_id)
        )""",
     """CREATE TABLE IF NOT EXISTS run_events (
@@ -175,20 +179,28 @@ _MIGRATIONS = {
     "game_players": [("calls", "INTEGER DEFAULT 0"), ("forfeits", "INTEGER DEFAULT 0"),
                      ("agent_id", "TEXT"), ("signup_id", "TEXT")],
     "runs": [("submitter", "TEXT"), ("created_utc", "TEXT"), ("deck_preset", "TEXT"),
-             ("coordinator_url", "TEXT"), ("metadata_json", "TEXT")],
+             ("coordinator_url", "TEXT"), ("metadata_json", "TEXT"),
+             ("run_kind", "TEXT DEFAULT 'normal'"), ("parent_run_id", "TEXT"),
+             ("shard_index", "INTEGER"), ("num_shards", "INTEGER")],
     "jobs": [("deck_preset", "TEXT")],
     "agents": [("declared_model", "TEXT"), ("declared_harness", "TEXT")],
+    "run_signups": [("roster_index", "INTEGER")],
 }
 
 PG_MIGRATION_STMTS = [
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS coordinator_url TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS metadata_json TEXT",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_kind TEXT DEFAULT 'normal'",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS shard_index INTEGER",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS num_shards INTEGER",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS agent_id TEXT",
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS signup_id TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_model TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_harness TEXT",
+    "ALTER TABLE run_signups ADD COLUMN IF NOT EXISTS roster_index INTEGER",
     # Dedup duplicate (run_id,gid,seat) rows, then add the unique index the JS import path needs for
     # ON CONFLICT (run_id,gid,seat) DO NOTHING. Use CREATE UNIQUE INDEX IF NOT EXISTS (idempotent on
     # re-run) rather than ALTER TABLE ADD CONSTRAINT (no IF NOT EXISTS in PG; re-run would throw).
@@ -371,8 +383,8 @@ def save_run(meta: dict):
     metadata_json = json.dumps(meta.get("metadata") or {}) if "metadata" in meta else None
     with conn() as c:
         c.execute(
-            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
+            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json,run_kind,parent_run_id,shard_index,num_shards) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
             f"ON CONFLICT (id) DO UPDATE SET "
             f"  game=excluded.game, label=excluded.label, "
             f"  status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END, "
@@ -380,11 +392,15 @@ def save_run(meta: dict):
             f"  created=excluded.created, agents_json=excluded.agents_json, "
             f"  submitter=excluded.submitter, created_utc=excluded.created_utc, "
             f"  deck_preset=excluded.deck_preset, "
-            f"  metadata_json=COALESCE(excluded.metadata_json, runs.metadata_json)",
+            f"  metadata_json=COALESCE(excluded.metadata_json, runs.metadata_json), "
+            f"  run_kind=excluded.run_kind, parent_run_id=excluded.parent_run_id, "
+            f"  shard_index=excluded.shard_index, num_shards=excluded.num_shards",
             (meta["id"], meta["game"], meta["label"], meta["status"], meta["n_games"],
              meta["players"], meta["seed_base"], meta["created"], json.dumps(meta["agents"]),
              meta.get("submitter"), meta.get("created_utc"), meta.get("deck_preset"),
-             metadata_json),
+             metadata_json,
+             meta.get("run_kind") or "normal", meta.get("parent_run_id"),
+             meta.get("shard_index"), meta.get("num_shards")),
         )
 
 
@@ -614,6 +630,16 @@ def player_rows(run_id: str) -> list[dict]:
             f"SELECT gid, seat, agent, agent_id, signup_id, model, team, won, dealt_role, end_role, calls, forfeits "
             f"FROM game_players WHERE run_id={ph}", (run_id,)).fetchall()
         return [dict(r) for r in rows]
+
+
+def child_run_ids(parent_id: str) -> list[str]:
+    """The shard child run ids for a parent, in shard order. Empty for a non-parent id."""
+    ph = _ph()
+    with conn() as c:
+        rows = c.execute(
+            f"SELECT id FROM runs WHERE parent_run_id={ph} ORDER BY shard_index", (parent_id,)
+        ).fetchall()
+        return [r["id"] for r in rows]
 
 
 # --- rating engine I/O (consumed by arena/rating.py) ------------------------------------------
@@ -875,6 +901,10 @@ def create_connected_run(meta: dict) -> dict:
         "agents": meta.get("agents", []),
         "deck_preset": meta.get("deck_preset"),
         "metadata": meta.get("metadata") or {},
+        "run_kind": meta.get("run_kind") or "normal",
+        "parent_run_id": meta.get("parent_run_id"),
+        "shard_index": meta.get("shard_index"),
+        "num_shards": meta.get("num_shards"),
     })
     return get_run(run_id)
 
@@ -890,6 +920,9 @@ def list_open_runs(game: str | None = None) -> list[dict]:
         for row in rows:
             r = dict(row)
             if r["status"] not in OPEN_RUN_STATUSES:
+                continue
+            # INV-4: shard parents/children are never publicly discoverable or joinable.
+            if (r.get("run_kind") or "normal") != "normal":
                 continue
             signed = c.execute(
                 f"SELECT COUNT(*) n FROM run_signups WHERE run_id={ph} "
@@ -983,22 +1016,35 @@ def _maybe_ready_required(c, run_id: str, ready_deadline_seconds: int = 60) -> N
         c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("waiting", run_id))
         return
     deadline = _utc_after(ready_deadline_seconds)
-    for seat, signup in enumerate(signups[:int(run["players"])]):
+    seated = signups[:int(run["players"])]
+    # Deterministic explicit seats (SPEC D5/REQ-7): if EVERY seated signup carries a roster_index,
+    # the orchestrator chose the seats — assign by that index. Otherwise fall back to arrival order
+    # (enumerate over created_utc,id), byte-identical to the pre-sharding behavior (INV-2).
+    if seated and all(s.get("roster_index") is not None for s in seated):
+        seat_of = {s["id"]: int(s["roster_index"]) for s in seated}
+    else:
+        seat_of = {s["id"]: seat for seat, s in enumerate(seated)}
+    for signup in seated:
         if signup["status"] == "waiting":
             c.execute(
                 f"UPDATE run_signups SET status={ph}, seat={ph}, ready_deadline_utc={ph}, updated_utc={ph} "
                 f"WHERE id={ph}",
-                ("ready_required", seat, deadline, _utcnow(), signup["id"]),
+                ("ready_required", seat_of[signup["id"]], deadline, _utcnow(), signup["id"]),
             )
     c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("ready_required", run_id))
     _refresh_run_roster(c, run_id, _active_signups(c, run_id)[:int(run["players"])])
 
 
 def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
-                  waiting_seconds: int = 600) -> tuple[dict | None, str | None]:
+                  waiting_seconds: int = 600, seat: int | None = None) -> tuple[dict | None, str | None]:
     """Create or return this agent's active signup for a run.
 
     Returns (signup, error_reason). error_reason is one of run_not_found, run_full, run_not_open.
+
+    `seat` is an OPTIONAL explicit seat index (the orchestrator's deterministic-seat request, SPEC
+    D5/REQ-7). It is stored as `roster_index` and honored by `_maybe_ready_required` when EVERY
+    active signup carries one; otherwise seating stays arrival-order (INV-2). It does NOT change
+    `run_full`/`run_not_open` semantics — placement is resolved at fill time, not on insert.
     """
     now, ph = _utcnow(), _ph()
     with conn() as c:
@@ -1028,10 +1074,12 @@ def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
         signup_id = f"signup_{uuid.uuid4().hex[:16]}"
         c.execute(
             f"INSERT INTO run_signups (id,run_id,agent_id,status,seat,created_utc,updated_utc,"
-            f"waiting_expires_utc,ready_deadline_utc,last_poll_utc,last_event_id,max_concurrent_turns) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+            f"waiting_expires_utc,ready_deadline_utc,last_poll_utc,last_event_id,max_concurrent_turns,"
+            f"roster_index) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
             (signup_id, run_id, agent_id, "waiting", None, now, now, _utc_after(waiting_seconds),
-             None, None, None, int(max_concurrent_turns)),
+             None, None, None, int(max_concurrent_turns),
+             int(seat) if seat is not None else None),
         )
         _maybe_ready_required(c, run_id)
         return _rowdict(c.execute(f"SELECT * FROM run_signups WHERE id={ph}", (signup_id,)).fetchone()), None

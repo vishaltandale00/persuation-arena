@@ -176,6 +176,108 @@ def _action_for(turn):
     raise AssertionError(kind)
 
 
+# --- REQ-5 / V-5: identity linkage — one competitor across K shards (shared creds) ------------
+
+
+def _seat_run_shared(run_id, creds):
+    """Sign up an ordered roster of (display_name, agent_id) and ready them. The SAME agent_id may
+    be reused across runs (shared credentials, REQ-5/D9) — register once, reuse thereafter."""
+    agent_by_signup = {}
+    for name, agent_id in creds:
+        if store.get_agent(agent_id) is None:
+            store.register_agent(name, f"hash_{agent_id}", "arena-agent-v1", "test", agent_id=agent_id)
+        signup, err = store.create_signup(run_id, agent_id)
+        assert err is None, err
+        agent_by_signup[signup["id"]] = agent_id
+    for signup_id, agent_id in agent_by_signup.items():
+        store.mark_signup_ready(signup_id, agent_id)
+    return agent_by_signup
+
+
+def _coordinate_shared(run_id, agent_by_signup):
+    from arena.connected import run_connected_batch
+    stop = threading.Event()
+
+    def responder():
+        while not stop.is_set():
+            for signup_id, agent_id in agent_by_signup.items():
+                turn = store.pending_turn_for_signup(signup_id)
+                if turn:
+                    store.reply_to_turn(turn["id"], agent_id, _action_for(turn), "scripted", 1)
+            if {s["status"] for s in store.list_run_signups(run_id)} == {"completed"}:
+                return
+            time.sleep(0.005)
+
+    thread = threading.Thread(target=responder)
+    thread.start()
+    try:
+        run_connected_batch(run_id, discussion_rounds=1)
+    finally:
+        stop.set()
+    thread.join(timeout=5)
+
+
+def test_shared_creds_one_competitor(tmp_path, monkeypatch):
+    """REQ-5 / V-5: with shared credentials, one agent_id appears in EVERY child's game_players, and
+    score_runs(children) shows that agent with overall.n == its full N game count (one competitor)."""
+    from arena.score import score_runs
+    from arena.sharded import create_sharded_run
+    _sqlite(tmp_path, monkeypatch)
+    N = 5
+    children = create_sharded_run({
+        "id": "P", "game": "onuw", "label": "ONUW", "n_games": N, "players": 5,
+        "seed_base": 11, "created_utc": "2026-06-25T00:00:00Z",
+    }, 2)
+    creds = [(f"P{i}", f"agent_{i}") for i in range(5)]
+    for cid in children:
+        _coordinate_shared(cid, _seat_run_shared(cid, creds))
+
+    # the SAME agent_id is present in every child's game_players
+    for _, agent_id in creds:
+        for cid in children:
+            child_agent_ids = {r["agent_id"] for r in store.player_rows(cid)}
+            assert agent_id in child_agent_ids, f"{agent_id} absent from {cid}"
+
+    scorecard = score_runs(children)
+    assert set(scorecard) == {f"P{i}" for i in range(5)}
+    for i in range(5):
+        # one competitor spanning both shards: every global game once
+        assert scorecard[f"P{i}"]["overall"]["n"] == N
+
+
+def test_unshared_creds_fracture(tmp_path, monkeypatch):
+    """REQ-5 / V-5 negative: distinct agent_ids per shard => the competitor FRACTURES into K, each
+    with ~N/K games. Proves shared creds are the load-bearing linchpin of cross-shard linkage."""
+    from arena.score import score_runs
+    from arena.sharded import create_sharded_run
+    _sqlite(tmp_path, monkeypatch)
+    N = 6
+    children = create_sharded_run({
+        "id": "Pf", "game": "onuw", "label": "ONUW", "n_games": N, "players": 5,
+        "seed_base": 13, "created_utc": "2026-06-25T00:00:00Z",
+    }, 2)
+    # distinct agent_ids per shard for each roster slot -> fracture
+    per_child_agent_ids = {}
+    for k, cid in enumerate(children):
+        creds = [(f"S{k}P{i}", f"agent_s{k}_{i}") for i in range(5)]
+        per_child_agent_ids[cid] = {a for _, a in creds}
+        _coordinate_shared(cid, _seat_run_shared(cid, creds))
+
+    # no agent_id is shared across children
+    ids0, ids1 = per_child_agent_ids[children[0]], per_child_agent_ids[children[1]]
+    assert ids0 & ids1 == set()
+
+    scorecard = score_runs(children)
+    # 5 slots x 2 shards = 10 distinct competitors (vs 5 if creds were shared)
+    assert len(scorecard) == 10
+    gids0 = {r["gid"] for r in store.player_rows(children[0])}
+    gids1 = {r["gid"] for r in store.player_rows(children[1])}
+    # each fractured competitor only played its own shard's slice (~N/K), never the full N
+    for name, card in scorecard.items():
+        assert card["overall"]["n"] in (len(gids0), len(gids1))
+        assert card["overall"]["n"] < N  # fractured: strictly fewer than the full game count
+
+
 def test_connected_game_writes_agent_id_rows(tmp_path, monkeypatch):
     from arena.connected import run_connected_batch
     _sqlite(tmp_path, monkeypatch)

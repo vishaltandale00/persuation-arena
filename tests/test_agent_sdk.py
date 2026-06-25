@@ -93,6 +93,98 @@ def test_http_client_retries_transient_status_with_retry_after(monkeypatch):
     assert sleeps == [0.25]
 
 
+def test_single_shard_host_routes_to_own_coordinator(tmp_path, monkeypatch):
+    """REQ-6 / V-6: a single-shard agent host holds signups for EXACTLY one run and routes
+    ready/poll/reply to THAT run's coordinator URL only (per-process isolation, D9). It never
+    accumulates a second run's signup, and never touches another run's coordinator."""
+    central = "https://central.test"
+    coord = "https://shard-7-coordinator.test"
+    requests_by_host: dict[str, list[str]] = {}
+
+    def record(request: httpx.Request):
+        requests_by_host.setdefault(request.url.host, []).append(request.url.path)
+
+    def central_handler(request: httpx.Request) -> httpx.Response:
+        record(request)
+        if request.url.path == "/api/agents/register":
+            return httpx.Response(200, json={"agent_id": "agent_1", "agent_token": "pa_live_token",
+                                             "protocol_version": "arena-agent-v1"})
+        if request.url.path == "/api/runs/run_7/signups":
+            # the signup carries this run's coordinator URL -> the host must repoint to it
+            return httpx.Response(200, json={"signup_id": "signup_7", "run_id": "run_7",
+                                             "agent_id": "agent_1", "status": "ready_required",
+                                             "coordinator_url": coord})
+        if request.url.path == "/api/signups/signup_7" and request.method == "GET":
+            # status (central) still ready_required -> the host marks ready at the COORDINATOR
+            return httpx.Response(200, json={"signup_id": "signup_7", "run_id": "run_7",
+                                             "agent_id": "agent_1", "status": "ready_required",
+                                             "coordinator_url": coord})
+        return httpx.Response(404, json={"path": request.url.path})
+
+    def coord_handler(request: httpx.Request) -> httpx.Response:
+        record(request)
+        if request.url.path == "/api/signups/signup_7/ready":
+            return httpx.Response(200, json={"signup_id": "signup_7", "run_id": "run_7",
+                                             "agent_id": "agent_1", "status": "active",
+                                             "coordinator_url": coord})
+        if request.url.path == "/api/signups/signup_7/poll":
+            turn = {
+                "turn_id": "turn_7", "game_instance_id": "game_1", "game": "onuw", "seat": 0,
+                "phase": "discussion", "action_kind": "onuw.discussion.speak_or_pass",
+                "deadline_at": "2026-06-25T00:00:00Z",
+                "observation": {"format": "text", "text": "speak"},
+                "legal_action": {"schema": {}, "choices": {}},
+            }
+            return httpx.Response(200, json={"signup_id": "signup_7", "run_id": "run_7",
+                                             "run_status": "active", "events": [], "turn": turn,
+                                             "poll_after_ms": 250})
+        if request.url.path == "/api/turns/turn_7/reply":
+            return httpx.Response(200, json={"ok": True, "accepted": True})
+        return httpx.Response(404, json={"path": request.url.path})
+
+    central_client = ArenaHttpClient(central, transport=httpx.MockTransport(central_handler))
+
+    # _maybe_repoint builds ArenaHttpClient(coordinator_url) with no transport (real network). Pin
+    # the coordinator client to its own mock transport so routing is observable without a network.
+    real_ctor = ArenaHttpClient
+
+    def patched_ctor(server, *args, **kwargs):
+        if server == coord and "transport" not in kwargs:
+            kwargs["transport"] = httpx.MockTransport(coord_handler)
+        return real_ctor(server, *args, **kwargs)
+
+    monkeypatch.setattr("persuasion_arena_agent.agent.ArenaHttpClient", patched_ctor)
+
+    agent = ArenaAgent("agent", central, CredentialsStore(tmp_path / "credentials.json"),
+                       central_client)
+
+    @agent.act
+    def act(turn):
+        return {"action": {"speak": "hi"}, "reasoning": "test"}
+
+    signup = agent.signup(run_id="run_7")
+    # repointed to THIS run's coordinator on signup
+    assert agent._coord_client is not None
+    assert agent._coord_client.server == coord
+    agent.run_once([signup])
+
+    # the host holds exactly one signup (per-process isolation: never accumulates cross-run signups)
+    assert set(agent._last_event_by_signup) == {"signup_7"}
+    assert len(agent._last_event_by_signup) == 1
+
+    # gameplay (ready/poll/reply) went to the OWN coordinator host only; never to another coordinator
+    coord_host = httpx.URL(coord).host
+    central_host = httpx.URL(central).host
+    assert "/api/signups/signup_7/poll" in requests_by_host[coord_host]
+    assert "/api/turns/turn_7/reply" in requests_by_host[coord_host]
+    assert "/api/signups/signup_7/ready" in requests_by_host[coord_host]
+    # no gameplay leaked onto the central API; only register/signup/status live there
+    assert not any(p.endswith(("/poll", "/reply", "/ready"))
+                   for p in requests_by_host.get(central_host, []))
+    # exactly two hosts were contacted: the central API and this run's single coordinator
+    assert set(requests_by_host) == {central_host, coord_host}
+
+
 def test_arena_agent_ready_poll_act_and_event_cursor(tmp_path):
     path = tmp_path / "credentials.json"
     calls = {"polls": [], "acts": 0}
