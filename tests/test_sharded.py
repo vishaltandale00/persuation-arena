@@ -848,3 +848,61 @@ def test_api_runs_index_normal_row_unchanged(tmp_path, monkeypatch):
     prow = {r["id"]: r for r in rows}["plain_idx_row"]
     assert prow["status"] == "open"
     assert prow["teamSplit"] == {"good": 1, "evil": 0}
+
+
+def test_create_connected_run_shards_response_returns_usable_join_token(tmp_path, monkeypatch):
+    """codex P1 / SPEC D7: POSTing a connected creation with shards>1 must hand back the
+    per-parent join token so an API-driven orchestrator can sign agents into the child shards.
+    The returned token must (a) match the secret on the child rows and (b) actually authorize a
+    child signup, while a wrong/absent token is rejected."""
+    _sqlite_store(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        created = client.post("/api/runs", json={
+            "connected": True, "run_id": "run_shards_tok", "game": "onuw",
+            "players": 5, "games": 4, "seed": 4242, "shards": 2,
+        })
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["shards"] == 2
+        child_ids = body["child_run_ids"]
+        assert len(child_ids) == 2
+        # the response carries the join token
+        token = body["join_token"]
+        assert token
+        # it matches the secret actually stored on every child row (and the parent)
+        for cid in child_ids:
+            assert store.get_run(cid)["join_token"] == token
+        assert store.get_run("run_shards_tok")["join_token"] == token
+
+        # the returned token authorizes a child signup; a wrong/absent token is rejected
+        store.register_agent("Shard Agent", "hash_shard_agent", "arena-agent-v1", "test",
+                             agent_id="agent_shard")
+        child = child_ids[0]
+        bad, err_bad = store.create_signup(child, "agent_shard", join_token="not-the-token")
+        assert bad is None and err_bad == "run_not_joinable"
+        missing, err_missing = store.create_signup(child, "agent_shard")
+        assert missing is None and err_missing == "run_not_joinable"
+        ok, err_ok = store.create_signup(child, "agent_shard", join_token=token)
+        assert ok is not None and err_ok is None
+
+
+def test_create_connected_run_normal_response_unchanged(tmp_path, monkeypatch):
+    """INV-2: a normal (shards=1 / absent) connected creation response is byte-identical and must
+    NOT leak any join_token / shard fields."""
+    _sqlite_store(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        absent = client.post("/api/runs", json={
+            "connected": True, "run_id": "run_plain_noshard", "game": "onuw",
+            "players": 5, "games": 4, "seed": 4242,
+        })
+        one = client.post("/api/runs", json={
+            "connected": True, "run_id": "run_plain_oneshard", "game": "onuw",
+            "players": 5, "games": 4, "seed": 4242, "shards": 1,
+        })
+    assert absent.status_code == 200 and one.status_code == 200
+    for body in (absent.json(), one.json()):
+        assert "join_token" not in body
+        assert "shards" not in body
+        assert "child_run_ids" not in body
+        assert set(body) == {"run_id", "status", "game", "games", "players", "rounds",
+                             "deck_preset", "run_config"}

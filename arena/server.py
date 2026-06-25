@@ -407,12 +407,17 @@ def _create_connected_run(payload: dict) -> dict:
             child_ids = sharded.create_sharded_run(run_config, shards)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        join_token = None
         for cid in child_ids:
             child_run = store.get_run(cid)
+            # Every child carries the SAME per-parent secret (arena/sharded.py:create_sharded_run).
+            # Surface it so an API-driven orchestrator can sign agents into the child shards — the
+            # response only ever exposed child run ids, leaving externally-driven runs unjoinable.
+            join_token = child_run.get("join_token")
             _spawn_coordinator(child_run, rounds)  # one coordinator per shard (no-op unless Modal)
         return {"run_id": run_id, "status": "open", "game": game, "games": games,
                 "players": players, "rounds": rounds, "deck_preset": deck_preset,
-                "shards": shards, "child_run_ids": child_ids,
+                "shards": shards, "child_run_ids": child_ids, "join_token": join_token,
                 "run_config": _run_config_meta(caps, rounds)}
     store.create_connected_run(run_config)
     _spawn_coordinator(run_config, rounds)  # no-op unless ARENA_MODAL_COORDINATOR
