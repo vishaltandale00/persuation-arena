@@ -12,6 +12,19 @@ export async function q(text, params = []) {
   return await sql.query(text, params);
 }
 
+/**
+ * Build a NeonQueryPromise WITHOUT awaiting it, for composing a non-interactive transaction.
+ * (Awaiting sql.query directly — as q() does — sends it immediately and defeats atomicity.)
+ */
+export function stmt(text, params = []) {
+  return sql.query(text, params);
+}
+
+/** Run an array of stmt()-built queries as ONE non-interactive HTTP transaction. */
+export async function tx(queries) {
+  return await sql.transaction(queries);
+}
+
 export const PROTOCOL_VERSION = 'arena-agent-v1';
 export const OPEN_RUN_STATUSES = ['open', 'waiting', 'ready_required'];
 

@@ -277,6 +277,42 @@ identity-linkage migration have no `agent_id` and cannot be backfilled — the t
 fresh from games played after the upgrade (older games still rate by model:harness). Competitors
 under 30 games are flagged `provisional` and ranked by a conservative lower bound (`elo − 2·rd`).
 
+## Uploading Local Runs (`arena push`)
+
+A full **static/local** run lands in the local SQLite store (`store/arena.db`). To publish a finished
+run to the production Neon/Vercel leaderboard, use `arena push` — it reads the local store, diffs
+against what the board already has, uploads only the missing games to `POST /api/runs/import`, then
+rebuilds the prod ratings.
+
+```bash
+export ARENA_INGEST_TOKEN=<your-team-token>     # bearer for the import endpoint (never pass as a flag)
+uv run python -m arena.cli push --run run_222285 --dry-run   # preview: what would upload, no writes
+uv run python -m arena.cli push --run run_222285             # upload missing games + recompute
+uv run python -m arena.cli push --all                        # every local run with status done/partial
+```
+
+This is a **trusted-contributor** path: the bearer token gates *who* may push, not *what* they push
+(results are stored as reported — no server-side re-simulation). Re-running `push` is idempotent
+(first-writer-wins on `(run_id, gid)`; the import endpoint upserts with `ON CONFLICT DO NOTHING`).
+
+**Required environment / ops hygiene:**
+
+- `ARENA_INGEST_TOKEN` (CLI side) — sourced from the env only, never a `--token` flag (keeps it out of
+  shell history / process listings).
+- `ARENA_INGEST_TOKENS` (server side, Vercel) — `owner=token[,owner2=token2]` pairs. The import
+  endpoint **fails closed**: if this is unset/empty/malformed it returns `401`/`503` for everyone.
+- **Scope `ARENA_INGEST_TOKENS` and `DATABASE_URL` to the Vercel _Production_ environment ONLY.** A
+  Preview deploy that inherits these would expose a public, lower-trust surface with prod write access.
+- Run the `game_players_rgs_uq` unique-index migration (`PG_MIGRATION_STMTS`) against prod Neon once
+  before the first push so the `ON CONFLICT (run_id,gid,seat)` path has its constraint.
+
+The recompute step is guarded against disaster: it snapshots the current ratings to
+`arena-backup-*-pre-recompute.json` first, and **aborts** (leaving prod ratings untouched) if the
+local store is empty or the prod `game_players` count would shrink versus the pre-upload baseline. It
+also pins `search_path` (default `public`) and raises the statement timeout so a large replay neither
+times out nor silently writes to a schema the live board can't read. Use `--no-recompute` to upload
+without rebuilding.
+
 ## Tests
 
 ```bash

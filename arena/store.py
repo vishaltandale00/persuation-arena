@@ -187,6 +187,13 @@ PG_MIGRATION_STMTS = [
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS signup_id TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_model TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_harness TEXT",
+    # Dedup duplicate (run_id,gid,seat) rows, then add the unique index the JS import path needs for
+    # ON CONFLICT (run_id,gid,seat) DO NOTHING. Use CREATE UNIQUE INDEX IF NOT EXISTS (idempotent on
+    # re-run) rather than ALTER TABLE ADD CONSTRAINT (no IF NOT EXISTS in PG; re-run would throw).
+    "DELETE FROM game_players a USING game_players b "
+    "WHERE a.ctid < b.ctid AND a.run_id=b.run_id AND a.gid=b.gid AND a.seat=b.seat",
+    "CREATE UNIQUE INDEX IF NOT EXISTS game_players_rgs_uq "
+    "ON game_players (run_id,gid,seat)",
 ]
 
 
@@ -247,6 +254,22 @@ def _migrate(c: sqlite3.Connection) -> None:
         for name, decl in cols:
             if name not in have:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    # Enforce one row per (run_id,gid,seat) so re-pushing a game is idempotent (the JS import path
+    # relies on ON CONFLICT (run_id,gid,seat)). Once the index exists it guarantees no duplicates, so
+    # do the (DML-issuing) dedup ONLY on first creation — running a DELETE on every conn() would leave
+    # an implicit SQLite transaction open and break callers that issue their own BEGIN IMMEDIATE.
+    have_idx = c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='game_players_rgs_uq'"
+    ).fetchone()
+    if not have_idx:
+        c.execute(
+            "DELETE FROM game_players WHERE rowid NOT IN ("
+            "  SELECT MIN(rowid) FROM game_players GROUP BY run_id,gid,seat)"
+        )
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS game_players_rgs_uq "
+            "ON game_players (run_id,gid,seat)"
+        )
 
 
 def _backfill_connected_game_player_identities(c) -> dict:
@@ -681,6 +704,15 @@ def distinct_gids(run_id: str) -> list[int]:
         rows = c.execute(
             f"SELECT DISTINCT gid FROM games WHERE run_id={ph} ORDER BY gid", (run_id,)).fetchall()
         return [r["gid"] for r in rows]
+
+
+def game_player_count() -> int:
+    """Total game_players rows on the active backend. The push recompute-guard compares this on prod
+    Neon before/after to ensure the leaderboard's source data never shrinks (replace_ratings wipes
+    all three rating tables, so a recompute over fewer rows would silently gut the board)."""
+    with conn() as c:
+        row = c.execute("SELECT COUNT(*) n FROM game_players").fetchone()
+        return int(row["n"]) if row else 0
 
 
 # --- connected-agent run protocol -------------------------------------------
