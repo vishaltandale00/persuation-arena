@@ -582,14 +582,13 @@ def test_connected_lifecycle_with_fake_brain(tmp_path):
 import pytest
 
 
-@pytest.mark.skip(reason="main's participant-ref merge replaced discussion _speak with a two-phase "
-                         "_speech_bid flow; this test's hand-rolled responder needs updating to the "
-                         "new turn sequence. V2's ref migration itself is covered by the unit + "
-                         "harness-validation tests. Follow-up: re-enable after porting the responder.")
 def test_connected_two_games_model_free_isolated(tmp_path, monkeypatch):
-    """Drive the real connected coordinator over two games with five WolfForgeV2 harnesses, all
-    model-free (deterministic legal fallback). Proves: games complete with only legal actions, and
-    each harness keeps per-game state isolated (no private-observation bleed across games)."""
+    """Drive the real connected coordinator over two games against main's participant-ref + speech-bid
+    protocol, model-free (deterministic legal fallback). Seats are a mix of WolfForgeV2 and the frozen
+    CharismaBaseline, both using the identical connected machinery. Proves: games complete, every
+    submitted action is server-accepted (no illegal submission, no forfeit), submitted actions use the
+    CURRENT vocabulary (participant @refs / "@no-one", no integer seats / -1), per-game state stays
+    isolated, and V2 and CharismaBaseline are protocol-equivalent (same action shapes per kind)."""
     import threading
     import time as _time
 
@@ -606,15 +605,24 @@ def test_connected_two_games_model_free_isolated(tmp_path, monkeypatch):
 
     agent_by_signup: dict[str, str] = {}
     harness_by_signup: dict[str, WolfForgeV2Agent] = {}
+    arm_by_signup: dict[str, str] = {}
     cursor: dict[str, str | None] = {}
     for i in range(5):
-        agent = store.register_agent(f"wf-{i}", f"hash_{i}", "arena-agent-v1", "test")
+        # Public display names so the engine derives stable participant @refs ("Wolf Zero" -> @wolf-zero).
+        agent = store.register_agent(f"Wolf {i}", f"hash_{i}", "arena-agent-v1", "test")
         signup, err = store.create_signup("wf_run", agent["id"])
         assert err is None
         agent_by_signup[signup["id"]] = agent["id"]
-        harness_by_signup[signup["id"]] = WolfForgeV2Agent(
-            run_id="wf_run", config=V2Config(structured_output="off"),
-            brain=FakeBrain([]))  # empty brain -> every turn takes the legal fallback
+        cfg = V2Config(structured_output="off")
+        # Mix both arms: seats 0-2 WolfForgeV2, seats 3-4 the frozen CharismaBaseline. Empty brain ->
+        # every turn deterministically takes the (now ref-aware) legal fallback.
+        if i < 3:
+            harness_by_signup[signup["id"]] = WolfForgeV2Agent(run_id="wf_run", config=cfg, brain=FakeBrain([]))
+            arm_by_signup[signup["id"]] = "v2"
+        else:
+            harness_by_signup[signup["id"]] = WolfForgeV2Agent.charisma_baseline(
+                run_id="wf_run", config=cfg, brain=FakeBrain([]))
+            arm_by_signup[signup["id"]] = "baseline"
         cursor[signup["id"]] = None
     for signup_id, agent_id in agent_by_signup.items():
         ready, err = store.mark_signup_ready(signup_id, agent_id)
@@ -622,6 +630,9 @@ def test_connected_two_games_model_free_isolated(tmp_path, monkeypatch):
     assert {s["status"] for s in store.list_run_signups("wf_run")} == {"active"}
 
     stop = threading.Event()
+    # Record every submitted action by arm and kind, to assert protocol vocabulary + arm parity.
+    submitted: list[tuple[str, str, dict]] = []  # (arm, action_kind, action)
+    submit_lock = threading.Lock()
 
     def responder():
         while not stop.is_set():
@@ -635,10 +646,12 @@ def test_connected_two_games_model_free_isolated(tmp_path, monkeypatch):
                 if turn:
                     sdk_turn = Turn(
                         turn_id=turn["id"], game_instance_id=turn["game_instance_id"], game="onuw",
-                        seat=turn["seat"], phase=turn["phase"], action_kind=turn["action_kind"],
-                        deadline_at=turn["deadline_utc"], observation=turn["observation"],
-                        legal_action=turn["legal_action"])
+                        seat=turn["seat"], participant=turn.get("participant"), phase=turn["phase"],
+                        action_kind=turn["action_kind"], deadline_at=turn["deadline_utc"],
+                        observation=turn["observation"], legal_action=turn["legal_action"])
                     out = harness.act(sdk_turn)
+                    with submit_lock:
+                        submitted.append((arm_by_signup[signup_id], turn["action_kind"], out["action"]))
                     store.reply_to_turn(turn["id"], agent_id, out["action"], out["reasoning"], 1)
             if {s["status"] for s in store.list_run_signups("wf_run")} == {"completed"}:
                 return
@@ -661,6 +674,27 @@ def test_connected_two_games_model_free_isolated(tmp_path, monkeypatch):
     results = [e for e in events if e["type"] == "action_result"]
     assert results and all(e["payload"]["accepted"] for e in results)
     assert not [e for e in events if e["type"] == "forfeit"]
+
+    # CURRENT-protocol vocabulary on submitted actions (no integer seats / -1 anywhere).
+    votes = [a for arm, k, a in submitted if k == "onuw.vote"]
+    assert votes, "expected at least one vote turn"
+    for a in votes:
+        t = a["target"]
+        assert isinstance(t, str) and t.startswith("@"), f"vote target not a participant ref: {t!r}"
+    for arm, k, a in submitted:
+        if k == "onuw.discussion.speak_or_pass":
+            # speak -> requires urgency; pass -> {"pass": true} (+ optional stance), never an int
+            assert ("speak" in a and isinstance(a.get("urgency"), int)) or a.get("pass") is True
+        # nothing should ever submit a bare integer seat or the legacy -1 sentinel
+        assert a.get("target") not in (-1,) and not isinstance(a.get("target"), int)
+
+    # V2 / CharismaBaseline protocol parity: for the model-free fallback, both arms emit the SAME
+    # action shape for the same kind (they share the connected machinery; only strategy prose differs).
+    def shapes(arm):
+        return {k: json.dumps(a, sort_keys=True) for arm2, k, a in submitted if arm2 == arm}
+    v2_shapes, base_shapes = shapes("v2"), shapes("baseline")
+    for kind in set(v2_shapes) & set(base_shapes):
+        assert v2_shapes[kind] == base_shapes[kind], f"arm parity broke for {kind}"
 
     # per-game state isolation: each harness built two distinct game states, and EVERY event folded
     # into a state belongs to that state's game (no event from one game reached another's state).
