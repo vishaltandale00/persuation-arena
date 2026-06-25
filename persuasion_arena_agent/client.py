@@ -85,12 +85,17 @@ class ArenaHttpClient:
         return r.json().get("runs", [])
 
     def signup_run(self, creds: AgentCredentials, run_id: str,
-                   max_concurrent_turns: int = 1, join_token: str | None = None) -> Signup:
+                   max_concurrent_turns: int = 1, join_token: str | None = None,
+                   seat: int | None = None) -> Signup:
         body = {"protocol_version": "arena-agent-v1", "max_concurrent_turns": max_concurrent_turns}
         # Only sent for shard child runs (INV-4); omitted for normal runs so the request body is
         # byte-identical to before (INV-2).
         if join_token is not None:
             body["join_token"] = join_token
+        # An OPTIONAL explicit seat (roster index) lets a shard host request the orchestrator's
+        # deterministic seat (SPEC D5/V-7). Omitted for normal runs (arrival-order seating, INV-2).
+        if seat is not None:
+            body["seat"] = int(seat)
         r = self._request(
             "POST",
             f"/api/runs/{run_id}/signups",

@@ -69,18 +69,21 @@ def _log(msg: str) -> None:
 
 
 def _run_agent(name: str, make_harness, run_id: str, server: str, cred_path: str,
-               join_token: str | None = None) -> None:
+               join_token: str | None = None, seat: int | None = None) -> None:
     """One agent identity: register -> sign up -> ready -> poll/act until the run completes.
     The harness owns its memory; the SDK only delivers the delta event stream.
 
     `join_token` is the per-parent shard secret (INV-4); a shard host passes its child's token so the
-    signup is accepted. None for normal runs (token omitted from the request body, INV-2)."""
+    signup is accepted. None for normal runs (token omitted from the request body, INV-2).
+
+    `seat` is the identity's roster index (SPEC D5/V-7): shard hosts pass it so every child seats by
+    the SAME deterministic schedule. None for normal runs (arrival-order seating, INV-2)."""
     try:
         agent = ArenaAgent(name=name, server=server, credentials=CredentialsStore(cred_path))
         h = make_harness()
         agent.on_event(h.on_event)   # fold each delta event into the harness's OWN memory
         agent.act(h.act)             # decide from the memory the harness built
-        signup = agent.signup(run_id=run_id, join_token=join_token)
+        signup = agent.signup(run_id=run_id, join_token=join_token, seat=seat)
         _log(f"{name} [{type(h).__name__}]: signed up ({signup.status}, seat={signup.seat})")
         agent.run_forever([signup])
         _log(f"{name}: done")
@@ -247,8 +250,10 @@ def _run_shard_child(args) -> int:
     threads = []
     for idx, (name, make_harness) in enumerate(SEATS):
         cred_path = os.path.join(creds_dir, f"identity_{idx}.json")
+        # Pass the enumeration index as the seat so every shard seats identically (SPEC D5/V-7).
         t = threading.Thread(target=_run_agent,
-                             args=(name, make_harness, child_id, args.server, cred_path, join_token),
+                             args=(name, make_harness, child_id, args.server, cred_path,
+                                   join_token, idx),
                              daemon=True, name=f"{child_id}:{name}")
         t.start()
         threads.append(t)

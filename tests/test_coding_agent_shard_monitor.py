@@ -180,3 +180,64 @@ def test_monitor_resolves_when_all_hosts_exit_even_if_some_child_done(monkeypatc
     # Only the stuck child gets forced partial; the already-done child is left alone.
     assert marked.get("p_shard_1") == "partial", marked
     assert marked.get("p_shard_0") != "partial", marked
+
+
+def test_shard_host_passes_roster_index_as_seat(monkeypatch):
+    """FINDING P2: the shard-host launcher (_run_shard_child) must pass each identity's roster index
+    (idx) as the seat when spawning its per-seat agent threads, so children seat deterministically and
+    identically across shards (SPEC D5/V-7). Without this the children seat by arrival order.
+
+    We capture the args each thread is started with; the seat passed to _run_agent must equal the
+    enumeration index of that seat in SEATS."""
+    seats_seen: dict[str, int | None] = {}
+
+    class _SyncThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None, name=None):
+            self._target, self._args, self._kwargs = target, args, kwargs or {}
+
+        def start(self):
+            # Don't actually run the agent; just record what seat it was handed.
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    def fake_run_agent(name, make_harness, run_id, server, cred_path, join_token=None, seat=None):
+        seats_seen[name] = seat
+
+    # Capture (name, seat) at thread-construction time by introspecting the recorded args.
+    captured_threads = []
+
+    class _CapturingThread(_SyncThread):
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None, name=None):
+            super().__init__(target, args, kwargs, daemon, name)
+            captured_threads.append((args, kwargs or {}))
+
+    monkeypatch.setattr(car.threading, "Thread", _CapturingThread)
+    monkeypatch.setattr(car, "_run_agent", fake_run_agent)
+    monkeypatch.setattr(car.store, "get_run",
+                        lambda rid: {"id": rid, "status": "done", "join_token": "tok"})
+    monkeypatch.setattr(car, "_wait_for_active", lambda *a, **k: len(car.SEATS))
+    monkeypatch.setattr(car, "run_connected_batch", lambda *a, **k: None)
+    monkeypatch.setattr(car, "distinct_gids", lambda rid: [], raising=False)
+    monkeypatch.setattr(car.store, "distinct_gids", lambda rid: [], raising=False)
+    _patch_clock(monkeypatch, FakeClock())
+
+    args = types.SimpleNamespace(
+        shard_child="p_shard_0", creds_dir="/tmp/creds", server="http://s",
+        ready_timeout=1.0, rounds=1, deadline=1,
+    )
+    rc = car._run_shard_child(args)
+    assert rc == 0, rc
+
+    # Each thread's target args must carry that seat's enumeration index as the seat.
+    # _run_agent signature: (name, make_harness, run_id, server, cred_path, join_token, seat)
+    for idx, (name, _make) in enumerate(car.SEATS):
+        match = [a for (a, k) in captured_threads if a and a[0] == name]
+        assert match, f"no thread spawned for seat {name}"
+        a = match[0]
+        # seat is the 7th positional arg or a kwarg.
+        seat = a[6] if len(a) >= 7 else None
+        if seat is None:
+            seat = [k for (aa, k) in captured_threads if aa and aa[0] == name][0].get("seat")
+        assert seat == idx, f"seat {name} expected roster index {idx}, got {seat}"

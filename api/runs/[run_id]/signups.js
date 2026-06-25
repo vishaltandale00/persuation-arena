@@ -28,6 +28,12 @@ export default async function handler(req, res) {
   const gateErr = signupGateError(run, body.join_token);
   if (gateErr) return send(res, 403, { error: gateErr });
 
+  // Optional explicit seat (roster index): the orchestrator's deterministic-seat request (SPEC
+  // D5/V-7), mirroring store.create_signup(seat=). Stored as roster_index and honored by advanceLobby
+  // only when EVERY seated signup carries one; otherwise arrival-order (INV-2). Absent for normal
+  // signups so the request/INSERT is byte-identical to before.
+  const rosterIndex = body.seat === undefined || body.seat === null ? null : Number(body.seat);
+
   let s = (await q(
     `SELECT * FROM run_signups WHERE run_id=$1 AND agent_id=$2
      AND status NOT IN ('completed','rejected','expired','cancelled')`, [runId, agent.id]))[0];
@@ -56,14 +62,15 @@ export default async function handler(req, res) {
          WHERE s.run_id=$2 AND s.status IN ('waiting','ready_required','ready','active')
        )
        INSERT INTO run_signups (id,run_id,agent_id,status,seat,created_utc,updated_utc,
-         waiting_expires_utc,ready_deadline_utc,last_poll_utc,last_event_id,max_concurrent_turns)
-       SELECT $1,$2,$3,'waiting',NULL,$4,$4,$5,NULL,NULL,NULL,$6
+         waiting_expires_utc,ready_deadline_utc,last_poll_utc,last_event_id,max_concurrent_turns,
+         roster_index)
+       SELECT $1,$2,$3,'waiting',NULL,$4,$4,$5,NULL,NULL,NULL,$6,$9
        FROM run_lock
        WHERE (SELECT COUNT(*) FROM active) < $7
          AND NOT EXISTS (SELECT 1 FROM active WHERE public_handle = $8)
        RETURNING *`,
       [id, runId, agent.id, now, utcAfter(600), Number(body.max_concurrent_turns || 1),
-        Number(run.players), candidateHandle],
+        Number(run.players), candidateHandle, rosterIndex],
     );
     if (!inserted[0]) {
       const afterRows = await q(

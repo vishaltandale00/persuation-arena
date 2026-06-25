@@ -556,8 +556,12 @@ def api_signup_run(run_id: str, payload: dict, authorization: str | None = Heade
     agent = _authorized_agent(authorization)
     if (payload.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
         raise HTTPException(400, "unsupported protocol_version")
+    # Optional explicit seat (roster index): the orchestrator's deterministic-seat request (SPEC
+    # D5/V-7). Absent for normal/discovered signups -> arrival-order seating (INV-2).
+    seat = payload.get("seat")
     signup, err = store.create_signup(
         run_id, agent["id"], int(payload.get("max_concurrent_turns") or 1),
+        seat=int(seat) if seat is not None else None,
         join_token=payload.get("join_token"),
     )
     if err == "run_not_found":

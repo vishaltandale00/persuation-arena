@@ -52,15 +52,19 @@ class ArenaAgent:
         return creds
 
     def signup(self, run_id: str | None = None, game: str | None = None,
-               max_concurrent_turns: int = 1, join_token: str | None = None) -> Signup:
+               max_concurrent_turns: int = 1, join_token: str | None = None,
+               seat: int | None = None) -> Signup:
         creds = self.ensure_registered()
         if not run_id:
             runs = self.client.discover_runs(game)
             if not runs:
                 raise RuntimeError(f"no open runs found for game={game or '*'}")
             run_id = runs[0]["run_id"]
+        # `seat` is the orchestrator's deterministic roster index (SPEC D5/V-7); threaded to the
+        # signup wire so shard hosts seat identically across shards. None -> arrival order (INV-2).
         signup = self.client.signup_run(
-            creds, run_id, max_concurrent_turns=max_concurrent_turns, join_token=join_token)
+            creds, run_id, max_concurrent_turns=max_concurrent_turns, join_token=join_token,
+            seat=seat)
         self._last_event_by_signup.setdefault(signup.signup_id, None)
         self._maybe_repoint(signup)
         return signup

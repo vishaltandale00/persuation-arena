@@ -102,7 +102,17 @@ export default async function handler(req, res) {
     // the parent roster; aggregateParentDetail unions games (disjoint global gids, D8) and sums
     // wins/team_split, and rolls the status up from the children.
     const childRuns = [];
-    for (const cid of sourceIds) childRuns.push(await loadRunDetail(cid, agentsSrc));
+    for (const cid of sourceIds) {
+      const detail = await loadRunDetail(cid, agentsSrc);
+      // aggregateParentDetail rolls the parent's status up from each child's `status`, but
+      // loadRunDetail only reads games/wins/team_split — it never loads the child run's status. Load
+      // it here (the child's own runs row) so the rollup sees the real per-shard status instead of
+      // undefined (which rollupParentStatus treats as 'open' -> parent stuck at 'running'). This makes
+      // the detail path agree with the run-list index path (childRunsForIndex selects status).
+      const childRow = (await q('SELECT status FROM runs WHERE id = $1', [cid]))[0];
+      detail.status = childRow ? childRow.status : null;
+      childRuns.push(detail);
+    }
     const agg = aggregateParentDetail(r, childRuns);
     games = agg.games;
     wins = agg.wins;
