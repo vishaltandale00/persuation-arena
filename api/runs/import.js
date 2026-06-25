@@ -2,9 +2,10 @@
 //   Neon-backed leaderboard. This is the ONLY prod write path for `arena push`: the FastAPI
 //   /api/ingest is .vercelignore'd and DEAD in prod, so do NOT rely on it.
 //
-// Scope: hackathon DISASTER PROTECTION, not anti-cheat. Auth is a single shared team bearer token
-//   (ARENA_INGEST_TOKENS, owner=token[,owner2=token2] format). It FAILS CLOSED: if the env is
-//   unset/empty/malformed, every request is rejected (503) — we never fall back to an implicit owner.
+// Scope: hackathon DISASTER PROTECTION, not anti-cheat. Auth reuses the agent's registration bearer
+//   token (the `pa_live_` token from POST /api/agents/register, matched by sha256 against
+//   agents.token_hash). It FAILS CLOSED: a missing or unknown token is rejected (401/403) — no token,
+//   no write. (Registration is open, so this is a trusted-contributor gate, not an anti-cheat one.)
 //
 // Payload (mirrors the legacy /api/ingest shape, batched):
 //   { run: <run header>, games: [{ gid, transcript, agents: [{name,model,agent_id?,signup_id?}] }] }
@@ -16,8 +17,7 @@
 //   1. runs upsert (monotonic status CASE, copied from api/runs/index.js),
 //   2. games   INSERT ... ON CONFLICT (run_id,gid) DO NOTHING,
 //   3. game_players INSERT ... ON CONFLICT (run_id,gid,seat) DO NOTHING.
-import crypto from 'node:crypto';
-import { send, readBody, bearer, utcnow, stmt, tx } from '../_db.js';
+import { send, readBody, bearer, utcnow, stmt, tx, agentFromToken } from '../_db.js';
 
 // Terminal run statuses that the monotonic upsert must never regress — mirrors the
 // `runs.status IN ('done','partial')` guard in api/runs/index.js. Kept local so this
@@ -31,56 +31,6 @@ const GAME_LABELS = {
 };
 
 // ---- pure helpers (no DB / no I/O) — exported so a standalone node assertion can test them ----
-
-/**
- * Parse ARENA_INGEST_TOKENS in the owner=token[,owner2=token2] format (also ':' separator and
- * whitespace/semicolon delimiters), mirroring server.py _token_map(). Returns {owner: token}.
- */
-export function parseTokenMap(raw) {
-  const out = {};
-  if (!raw || !String(raw).trim()) return out;
-  for (const part of String(raw).split(/[,\s;]+/)) {
-    if (!part) continue;
-    const sep = part.includes('=') ? '=' : ':';
-    const idx = part.indexOf(sep);
-    if (idx <= 0) continue;
-    const owner = part.slice(0, idx).trim();
-    const token = part.slice(idx + 1).trim();
-    if (owner && token) out[owner] = token;
-  }
-  return out;
-}
-
-/** Length-guarded constant-time compare (crypto.timingSafeEqual throws on unequal-length buffers). */
-export function safeEqual(a, b) {
-  const ba = Buffer.from(String(a), 'utf8');
-  const bb = Buffer.from(String(b), 'utf8');
-  if (ba.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ba, bb);
-}
-
-/**
- * FAIL-CLOSED authorization decision. Pure: takes the raw env string + the presented bearer token.
- * Returns { ok, status, owner?, error }. NEVER returns ok when the token map is empty/malformed
- * (we do NOT port server.py's fail-open `return owner or 'local'` branch).
- */
-export function authorize(rawTokens, presentedToken) {
-  const tokens = parseTokenMap(rawTokens);
-  const owners = Object.keys(tokens);
-  if (owners.length === 0) {
-    return { ok: false, status: 503, error: 'ingest tokens not configured' };
-  }
-  if (!presentedToken) {
-    return { ok: false, status: 401, error: 'missing bearer token' };
-  }
-  let matched = null;
-  // Iterate ALL owners with a constant-time compare each (no early break on first mismatch).
-  for (const owner of owners) {
-    if (safeEqual(presentedToken, tokens[owner])) matched = owner;
-  }
-  if (!matched) return { ok: false, status: 403, error: 'invalid bearer token' };
-  return { ok: true, status: 200, owner: matched };
-}
 
 /** SQLite/Python truthy -> 0/1 (save_game writes `1 if p['won'] else 0`). */
 function won01(v) {
@@ -184,8 +134,12 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
 
-  const decision = authorize(process.env.ARENA_INGEST_TOKENS, bearer(req));
-  if (!decision.ok) return send(res, decision.status, { error: decision.error });
+  // Auth: the caller must present a registered agent's bearer token (the `pa_live_` token from
+  // POST /api/agents/register, matched by sha256 against agents.token_hash). Fail closed.
+  const agent = await agentFromToken(req);
+  if (!agent) {
+    return send(res, bearer(req) ? 403 : 401, { error: 'unknown or missing agent token; register an identity first' });
+  }
 
   const body = await readBody(req);
   const run = body.run;
@@ -199,7 +153,8 @@ export default async function handler(req, res) {
   // Build the full non-interactive transaction: runs upsert, then one games + N players inserts
   // per game. Idempotency is unconditional (ON CONFLICT DO NOTHING + monotonic status CASE), so a
   // re-push is a server-side no-op and never duplicates or clobbers rows.
-  const queries = [stmt(RUNS_UPSERT, runHeaderToSqlParams(run, decision.owner, now))];
+  const submitter = agent.display_name || agent.id;
+  const queries = [stmt(RUNS_UPSERT, runHeaderToSqlParams(run, submitter, now))];
   const gameResultIdx = []; // transaction-result index of each game's RETURNING-gid insert
   let playersWritten = 0;
   try {

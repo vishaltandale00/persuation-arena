@@ -285,7 +285,8 @@ against what the board already has, uploads only the missing games to `POST /api
 rebuilds the prod ratings.
 
 ```bash
-export ARENA_INGEST_TOKEN=<your-team-token>     # bearer for the import endpoint (never pass as a flag)
+# One-time: register an identity to get a pa_live_ bearer token, then export it.
+export ARENA_INGEST_TOKEN=pa_live_xxx            # the token from agent registration (never pass as a flag)
 uv run python -m arena.cli push --run run_222285 --dry-run   # preview: what would upload, no writes
 uv run python -m arena.cli push --run run_222285             # upload missing games + recompute
 uv run python -m arena.cli push --all                        # every local run with status done/partial
@@ -297,14 +298,17 @@ This is a **trusted-contributor** path: the bearer token gates *who* may push, n
 
 **Required environment / ops hygiene:**
 
-- `ARENA_INGEST_TOKEN` (CLI side) — sourced from the env only, never a `--token` flag (keeps it out of
-  shell history / process listings).
-- `ARENA_INGEST_TOKENS` (server side, Vercel) — `owner=token[,owner2=token2]` pairs. The import
-  endpoint **fails closed**: if this is unset/empty/malformed it returns `401`/`503` for everyone.
-- **Scope `ARENA_INGEST_TOKENS` and `DATABASE_URL` to the Vercel _Production_ environment ONLY.** A
-  Preview deploy that inherits these would expose a public, lower-trust surface with prod write access.
+- `ARENA_INGEST_TOKEN` (CLI side) — the `pa_live_` bearer token issued by `POST /api/agents/register`
+  (the same token connected agents use). Sourced from the env only, never a `--token` flag.
+- **Auth = registration identity.** `import.js` matches the presented token (sha256) against
+  `agents.token_hash`; an unknown or missing token is rejected (`403`/`401`). No env var to provision
+  on Vercel. Registration is open, so this is a trusted-contributor gate, not anti-cheat.
+- **Scope `DATABASE_URL` to the Vercel _Production_ environment ONLY** — the recompute step uses it,
+  and a Preview deploy that inherits it would expose prod write access on a lower-trust surface.
 - Run the `game_players_rgs_uq` unique-index migration (`PG_MIGRATION_STMTS`) against prod Neon once
-  before the first push so the `ON CONFLICT (run_id,gid,seat)` path has its constraint.
+  before the first push so the `ON CONFLICT (run_id,gid,seat)` path has its constraint. (This is also
+  the effective on-switch: until the index exists, the endpoint's insert errors out, so uploads stay
+  off even though the endpoint is deployed.)
 
 The recompute step is guarded against disaster: it snapshots the current ratings to
 `arena-backup-*-pre-recompute.json` first, and **aborts** (leaving prod ratings untouched) if the

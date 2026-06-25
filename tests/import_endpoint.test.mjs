@@ -3,8 +3,9 @@
 // Runs with plain `node` — NO database. import.js imports api/_db.js, which calls
 // neon(process.env.DATABASE_URL) at module load and THROWS when DATABASE_URL is unset
 // (@neondatabase/serverless ^1.1.0). So we set a DUMMY DATABASE_URL here before importing; neon()
-// only opens a real connection on an actual query, and we never run one — the exported helpers
-// (parseTokenMap, safeEqual, authorize, gameToSqlParams, runHeaderToSqlParams) are pure.
+// only opens a real connection on an actual query, and we never run one — the import.js helpers
+// (gameToSqlParams, runHeaderToSqlParams) are pure, and the agentFromToken auth check below only
+// exercises the no-bearer path, which returns before any query.
 //
 //   DATABASE_URL='postgres://u:p@localhost/db' node tests/import_endpoint.test.mjs
 //
@@ -13,10 +14,10 @@ process.env.DATABASE_URL ||= 'postgres://u:p@localhost/db';
 
 import assert from 'node:assert/strict';
 import {
-  parseTokenMap, safeEqual, authorize,
   gameToSqlParams, runHeaderToSqlParams,
   RUNS_UPSERT, GAMES_INSERT, PLAYERS_INSERT,
 } from '../api/runs/import.js';
+import { agentFromToken } from '../api/_db.js';
 
 let passed = 0;
 function ok(name, fn) {
@@ -25,54 +26,15 @@ function ok(name, fn) {
   console.log(`  ok - ${name}`);
 }
 
-// --- token-map parse (mirrors server.py _token_map) -----------------------------------------
-ok('parseTokenMap parses owner=tok', () => {
-  assert.deepEqual(parseTokenMap('owner=tok'), { owner: 'tok' });
-});
-ok('parseTokenMap handles : sep + whitespace/semicolon delimiters', () => {
-  assert.deepEqual(parseTokenMap('a=1, b:2 ; c=3'), { a: '1', b: '2', c: '3' });
-});
-ok('parseTokenMap returns {} for empty/blank/malformed', () => {
-  assert.deepEqual(parseTokenMap(''), {});
-  assert.deepEqual(parseTokenMap('   '), {});
-  assert.deepEqual(parseTokenMap(undefined), {});
-  assert.deepEqual(parseTokenMap('garbage-no-sep'), {});
-  assert.deepEqual(parseTokenMap('=novalue'), {});   // empty owner dropped
-});
-
-// --- safeEqual length-guard (timingSafeEqual throws on unequal length) ------------------------
-ok('safeEqual is false on unequal length (never throws)', () => {
-  assert.equal(safeEqual('abc', 'abcd'), false);
-});
-ok('safeEqual is true on exact match, false on same-length mismatch', () => {
-  assert.equal(safeEqual('secret', 'secret'), true);
-  assert.equal(safeEqual('secret', 's3cret'), false);
-});
-
-// --- authorize: FAIL CLOSED + reject missing/wrong + accept right ----------------------------
-ok('authorize fails CLOSED (503) when tokens unset/empty/malformed', () => {
-  assert.equal(authorize(undefined, 'tok').status, 503);
-  assert.equal(authorize('', 'tok').status, 503);
-  assert.equal(authorize('   ', 'tok').status, 503);
-  assert.equal(authorize('garbage-no-sep', 'tok').status, 503);
-  assert.equal(authorize(undefined, 'tok').ok, false);
-});
-ok('authorize 401 on missing bearer', () => {
-  const d = authorize('team=secret', null);
-  assert.equal(d.status, 401);
-  assert.equal(d.ok, false);
-});
-ok('authorize 403 on wrong bearer', () => {
-  const d = authorize('team=secret', 'wrong');
-  assert.equal(d.status, 403);
-  assert.equal(d.ok, false);
-});
-ok('authorize accepts the right bearer and returns the owner', () => {
-  const d = authorize('a=x,b=y,c=z', 'z');
-  assert.equal(d.ok, true);
-  assert.equal(d.status, 200);
-  assert.equal(d.owner, 'c');
-});
+// --- auth: agentFromToken (the registration pa_live_ token) FAILS CLOSED on no/non-bearer ------
+// Only the no-bearer path is offline-safe: bearer(req)===null short-circuits before any DB query.
+// A present bearer would trigger a real Neon lookup against agents.token_hash, so we don't exercise
+// that path here (the handler rejects an unknown token with 403 and a valid one authorizes).
+assert.equal(await agentFromToken({ headers: {} }), null);
+assert.equal(await agentFromToken({ headers: { authorization: '' } }), null);
+assert.equal(await agentFromToken({ headers: { authorization: 'Basic xyz' } }), null);
+passed += 1;
+console.log('  ok - agentFromToken returns null without a bearer (fail-closed, no DB hit)');
 
 // --- payload -> SQL params: game_players DERIVED from transcript.players joined to agents[] ---
 ok('gameToSqlParams derives game_players from transcript.players (won->0/1, int-default-0)', () => {
