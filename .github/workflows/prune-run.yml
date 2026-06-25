@@ -48,6 +48,9 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
           RUN_ID: ${{ inputs.run_id }}
+          # tools/arena_admin.py does `from arena import store`; running it by file path puts
+          # sys.path[0]=tools/, so add the repo root explicitly.
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "NEON_DATABASE_URL secret not set — cannot prune."
