@@ -117,6 +117,30 @@ def create_sharded_run(parent_config: dict, num_shards: int) -> list[str]:
         )
     join_token = (existing or {}).get("join_token") or secrets.token_urlsafe(24)
 
+    # FINDING #1 (round-7, DATA-INTEGRITY): the parent-id guard above protects {parent}, but the
+    # DERIVED child ids ({parent}_shard_k) are upserted blindly by create_connected_run below. If a
+    # NORMAL run already exists named like "{parent}_shard_0" (a reused id, or a parent whose name
+    # collides with another run's id), that create rewrites the existing row into a child of THIS new
+    # parent — hiding/corrupting the old run and folding its games into the new parent's rollup.
+    # Validate FIRST (before any write): each derived child id must be either absent OR already a
+    # child of THIS parent (run_kind=='child' and parent_run_id==parent_id). A collision with any
+    # pre-existing non-child run, or a child of a DIFFERENT parent, raises and writes nothing new.
+    # The same-K idempotent re-create (children already belong to this parent) passes unchanged.
+    for k in range(num_shards):
+        child_id = f"{parent_id}_shard_{k}"
+        prior = store.get_run(child_id)
+        if prior is None:
+            continue
+        prior_kind = prior.get("run_kind") or "normal"
+        prior_parent = prior.get("parent_run_id")
+        if not (prior_kind == "child" and prior_parent == parent_id):
+            raise ValueError(
+                f"derived shard id {child_id!r} is already in use by a "
+                f"{prior_kind!r} run"
+                + (f" (parent_run_id={prior_parent!r})" if prior_parent is not None else "")
+                + f"; refusing to overwrite it as a shard of {parent_id!r}"
+            )
+
     # Parent: a presentational umbrella; never discoverable/joinable (INV-4 via list_open_runs).
     store.save_run({
         "id": parent_id,

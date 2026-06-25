@@ -8,6 +8,17 @@ import {
 } from '../../_db.js';
 import { signupGateError } from '../../_shards.js';
 
+// FINDINGS #2/#3: a Postgres unique-constraint violation (uq_run_signups_run_roster) surfaces as
+// SQLSTATE 23505. The Neon serverless driver exposes it on err.code; fall back to the message so a
+// racing duplicate-seat INSERT is reliably mapped to 400 invalid_seat regardless of driver shape.
+function isUniqueViolation(err) {
+  if (!err) return false;
+  if (err.code === '23505') return true;
+  const msg = String(err.message || err).toLowerCase();
+  return msg.includes('uq_run_signups_run_roster') ||
+    (msg.includes('unique') && msg.includes('roster_index'));
+}
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
@@ -76,7 +87,15 @@ export default async function handler(req, res) {
     const id = newId('signup_');
     const now = utcnow();
     const candidateHandle = publicRef(agent.display_name).slice(1);
-    const inserted = await q(
+    // FINDINGS #2/#3: the duplicate-seat pre-read above is a NON-ATOMIC fast path (TOCTOU) — two
+    // concurrent signups can both pass it, then both INSERT the same roster_index. The partial unique
+    // index uq_run_signups_run_roster (run_id, roster_index) WHERE roster_index IS NOT NULL makes the
+    // INSERT the authoritative arbiter; catch its violation (PG SQLSTATE 23505) and 400 invalid_seat so
+    // a racing duplicate seat is rejected atomically. No-seat (NULL) signups are excluded by the partial
+    // index, so this never fires for normal runs (INV-2).
+    let inserted;
+    try {
+      inserted = await q(
       `WITH run_lock AS (
          SELECT pg_advisory_xact_lock(hashtext($2), 0)
        ),
@@ -96,7 +115,11 @@ export default async function handler(req, res) {
        RETURNING *`,
       [id, runId, agent.id, now, utcAfter(600), Number(body.max_concurrent_turns || 1),
         Number(run.players), candidateHandle, rosterIndex],
-    );
+      );
+    } catch (err) {
+      if (isUniqueViolation(err)) return send(res, 400, { error: 'invalid_seat' });
+      throw err;
+    }
     if (!inserted[0]) {
       const afterRows = await q(
         `SELECT a.display_name FROM run_signups s JOIN agents a ON a.id = s.agent_id

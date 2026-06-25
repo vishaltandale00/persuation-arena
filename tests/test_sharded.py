@@ -1063,6 +1063,71 @@ def test_create_sharded_run_rejects_reused_child_run_id(tmp_path, monkeypatch):
     assert child["parent_run_id"] == "realparent"
 
 
+def test_create_sharded_run_rejects_derived_child_id_colliding_normal_run(tmp_path, monkeypatch):
+    """Codex round-7 / FINDING #1 (DATA-INTEGRITY): round-6 guarded the PARENT id, but the DERIVED
+    child ids ({parent}_shard_k) are still upserted blindly via create_connected_run. If a NORMAL run
+    already exists named like "c_shard_0", creating sharded parent "c" rewrites that existing row into
+    a child of the new parent — hiding/corrupting the old run and folding its games into the new
+    parent's rollup. create_sharded_run must validate each derived child id is absent OR already a
+    child of THIS parent, and otherwise raise a clear ValueError and write NOTHING new."""
+    import pytest
+    _sqlite_store(tmp_path, monkeypatch)
+    # a pre-existing NORMAL run that happens to be named like a derived child id of parent "c"
+    store.save_run(_base_run("c_shard_0", n_games=4, players=3, seed_base=7))
+    assert store.get_run("c_shard_0")["run_kind"] == "normal"
+
+    parent_cfg = _base_run("c", n_games=4, players=3, seed_base=7)
+    with pytest.raises(ValueError, match="(?i)shard|in use|collid"):
+        create_sharded_run(parent_cfg, 2)
+
+    # the colliding normal run is NOT rewritten into a child; the parent "c" was not created either
+    row = store.get_run("c_shard_0")
+    assert row["run_kind"] == "normal", f"normal run was clobbered: {row['run_kind']}"
+    assert row["parent_run_id"] is None
+    assert row["num_shards"] is None
+    # nothing new was written: no parent row, no other child
+    assert store.get_run("c") is None
+    assert store.get_run("c_shard_1") is None
+    assert store.child_run_ids("c") == []
+
+
+def test_create_sharded_run_rejects_derived_child_id_owned_by_other_parent(tmp_path, monkeypatch):
+    """Codex round-7 / FINDING #1: a derived child id ({parent}_shard_k) that is already a CHILD of a
+    DIFFERENT parent must also be rejected — creating it would steal/re-home that child."""
+    import pytest
+    _sqlite_store(tmp_path, monkeypatch)
+    # parent "other" owns "other_shard_0"; now someone tries parent id that derives "other_shard_0"?
+    # Construct a parent whose derived child id collides with another parent's existing child.
+    create_sharded_run(_base_run("p1", n_games=4, players=3, seed_base=7), 2)  # p1_shard_0, p1_shard_1
+    # pre-create a stray child owned by a different parent, named like p2's derived child
+    store.save_run(_base_run(
+        "p2_shard_0", run_kind="child", parent_run_id="someone_else",
+        shard_index=0, num_shards=2))
+    assert store.get_run("p2_shard_0")["parent_run_id"] == "someone_else"
+
+    with pytest.raises(ValueError, match="(?i)shard|in use|collid"):
+        create_sharded_run(_base_run("p2", n_games=4, players=3, seed_base=7), 2)
+    # the stray child is unchanged and no new p2 parent/children were written
+    assert store.get_run("p2_shard_0")["parent_run_id"] == "someone_else"
+    assert store.get_run("p2") is None
+    assert store.get_run("p2_shard_1") is None
+
+
+def test_create_sharded_run_clean_children_and_same_k_recreate_still_pass(tmp_path, monkeypatch):
+    """Codex round-7 / FINDING #1: the new derived-child guard must NOT break the happy paths — a
+    clean parent id with no colliding children works, and a same-K re-create (children already belong
+    to THIS parent) stays idempotent."""
+    _sqlite_store(tmp_path, monkeypatch)
+    clean = create_sharded_run(_base_run("clean", n_games=4, players=3, seed_base=7), 2)
+    assert clean == ["clean_shard_0", "clean_shard_1"]
+    assert store.get_run("clean_shard_0")["parent_run_id"] == "clean"
+
+    # same-K re-create: children already belong to THIS parent -> idempotent, still passes
+    again = create_sharded_run(_base_run("clean", n_games=4, players=3, seed_base=7), 2)
+    assert again == clean
+    assert store.child_run_ids("clean") == ["clean_shard_0", "clean_shard_1"]
+
+
 def test_create_signup_rejects_out_of_range_seat(tmp_path, monkeypatch):
     """Codex round-5 / FINDING #3 (CORRECTNESS): an explicit seat must be bounds-checked against
     run.players BEFORE insert. A seat outside [0, players) (or a non-integer) can never be assigned

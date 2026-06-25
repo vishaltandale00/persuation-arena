@@ -31,7 +31,7 @@ function fakeReqRes(runId, body) {
 // SQL-routing mock for q(text, params). Captures the run_signups INSERT params for assertions.
 // `occupiedSeats` (optional) seeds the run with existing ACTIVE signups already holding those
 // roster_index seats, so the duplicate-seat guard can be exercised.
-function makeQ(sink, occupiedSeats = []) {
+function makeQ(sink, occupiedSeats = [], opts = {}) {
   const inserted = {};
   return async (text, params = []) => {
     const t = text.replace(/\s+/g, ' ').trim();
@@ -58,6 +58,12 @@ function makeQ(sink, occupiedSeats = []) {
     if (t.startsWith('WITH run_lock AS') || (t.startsWith('INSERT INTO run_signups'))) {
       sink.insertText = t;
       sink.insertParams = params;
+      // FINDINGS #2/#3: simulate a racing duplicate-seat INSERT losing the partial-unique-index race.
+      if (opts.insertUniqueViolation) {
+        const e = new Error('duplicate key value violates unique constraint "uq_run_signups_run_roster"');
+        e.code = '23505';
+        throw e;
+      }
       const row = { id: params[0], run_id: params[1], agent_id: params[2], status: 'waiting', seat: null };
       inserted[params[0]] = row;
       return [row];
@@ -70,11 +76,11 @@ function makeQ(sink, occupiedSeats = []) {
   };
 }
 
-async function runHandler(body, occupiedSeats = []) {
+async function runHandler(body, occupiedSeats = [], opts = {}) {
   const sink = {};
   mock.module(DB_PATH, {
     namedExports: {
-      q: makeQ(sink, occupiedSeats),
+      q: makeQ(sink, occupiedSeats, opts),
       send(res, status, b) { res.statusCode = status; res.end(JSON.stringify(b)); },
       readBody: async (req) => req.body || {},
       agentFromToken: async () => ({ id: 'agent_1', display_name: 'alpha' }),
@@ -90,7 +96,7 @@ async function runHandler(body, occupiedSeats = []) {
       validateUniquePublicNames: () => null,
     },
   });
-  const mod = await import(`../../runs/[run_id]/signups.js?case=${encodeURIComponent(JSON.stringify(body))}&occ=${occupiedSeats.join(',')}`);
+  const mod = await import(`../../runs/[run_id]/signups.js?case=${encodeURIComponent(JSON.stringify(body))}&occ=${occupiedSeats.join(',')}&opts=${encodeURIComponent(JSON.stringify(opts))}`);
   const { req, res, captured } = fakeReqRes('run_x', body);
   await mod.default(req, res);
   mock.reset();
@@ -161,4 +167,17 @@ test('POST signups: a distinct seat is accepted even when other seats are occupi
   const { captured, sink } = await runHandler({ protocol_version: 'arena-agent-v1', seat: 4 }, [0, 1]);
   assert.equal(captured.status, 200, `expected 200, got ${captured.status}`);
   assert.ok(sink.insertParams.includes(4), 'distinct seat 4 must reach the INSERT params');
+});
+
+// FINDINGS #2/#3 (codex round-7): the duplicate-seat pre-read is a TOCTOU race; the partial unique
+// index uq_run_signups_run_roster is the atomic arbiter. When the INSERT loses that race (PG SQLSTATE
+// 23505), the handler must map it to 400 invalid_seat, NOT a 500. The pre-read passes here (no
+// occupiedSeats) so this exercises ONLY the constraint-violation catch path.
+test('POST signups: a racing duplicate-seat INSERT (unique violation 23505) returns 400 invalid_seat', { skip: !MODULE_MOCKS && 'needs --experimental-test-module-mocks' }, async () => {
+  const { captured, sink } = await runHandler(
+    { protocol_version: 'arena-agent-v1', seat: 2 }, [], { insertUniqueViolation: true },
+  );
+  assert.ok(sink.insertText, 'the INSERT must have been attempted (pre-read passed)');
+  assert.equal(captured.status, 400, `expected 400, got ${captured.status}`);
+  assert.equal(captured.body.error, 'invalid_seat');
 });

@@ -75,6 +75,10 @@ CREATE TABLE IF NOT EXISTS run_signups (
   roster_index INTEGER,
   UNIQUE (run_id, agent_id)
 );
+-- FINDINGS #2/#3: make explicit-seat uniqueness ATOMIC (race-free) rather than a TOCTOU pre-read.
+-- PARTIAL so the many NULL roster_index rows (normal/no-seat signups) are unconstrained (INV-2).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_run_signups_run_roster
+  ON run_signups (run_id, roster_index) WHERE roster_index IS NOT NULL;
 CREATE TABLE IF NOT EXISTS run_events (
   id TEXT PRIMARY KEY, run_id TEXT, game_instance_id TEXT, seq INTEGER,
   visibility TEXT, target_signup_id TEXT, phase TEXT, type TEXT, payload_json TEXT, created_utc TEXT
@@ -144,6 +148,10 @@ PG_SCHEMA_STMTS = [
          roster_index INTEGER,
          UNIQUE (run_id, agent_id)
        )""",
+    # FINDINGS #2/#3: race-free explicit-seat uniqueness (atomic, not a TOCTOU pre-read). PARTIAL so the
+    # many NULL roster_index rows (normal/no-seat signups) are unconstrained (INV-2).
+    """CREATE UNIQUE INDEX IF NOT EXISTS uq_run_signups_run_roster
+         ON run_signups (run_id, roster_index) WHERE roster_index IS NOT NULL""",
     """CREATE TABLE IF NOT EXISTS run_events (
          id TEXT PRIMARY KEY, run_id TEXT, game_instance_id TEXT, seq INTEGER,
          visibility TEXT, target_signup_id TEXT, phase TEXT, type TEXT, payload_json TEXT, created_utc TEXT
@@ -204,6 +212,10 @@ PG_MIGRATION_STMTS = [
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_model TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_harness TEXT",
     "ALTER TABLE run_signups ADD COLUMN IF NOT EXISTS roster_index INTEGER",
+    # FINDINGS #2/#3: race-free explicit-seat uniqueness. roster_index is brand-new + nullable, so no
+    # existing rows can violate this; PARTIAL keeps NULL (normal/no-seat) signups unconstrained (INV-2).
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_run_signups_run_roster "
+    "ON run_signups (run_id, roster_index) WHERE roster_index IS NOT NULL",
     # Dedup duplicate (run_id,gid,seat) rows, then add the unique index the JS import path needs for
     # ON CONFLICT (run_id,gid,seat) DO NOTHING. Use CREATE UNIQUE INDEX IF NOT EXISTS (idempotent on
     # re-run) rather than ALTER TABLE ADD CONSTRAINT (no IF NOT EXISTS in PG; re-run would throw).
@@ -220,6 +232,20 @@ def _is_pg() -> bool:
 
 def _ph() -> str:
     return "%s" if _is_pg() else "?"
+
+
+def _seat_unique_violation() -> type[BaseException] | tuple[type[BaseException], ...]:
+    """Exception type(s) raised when an INSERT violates a unique constraint on the active backend.
+
+    Used to catch the uq_run_signups_run_roster partial-unique-index violation and turn a racing
+    duplicate-seat INSERT into a clean 'invalid_seat' (FINDINGS #2/#3). Postgres raises
+    psycopg.errors.UniqueViolation (a subclass of IntegrityError); SQLite raises
+    sqlite3.IntegrityError.
+    """
+    if _is_pg():
+        import psycopg
+        return psycopg.errors.IntegrityError
+    return sqlite3.IntegrityError
 
 
 def _utcnow() -> str:
@@ -1126,15 +1152,29 @@ def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
         if identity_err:
             return None, identity_err
         signup_id = f"signup_{uuid.uuid4().hex[:16]}"
-        c.execute(
-            f"INSERT INTO run_signups (id,run_id,agent_id,status,seat,created_utc,updated_utc,"
-            f"waiting_expires_utc,ready_deadline_utc,last_poll_utc,last_event_id,max_concurrent_turns,"
-            f"roster_index) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
-            (signup_id, run_id, agent_id, "waiting", None, now, now, _utc_after(waiting_seconds),
-             None, None, None, int(max_concurrent_turns),
-             int(seat) if seat is not None else None),
-        )
+        # FINDINGS #2/#3: the seat pre-check above is a friendly fast path but NON-ATOMIC (TOCTOU): a
+        # concurrent signup could pass the same check and race us here. The partial unique index
+        # uq_run_signups_run_roster makes the INSERT the authoritative arbiter — catch its violation and
+        # return invalid_seat so a racing duplicate seat is rejected atomically. No-seat (NULL) signups
+        # are excluded by the partial index, so this never fires for normal runs (INV-2).
+        try:
+            c.execute(
+                f"INSERT INTO run_signups (id,run_id,agent_id,status,seat,created_utc,updated_utc,"
+                f"waiting_expires_utc,ready_deadline_utc,last_poll_utc,last_event_id,max_concurrent_turns,"
+                f"roster_index) "
+                f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                (signup_id, run_id, agent_id, "waiting", None, now, now, _utc_after(waiting_seconds),
+                 None, None, None, int(max_concurrent_turns),
+                 int(seat) if seat is not None else None),
+            )
+        except _seat_unique_violation():
+            # Postgres aborts the transaction on a constraint violation; roll back so the conn()
+            # context-manager's commit-on-exit doesn't fail. SQLite tolerates a rollback here too.
+            try:
+                c.rollback()
+            except Exception:
+                pass
+            return None, "invalid_seat"
         _maybe_ready_required(c, run_id)
         return _rowdict(c.execute(f"SELECT * FROM run_signups WHERE id={ph}", (signup_id,)).fetchone()), None
 
