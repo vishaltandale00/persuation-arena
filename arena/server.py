@@ -12,9 +12,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import copy
 import hashlib
-import hmac
 import os
-import re
 import secrets
 import threading
 import time
@@ -68,22 +66,6 @@ app = FastAPI(title="Persuasion Arena", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-def _token_map() -> dict[str, str]:
-    raw = os.environ.get("INGEST_TOKENS", "").strip()
-    if not raw:
-        return {}
-    out: dict[str, str] = {}
-    for part in re.split(r"[,\s;]+", raw):
-        if not part:
-            continue
-        sep = "=" if "=" in part else ":"
-        if sep in part:
-            owner, token = part.split(sep, 1)
-            if owner.strip() and token.strip():
-                out[owner.strip()] = token.strip()
-    return out
-
-
 def _bearer(authorization: str | None) -> str | None:
     if not authorization:
         return None
@@ -108,43 +90,6 @@ def _authorized_agent(authorization: str | None) -> dict:
         raise HTTPException(403, "invalid bearer token")
     store.touch_agent(agent["id"])
     return agent
-
-
-def _authorized_owner(authorization: str | None, requested_owner: str | None = None) -> str:
-    tokens = _token_map()
-    requested_owner = (requested_owner or "").strip() or None
-    if not tokens:
-        return requested_owner or "local"
-    token = _bearer(authorization)
-    if not token:
-        raise HTTPException(401, "missing bearer token")
-    for owner, expected in tokens.items():
-        if hmac.compare_digest(token, expected):
-            if requested_owner and requested_owner != owner:
-                raise HTTPException(403, "token cannot act for requested owner")
-            return owner
-    raise HTTPException(403, "invalid bearer token")
-
-
-def _job_owner(payload: dict) -> str:
-    owner = (payload.get("owner") or payload.get("submitter") or "default").strip()
-    return owner or "default"
-
-
-def _roster_from_payload(payload: dict) -> list[dict]:
-    """Build the run's roster from the request (one agent per seat). Falls back to the
-    configured roster when none is supplied. The player count IS len(roster); per-game
-    bounds are enforced by the caller, which knows which game is being played."""
-    agents = payload.get("agents") or []
-    roster = [
-        {"name": (a.get("name") or "").strip(),
-         "model": (a.get("model") or "").strip(),
-         "harness": (a.get("harness") or "base").strip() or "base"}
-        for a in agents if (a.get("name") or "").strip() and (a.get("model") or "").strip()
-    ]
-    if not roster:
-        roster = [{"name": s.name, "model": s.model, "harness": s.harness} for s in SETTINGS.roster()]
-    return roster
 
 
 def _deck_preset_from_payload(game: str, payload: dict) -> str | None:
@@ -262,69 +207,6 @@ def _run_config_overrides(payload: dict) -> dict:
     }
 
 
-def _annotate_run_agents(agents: list[dict], caps, rounds: int) -> list[dict]:
-    config = _run_config_meta(caps, rounds)
-    return [
-        {
-            **a,
-            "provider": a.get("provider", "openrouter"),
-            "reasoning_effort": config["reasoning_effort"],
-            "max_tokens": config["max_tokens_per_turn"],
-            "max_tokens_per_turn": config["max_tokens_per_turn"],
-            "temperature": config["temperature"],
-            "retries": config["retries"],
-            "prior_message_turns": config["prior_message_turns"],
-            "discussion_rounds": config["discussion_rounds"],
-            "sessionful": a.get("sessionful", False),
-        }
-        for a in agents
-    ]
-
-
-def _queue_run(payload: dict, owner: str) -> dict:
-    game = payload.get("game", "onuw")
-    if game not in GAME_LABELS:
-        raise HTTPException(400, f"unknown game: {game}")
-    games = max(1, int(payload.get("games", payload.get("n_games", 6))))
-    rounds = _payload_int(payload, ("rounds",), 20, positive=True)
-    caps = _caps_from_payload(payload, rounds)
-    seed = int(payload.get("seed") or (time.time() * 1000) % 1000000)
-    run_id = (payload.get("run_id") or f"run_{seed}_{uuid.uuid4().hex[:6]}").strip()
-    raw_agents = _roster_from_payload(payload)
-    identity_err = validate_unique_public_names([a["name"] for a in raw_agents])
-    if identity_err:
-        raise HTTPException(400, identity_err)
-    agents = _annotate_run_agents(raw_agents, caps, rounds)
-    core = GAME_CORES[game]
-    n_players = len(agents)  # the roster IS the table — no fixed player count
-    if not (core.MIN_PLAYERS <= n_players <= core.MAX_PLAYERS):
-        raise HTTPException(400, f"{core.TITLE} supports {core.MIN_PLAYERS}–{core.MAX_PLAYERS} "
-                                 f"players, got {n_players}")
-    if _deal_schedule_from_payload(game, payload, default="random") != "random":
-        raise HTTPException(400, "balanced deal scheduling is currently only supported for local runs")
-    deck_preset = _deck_preset_from_payload(game, payload)
-    job = store.enqueue_job({
-        "id": f"job_{uuid.uuid4().hex[:12]}",
-        "run_id": run_id,
-        "owner": owner,
-        "game": game,
-        "label": GAME_LABELS[game],
-        "n_games": games,
-        "players": n_players,
-        "seed_base": seed,
-        "rounds": rounds,
-        "agents": agents,
-        "deck_preset": deck_preset,
-        "metadata": {
-            "run_config": _run_config_meta(caps, rounds),
-            "run_config_overrides": _run_config_overrides(payload),
-        },
-    })
-    return {"run_id": run_id, "job_id": job["id"], "status": "queued", "owner": owner,
-            "game": game, "games": games, "rounds": rounds, "deck_preset": deck_preset,
-            "run_config": _run_config_meta(caps, rounds)}
-
-
 # --- Modal per-run coordinator (opt-in via ARENA_MODAL_COORDINATOR) ------------------------------
 # When enabled, creating a connected run fire-and-forgets a per-run Modal container (arena.modal_app)
 # that serves + coordinates the run; agents discover its tunnel URL via the signup response and
@@ -419,10 +301,10 @@ def api_runs():
 
 @app.post("/api/runs")
 def api_submit_run(payload: dict):
-    """Queue a central run for a laptop worker. Model keys remain on the worker machine."""
-    if payload.get("connected"):
-        return _create_connected_run(payload)
-    return _queue_run(payload, _job_owner(payload))
+    """Create an open connected-agent run. Static (fixed-model) runs are maintainer-local only."""
+    if not payload.get("connected"):
+        raise HTTPException(400, "static runs are maintainer-local only; use `arena serve` / `arena run`")
+    return _create_connected_run(payload)
 
 
 @app.get("/api/decks")
@@ -909,7 +791,6 @@ def api_game(run_id: str, gid: int):
     return _enrich_transcript_turn_reasoning(run_id, gid, t)
 
 
-
 def _roster_models() -> list[str]:
     seen, out = set(), []
     for s in SETTINGS.roster():
@@ -1019,10 +900,8 @@ def api_keys_set(payload: dict):
 
 @app.post("/api/run")
 def api_launch(payload: dict):
-    """Launch a run in the background. Body: {game, games, agents?:[{name,model,harness}]}."""
-    if os.environ.get("DATABASE_URL") or payload.get("remote"):
-        return _queue_run(payload, _job_owner(payload))
-
+    """Launch a static run in-process on the local server (local SQLite, the maintainer's own keys).
+    Body: {game, games, agents?:[{name,model,harness}]}."""
     game = payload.get("game", "onuw")
     games = int(payload.get("games", 6))
     rounds = _payload_int(payload, ("rounds",), 20, positive=True)
@@ -1056,68 +935,6 @@ def api_launch(payload: dict):
     return {"run_id": run_id, "status": "running", "game": game, "games": games,
             "deck_preset": deck_preset, "deal_schedule": deal_schedule,
             "run_config": _run_config_meta(caps, rounds)}
-
-
-@app.post("/api/jobs/claim")
-def api_claim_job(payload: dict, authorization: str | None = Header(None)):
-    owner = _authorized_owner(authorization, payload.get("owner"))
-    worker_id = (payload.get("worker_id") or "").strip()
-    if not worker_id:
-        raise HTTPException(400, "worker_id required")
-    lease_seconds = int(payload.get("lease_seconds") or 300)
-    return {"job": store.claim_job(owner, worker_id, lease_seconds)}
-
-
-@app.post("/api/jobs/heartbeat")
-def api_heartbeat_job(payload: dict, authorization: str | None = Header(None)):
-    _authorized_owner(authorization, payload.get("owner"))
-    job_id = (payload.get("job_id") or "").strip()
-    worker_id = (payload.get("worker_id") or "").strip()
-    if not job_id or not worker_id:
-        raise HTTPException(400, "job_id and worker_id required")
-    ok = store.heartbeat_job(job_id, worker_id, int(payload.get("lease_seconds") or 300))
-    if not ok:
-        raise HTTPException(409, "heartbeat rejected")
-    return {"ok": True}
-
-
-@app.post("/api/ingest")
-def api_ingest(payload: dict, authorization: str | None = Header(None)):
-    owner = _authorized_owner(authorization, payload.get("owner"))
-    job_id = (payload.get("job_id") or "").strip()
-    if job_id:
-        job = store.get_job(job_id)
-        if not job:
-            raise HTTPException(404, "job not found")
-        if job["owner"] != owner:
-            raise HTTPException(403, "job owner mismatch")
-    run_id = (payload.get("run_id") or "").strip()
-    gid = int(payload.get("gid") or 0)
-    transcript = payload.get("transcript")
-    agents = payload.get("agents")
-    if not run_id or gid <= 0 or not isinstance(transcript, dict) or not isinstance(agents, list):
-        raise HTTPException(400, "run_id, gid, transcript, and agents are required")
-    inserted = store.save_game(run_id, gid, transcript, agents)
-    return {"ok": True, "inserted": bool(inserted)}
-
-
-@app.post("/api/jobs/complete")
-def api_complete_job(payload: dict, authorization: str | None = Header(None)):
-    owner = _authorized_owner(authorization, payload.get("owner"))
-    job_id = (payload.get("job_id") or "").strip()
-    worker_id = (payload.get("worker_id") or "").strip()
-    status = (payload.get("status") or "done").strip()
-    if not job_id or not worker_id:
-        raise HTTPException(400, "job_id and worker_id required")
-    job = store.get_job(job_id)
-    if not job:
-        raise HTTPException(404, "job not found")
-    if job["owner"] != owner:
-        raise HTTPException(403, "job owner mismatch")
-    ok = store.finish_job(job_id, worker_id, status, payload.get("error"))
-    if not ok:
-        raise HTTPException(409, "completion rejected")
-    return {"ok": True, "status": status}
 
 
 @app.get("/")

@@ -235,14 +235,6 @@ def _apply_pg_session_settings(c, statement_timeout: int) -> None:
         c.execute(f"SET statement_timeout = {int(statement_timeout)}")
 
 
-def _job(row) -> dict | None:
-    if not row:
-        return None
-    d = dict(row)
-    d["agents"] = json.loads(d.pop("agents_json"))
-    return d
-
-
 def _metadata_from_row(row) -> dict:
     try:
         return json.loads((dict(row).get("metadata_json") if row else None) or "{}")
@@ -399,16 +391,14 @@ def mark_orphaned_local_runs_partial() -> int:
     """Recover in-process local runs left as running by a server shutdown/crash.
 
     Static local runs execute in a background thread owned by the server process. If that process
-    exits before the thread finishes, no worker can resume it. Connected runs and queued worker jobs
-    have external coordination state, so leave those alone.
+    exits before the thread finishes, nothing can resume it. Connected runs have external
+    coordination state (a signup roster), so leave those alone.
     """
-    ph = _ph()
     with conn() as c:
         cur = c.execute(
-            f"UPDATE runs SET status='partial' "
-            f"WHERE status='running' "
-            f"AND NOT EXISTS (SELECT 1 FROM run_signups s WHERE s.run_id = runs.id) "
-            f"AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.run_id = runs.id)",
+            "UPDATE runs SET status='partial' "
+            "WHERE status='running' "
+            "AND NOT EXISTS (SELECT 1 FROM run_signups s WHERE s.run_id = runs.id)"
         )
         return cur.rowcount or 0
 
@@ -442,119 +432,6 @@ def save_game(run_id: str, gid: int, transcript: dict, agents: list[dict]):
                  agent.get("agent_id"), agent.get("signup_id")),
             )
         return True
-
-
-def enqueue_job(job: dict) -> dict:
-    """Create a central queued job and its visible run row."""
-    now = job.get("created_utc") or _utcnow()
-    agents = job["agents"]
-    save_run({
-        "id": job["run_id"], "game": job["game"], "label": job["label"], "status": "queued",
-        "n_games": job["n_games"], "players": job["players"], "seed_base": job["seed_base"],
-        "created": job.get("created") or now[:16].replace("T", " "), "created_utc": now,
-        "submitter": job["owner"], "agents": agents, "deck_preset": job.get("deck_preset"),
-        "metadata": job.get("metadata") or {},
-    })
-    ph = _ph()
-    with conn() as c:
-        c.execute(
-            f"INSERT INTO jobs (id,run_id,owner,status,game,n_games,seed_base,rounds,players,"
-            f"agents_json,created_utc,updated_utc,lease_expires_utc,heartbeat_utc,worker_id,last_error,deck_preset) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
-            f"ON CONFLICT (run_id) DO UPDATE SET "
-            f"  owner=excluded.owner, status=excluded.status, game=excluded.game, "
-            f"  n_games=excluded.n_games, seed_base=excluded.seed_base, rounds=excluded.rounds, "
-            f"  players=excluded.players, agents_json=excluded.agents_json, updated_utc=excluded.updated_utc, "
-            f"  deck_preset=excluded.deck_preset, "
-            f"  lease_expires_utc=NULL, heartbeat_utc=NULL, worker_id=NULL, last_error=NULL",
-            (job["id"], job["run_id"], job["owner"], "queued", job["game"], job["n_games"],
-             job["seed_base"], job["rounds"], job["players"], json.dumps(agents), now, now,
-             None, None, None, None, job.get("deck_preset")),
-        )
-    return get_job(job["id"])
-
-
-def get_job(job_id: str) -> dict | None:
-    ph = _ph()
-    with conn() as c:
-        row = c.execute(f"SELECT * FROM jobs WHERE id={ph}", (job_id,)).fetchone()
-        return _job(row)
-
-
-def claim_job(owner: str, worker_id: str, lease_seconds: int = 300) -> dict | None:
-    """Atomically claim the next queued or expired job for this owner."""
-    now, lease_until, ph = _utcnow(), _utc_after(lease_seconds), _ph()
-    with conn() as c:
-        if _is_pg():
-            row = c.execute(
-                """
-                WITH next_job AS (
-                  SELECT id FROM jobs
-                  WHERE owner=%s
-                    AND (status='queued' OR (status='running' AND lease_expires_utc < %s))
-                  ORDER BY created_utc
-                  FOR UPDATE SKIP LOCKED
-                  LIMIT 1
-                )
-                UPDATE jobs
-                SET status='running', worker_id=%s, lease_expires_utc=%s,
-                    heartbeat_utc=%s, updated_utc=%s
-                WHERE id=(SELECT id FROM next_job)
-                RETURNING *
-                """,
-                (owner, now, worker_id, lease_until, now, now),
-            ).fetchone()
-        else:
-            c.execute("BEGIN IMMEDIATE")
-            found = c.execute(
-                f"SELECT id FROM jobs WHERE owner={ph} "
-                f"AND (status='queued' OR (status='running' AND lease_expires_utc < {ph})) "
-                f"ORDER BY created_utc LIMIT 1",
-                (owner, now),
-            ).fetchone()
-            if not found:
-                return None
-            c.execute(
-                f"UPDATE jobs SET status='running', worker_id={ph}, lease_expires_utc={ph}, "
-                f"heartbeat_utc={ph}, updated_utc={ph} WHERE id={ph}",
-                (worker_id, lease_until, now, now, found["id"]),
-            )
-            row = c.execute(f"SELECT * FROM jobs WHERE id={ph}", (found["id"],)).fetchone()
-        if row:
-            c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'",
-                      ("running", row["run_id"]))
-        return _job(row)
-
-
-def heartbeat_job(job_id: str, worker_id: str, lease_seconds: int = 300) -> bool:
-    now, lease_until, ph = _utcnow(), _utc_after(lease_seconds), _ph()
-    with conn() as c:
-        cur = c.execute(
-            f"UPDATE jobs SET lease_expires_utc={ph}, heartbeat_utc={ph}, updated_utc={ph} "
-            f"WHERE id={ph} AND worker_id={ph} AND status='running'",
-            (lease_until, now, now, job_id, worker_id),
-        )
-        return cur.rowcount > 0
-
-
-def finish_job(job_id: str, worker_id: str, status: str, error: str | None = None) -> bool:
-    if status not in {"done", "partial", "failed"}:
-        raise ValueError(f"invalid job status: {status}")
-    now, ph = _utcnow(), _ph()
-    run_status = "done" if status == "done" else "partial"
-    with conn() as c:
-        job = c.execute(f"SELECT run_id FROM jobs WHERE id={ph} AND worker_id={ph}",
-                        (job_id, worker_id)).fetchone()
-        if not job:
-            return False
-        cur = c.execute(
-            f"UPDATE jobs SET status={ph}, updated_utc={ph}, lease_expires_utc=NULL, "
-            f"heartbeat_utc={ph}, last_error={ph} WHERE id={ph} AND worker_id={ph}",
-            (status, now, now, error, job_id, worker_id),
-        )
-        c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'",
-                  (run_status, job["run_id"]))
-        return cur.rowcount > 0
 
 
 def list_runs() -> list[dict]:
