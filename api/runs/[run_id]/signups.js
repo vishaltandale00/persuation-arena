@@ -33,6 +33,14 @@ export default async function handler(req, res) {
   // only when EVERY seated signup carries one; otherwise arrival-order (INV-2). Absent for normal
   // signups so the request/INSERT is byte-identical to before.
   const rosterIndex = body.seat === undefined || body.seat === null ? null : Number(body.seat);
+  // FINDING #3: bounds-check an explicit seat against run.players BEFORE insert (mirrors
+  // store.create_signup). advanceLobby only seats r.seat < players, so an out-of-range / non-integer
+  // seat would leave this signup unseated forever and wedge the shard. No seat (normal runs) is
+  // unaffected (INV-2).
+  if (rosterIndex !== null &&
+      (!Number.isInteger(rosterIndex) || rosterIndex < 0 || rosterIndex >= Number(run.players))) {
+    return send(res, 400, { error: 'invalid_seat' });
+  }
 
   let s = (await q(
     `SELECT * FROM run_signups WHERE run_id=$1 AND agent_id=$2

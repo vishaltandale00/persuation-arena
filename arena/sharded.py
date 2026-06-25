@@ -93,6 +93,17 @@ def create_sharded_run(parent_config: dict, num_shards: int) -> list[str]:
     # fresh one — save_run upserts join_token=COALESCE(excluded, existing), so a new token would
     # rotate the secret out from under any token an orchestrator already handed to agents.
     existing = store.get_run(parent_id)
+    # Re-creating an existing parent with a DIFFERENT num_shards is not supported: shrinking K would
+    # only upsert the new range and leave stale orphan children (e.g. {parent}_shard_2) still
+    # pointing at parent_run_id, so child_run_ids() and every parent rollup/score keep counting them.
+    # We do NOT silently delete rows; reject the shard-count change. A re-create with the SAME K
+    # stays idempotent (the round-4 retry path reuses the token and re-upserts the same children).
+    existing_k = (existing or {}).get("num_shards")
+    if existing_k is not None and int(existing_k) != num_shards:
+        raise ValueError(
+            f"shard-count change not supported for parent {parent_id!r}: "
+            f"existing num_shards={existing_k}, requested {num_shards}"
+        )
     join_token = (existing or {}).get("join_token") or secrets.token_urlsafe(24)
 
     # Parent: a presentational umbrella; never discoverable/joinable (INV-4 via list_open_runs).

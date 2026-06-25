@@ -1004,8 +1004,18 @@ def _active_signups(c, run_id: str) -> list[dict]:
 
 def _refresh_run_roster(c, run_id: str, signups: list[dict]) -> None:
     ph = _ph()
+    # Persist the roster ordered by ASSIGNED SEAT so runs.agents[seat] is the agent seated there
+    # (FINDING #1 / SPEC D5/REQ-7). `signups` arrives in arrival order (created_utc,id); once seats
+    # are assigned (_maybe_ready_required), an explicit roster_index can differ from arrival order,
+    # so detail/push/import paths that index by seat would otherwise mis-attribute agents. When no
+    # seat is assigned yet (still waiting) we keep arrival order. INV-2: for normal runs seats are
+    # assigned in arrival order, so this sort is a no-op (byte-identical roster).
+    ordered = sorted(
+        enumerate(signups),
+        key=lambda iz: (iz[1].get("seat") is None, iz[1].get("seat", iz[0]), iz[0]),
+    )
     agents = [{"name": s["display_name"], "model": "connected-agent", "harness": "connected",
-               "agent_id": s["agent_id"], "signup_id": s["id"]} for s in signups]
+               "agent_id": s["agent_id"], "signup_id": s["id"]} for _, s in ordered]
     c.execute(f"UPDATE runs SET agents_json={ph} WHERE id={ph}", (json.dumps(agents), run_id))
 
 
@@ -1071,6 +1081,17 @@ def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
             expected = run["join_token"] if "join_token" in run.keys() else None
             if not expected or join_token != expected:
                 return None, "run_not_joinable"
+        # FINDING #3 (codex round-5): bounds-check an EXPLICIT seat against run.players BEFORE insert.
+        # _maybe_ready_required only assigns roster_index < players, so an out-of-range (or non-int)
+        # seat would leave this signup unseated forever and wedge the shard in waiting/ready_required.
+        # A signup with NO seat (normal runs) skips this entirely (INV-2).
+        if seat is not None:
+            try:
+                seat_idx = int(seat)
+            except (TypeError, ValueError):
+                return None, "invalid_seat"
+            if isinstance(seat, bool) or seat_idx < 0 or seat_idx >= int(run["players"]):
+                return None, "invalid_seat"
         existing = c.execute(
             f"SELECT * FROM run_signups WHERE run_id={ph} AND agent_id={ph} "
             f"AND status NOT IN ('completed','rejected','expired','cancelled')",

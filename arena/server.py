@@ -571,6 +571,9 @@ def api_signup_run(run_id: str, payload: dict, authorization: str | None = Heade
     if err == "run_not_joinable":
         # INV-4: shard parents/children are not directly joinable by a stray agent.
         raise HTTPException(403, "run_not_joinable")
+    if err == "invalid_seat":
+        # FINDING #3: an explicit seat must be an int in [0, players); reject out-of-range / non-int.
+        raise HTTPException(400, "invalid_seat")
     if err:
         raise HTTPException(409, err)
     return _signup_response(signup)

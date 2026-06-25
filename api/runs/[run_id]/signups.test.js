@@ -101,3 +101,26 @@ test('POST signups: no seat => roster_index null (INV-2 arrival order preserved)
   // (We can't know the exact index, but a number that isn't players/max_concurrent must not slip in.)
   assert.ok(!sink.insertParams.includes(3), 'no seat must not inject an explicit roster index');
 });
+
+// FINDING #3 (codex round-5): an out-of-range explicit seat must be rejected with 400 BEFORE insert.
+// run.players is 5 in the mock, so seats valid are 0..4; seat=99 (and negatives) must 400, seat=2 ok.
+test('POST signups: out-of-range seat is rejected 400 with no INSERT', { skip: !MODULE_MOCKS && 'needs --experimental-test-module-mocks' }, async () => {
+  const { captured, sink } = await runHandler({ protocol_version: 'arena-agent-v1', seat: 99 });
+  assert.equal(captured.status, 400, `expected 400, got ${captured.status}`);
+  assert.equal(captured.body.error, 'invalid_seat');
+  assert.equal(sink.insertText, undefined, 'rejected seat must not run the INSERT');
+
+  const neg = await runHandler({ protocol_version: 'arena-agent-v1', seat: -1 });
+  assert.equal(neg.captured.status, 400);
+  assert.equal(neg.captured.body.error, 'invalid_seat');
+
+  const nonInt = await runHandler({ protocol_version: 'arena-agent-v1', seat: 'x' });
+  assert.equal(nonInt.captured.status, 400);
+  assert.equal(nonInt.captured.body.error, 'invalid_seat');
+});
+
+test('POST signups: in-range seat is accepted (200) and inserted', { skip: !MODULE_MOCKS && 'needs --experimental-test-module-mocks' }, async () => {
+  const { captured, sink } = await runHandler({ protocol_version: 'arena-agent-v1', seat: 2 });
+  assert.equal(captured.status, 200);
+  assert.ok(sink.insertParams.includes(2), 'in-range seat 2 must reach the INSERT params');
+});

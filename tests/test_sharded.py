@@ -908,6 +908,52 @@ def test_create_connected_run_normal_response_unchanged(tmp_path, monkeypatch):
                              "deck_preset", "run_config"}
 
 
+def _ready_seated_run(run_id: str, creds_with_seats):
+    """Sign up identities in the given arrival order, each with an explicit seat (roster_index),
+    then ready them so _maybe_ready_required assigns seats and rebuilds the persisted roster.
+
+    `creds_with_seats` is an ordered list of (display_name, agent_id, seat); arrival order is the
+    list order, the explicit seat is honored deterministically (SPEC D5/REQ-7)."""
+    agent_by_signup: dict[str, str] = {}
+    for name, agent_id, seat in creds_with_seats:
+        if store.get_agent(agent_id) is None:
+            store.register_agent(name, f"hash_{agent_id}", "arena-agent-v1", "test", agent_id=agent_id)
+        signup, err = store.create_signup(run_id, agent_id, seat=seat)
+        assert err is None, err
+        agent_by_signup[signup["id"]] = agent_id
+    for signup_id, agent_id in agent_by_signup.items():
+        _, err = store.mark_signup_ready(signup_id, agent_id)
+        assert err is None or err == "not_ready_required"
+    return agent_by_signup
+
+
+def test_persisted_roster_ordered_by_assigned_seat(tmp_path, monkeypatch):
+    """Codex round-5 / FINDING #1 (CORRECTNESS): when explicit seats differ from arrival order,
+    the persisted runs.agents_json (get_run -> agents) must be ordered by ASSIGNED SEAT, so
+    run.agents[seat] is the agent seated there. Previously _refresh_run_roster rebuilt the roster in
+    arrival order, mis-attributing agents to seats in detail/push/import paths."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("seatorder", players=3))
+    # arrival order A, B, C but explicit seats reversed: A->2, B->1, C->0.
+    _ready_seated_run("seatorder", [("A", "agent_A", 2), ("B", "agent_B", 1), ("C", "agent_C", 0)])
+
+    agents = store.get_run("seatorder")["agents"]
+    names = [a["name"] for a in agents]
+    assert names == ["C", "B", "A"], f"roster must be seat-ordered, got {names}"
+    assert agents[0]["name"] == "C" and agents[2]["name"] == "A"
+
+
+def test_persisted_roster_arrival_order_when_no_explicit_seats(tmp_path, monkeypatch):
+    """INV-2: with NO explicit seats, seats are assigned in arrival order, so the seat-ordered roster
+    equals the arrival-order roster — byte-identical to pre-sharding behavior."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("arrivalorder", players=3))
+    _seat_run("arrivalorder", [("A", "agent_A"), ("B", "agent_B"), ("C", "agent_C")])
+
+    names = [a["name"] for a in store.get_run("arrivalorder")["agents"]]
+    assert names == ["A", "B", "C"], f"arrival-order roster expected, got {names}"
+
+
 def test_create_sharded_run_retry_reuses_join_token(tmp_path, monkeypatch):
     """Codex round-4: retrying create_sharded_run for an existing parent must REUSE the persisted
     join token, not mint a fresh one. save_run upserts join_token=COALESCE(excluded, existing), so a
@@ -924,3 +970,123 @@ def test_create_sharded_run_retry_reuses_join_token(tmp_path, monkeypatch):
     assert store.get_run("retry")["join_token"] == token1, "retry must not rotate the join token"
     tokens = {store.get_run(r)["join_token"] for r in ("retry", "retry_shard_0", "retry_shard_1")}
     assert tokens == {token1}
+
+
+def test_create_sharded_run_shard_count_change_rejected(tmp_path, monkeypatch):
+    """Codex round-5 / FINDING #2 (CORRECTNESS): re-creating an existing parent with a DIFFERENT
+    num_shards must be REJECTED with a ValueError — shard-count changes are not supported. Today the
+    mismatch is silently accepted: shrinking K only upserts the new range and leaves stale orphan
+    children (e.g. parent_shard_2) still pointing at the parent, so child_run_ids() and every parent
+    rollup/score keep counting them."""
+    _sqlite_store(tmp_path, monkeypatch)
+    parent_cfg = _base_run("scchange", n_games=6, players=3, seed_base=7)
+
+    create_sharded_run(parent_cfg, 3)
+    assert store.child_run_ids("scchange") == [
+        "scchange_shard_0", "scchange_shard_1", "scchange_shard_2"]
+
+    # shrinking K must raise, not silently leave scchange_shard_2 orphaned
+    import pytest
+    with pytest.raises(ValueError, match="shard"):
+        create_sharded_run(parent_cfg, 2)
+    # growing K is likewise rejected
+    with pytest.raises(ValueError, match="shard"):
+        create_sharded_run(parent_cfg, 1)
+
+    # the original 3 children are untouched (no rows deleted, no orphans created)
+    assert store.child_run_ids("scchange") == [
+        "scchange_shard_0", "scchange_shard_1", "scchange_shard_2"]
+    assert store.get_run("scchange")["num_shards"] == 3
+
+
+def test_create_sharded_run_same_count_recreate_idempotent(tmp_path, monkeypatch):
+    """The same-K re-create must stay idempotent (the round-4 retry test relies on it): re-creating
+    with the SAME num_shards re-upserts the same children, leaves no orphan rows, and child_run_ids
+    is exactly the K expected ids."""
+    _sqlite_store(tmp_path, monkeypatch)
+    parent_cfg = _base_run("samek", n_games=4, players=3, seed_base=7)
+
+    first = create_sharded_run(parent_cfg, 2)
+    second = create_sharded_run(parent_cfg, 2)
+    assert first == second == ["samek_shard_0", "samek_shard_1"]
+    assert store.child_run_ids("samek") == ["samek_shard_0", "samek_shard_1"]
+    assert store.get_run("samek")["num_shards"] == 2
+
+
+def test_create_signup_rejects_out_of_range_seat(tmp_path, monkeypatch):
+    """Codex round-5 / FINDING #3 (CORRECTNESS): an explicit seat must be bounds-checked against
+    run.players BEFORE insert. A seat outside [0, players) (or a non-integer) can never be assigned
+    by _maybe_ready_required (which only seats roster_index < players), so the signup would sit
+    unseated forever and wedge the shard in waiting/ready_required. create_signup must instead reject
+    it with the 'invalid_seat' reason and insert nothing."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("seatbounds", players=5))
+    store.register_agent("solo", "hash_solo", "arena-agent-v1", "test", agent_id="agent_solo")
+
+    # too-large seat (>= players)
+    sg, err = store.create_signup("seatbounds", "agent_solo", seat=99)
+    assert sg is None and err == "invalid_seat", (sg, err)
+    # negative seat
+    sg, err = store.create_signup("seatbounds", "agent_solo", seat=-1)
+    assert sg is None and err == "invalid_seat", (sg, err)
+    # exactly players is out of range (seats are 0..players-1)
+    sg, err = store.create_signup("seatbounds", "agent_solo", seat=5)
+    assert sg is None and err == "invalid_seat", (sg, err)
+    # non-integer seat
+    sg, err = store.create_signup("seatbounds", "agent_solo", seat="x")
+    assert sg is None and err == "invalid_seat", (sg, err)
+
+    # nothing was inserted by any of the rejected attempts
+    assert store._active_signups.__module__  # sanity: helper exists
+    with store.conn() as c:
+        ph = store._ph()
+        rows = c.execute(
+            f"SELECT COUNT(*) AS n FROM run_signups WHERE run_id={ph}", ("seatbounds",)
+        ).fetchone()
+        assert rows["n"] == 0, "rejected signups must not insert a row"
+
+
+def test_create_signup_accepts_in_range_seat_and_no_seat(tmp_path, monkeypatch):
+    """In-range explicit seats are accepted; a signup with NO seat (normal runs) is unaffected
+    (INV-2)."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("seatok", players=5))
+    store.register_agent("a0", "hash_a0", "arena-agent-v1", "test", agent_id="agent_0")
+    store.register_agent("a1", "hash_a1", "arena-agent-v1", "test", agent_id="agent_1")
+
+    sg, err = store.create_signup("seatok", "agent_0", seat=0)
+    assert err is None and sg is not None
+    sg, err = store.create_signup("seatok", "agent_1")  # no seat: INV-2
+    assert err is None and sg is not None
+
+
+def test_signup_endpoint_rejects_out_of_range_seat(tmp_path, monkeypatch):
+    """The /api/runs/{id}/signups endpoint must surface 'invalid_seat' as HTTP 400 (server maps the
+    new store reason). An in-range seat is accepted (200)."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("INGEST_TOKENS", raising=False)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "seat_endpoint.db")
+    with TestClient(app) as client:
+        created = client.post("/api/runs", json={
+            "connected": True, "run_id": "run_seatep", "game": "onuw",
+            "players": 5, "games": 1, "seed": 9100,
+        })
+        assert created.status_code == 200, created.text
+        reg = client.post("/api/agents/register", json={
+            "display_name": "zeta", "protocol_version": "arena-agent-v1",
+            "harness": "test", "public_key": "pk_zeta",
+        })
+        assert reg.status_code == 200, reg.text
+        token = reg.json()["agent_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        bad = client.post("/api/runs/run_seatep/signups", json={
+            "protocol_version": "arena-agent-v1", "seat": 99,
+        }, headers=headers)
+        assert bad.status_code == 400, bad.text
+        assert "invalid_seat" in bad.text
+
+        ok = client.post("/api/runs/run_seatep/signups", json={
+            "protocol_version": "arena-agent-v1", "seat": 0,
+        }, headers=headers)
+        assert ok.status_code == 200, ok.text
