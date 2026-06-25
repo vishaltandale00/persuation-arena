@@ -298,6 +298,9 @@ def summarize_telemetry(path: str | None, agent_name: str | None = None) -> dict
     pt: list[int] = []
     ct: list[int] = []
     repairs = fallbacks = invalid = total = 0
+    memory_modes: set = set()
+    memory_hashes: set = set()
+    memory_budget = 0
     with open(path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -319,6 +322,12 @@ def summarize_telemetry(path: str | None, agent_name: str | None = None) -> dict
             repairs += 1 if rec.get("repair_attempted") else 0
             fallbacks += 1 if rec.get("fallback_used") else 0
             invalid += 0 if rec.get("action_valid") else 1
+            if rec.get("memory_mode"):
+                memory_modes.add(rec["memory_mode"])
+            if rec.get("memory_snapshot_hash"):
+                memory_hashes.add(rec["memory_snapshot_hash"])
+            if isinstance(rec.get("memory_context_chars"), int):
+                memory_budget = max(memory_budget, rec["memory_context_chars"])
     return {
         "turns": total,
         "median_latency_ms": _percentile(lat, 50),
@@ -328,7 +337,31 @@ def summarize_telemetry(path: str | None, agent_name: str | None = None) -> dict
         "repair_rate": round(repairs / total, 4) if total else 0.0,
         "fallback_rate": round(fallbacks / total, 4) if total else 0.0,
         "invalid_rate": round(invalid / total, 4) if total else 0.0,
+        # Cross-run memory metadata (used for mismatch warnings; never the memory contents).
+        "memory_modes": sorted(memory_modes),
+        "memory_snapshot_hashes": sorted(memory_hashes),
+        "memory_max_context_chars": memory_budget,
     }
+
+
+def memory_warnings(telemetry: dict | None) -> list[str]:
+    """Warn when a single compared telemetry set mixes memory modes/snapshots — that is a DIFFERENT
+    experiment from a clean prompt-policy comparison (see WOLFFORGE_V2_EVAL.md)."""
+    if not telemetry:
+        return []
+    out: list[str] = []
+    modes = telemetry.get("memory_modes") or []
+    hashes = telemetry.get("memory_snapshot_hashes") or []
+    if len(modes) > 1:
+        out.append(f"MEMORY MISMATCH: compared runs mix memory modes {modes}. A memory-on agent is "
+                   f"NOT a clean prompt-policy comparison against a frozen baseline.")
+    if len(hashes) > 1:
+        out.append(f"MEMORY MISMATCH: compared runs used different memory snapshots {hashes}. Freeze "
+                   f"one snapshot for a holdout.")
+    if any(m in ("write", "readwrite") for m in modes):
+        out.append("MEMORY WARNING: a write/readwrite memory mode appears in the compared runs; memory "
+                   "was mutating during evaluation (development mode, not a frozen holdout).")
+    return out
 
 
 def _percentile(values: list[int], pct: float) -> float | None:
@@ -415,6 +448,17 @@ def render_markdown(analysis: Analysis, manifests: list[dict], warnings: list[st
         lines.append("- Not available (no --telemetry log supplied).")
     lines.append("")
 
+    lines += ["## Cross-run memory", ""]
+    if telemetry and (telemetry.get("memory_modes") or telemetry.get("memory_snapshot_hashes")):
+        lines += [
+            f"- modes seen: {telemetry.get('memory_modes')}",
+            f"- snapshot hashes: {telemetry.get('memory_snapshot_hashes')}",
+            f"- max injected memory chars: {telemetry.get('memory_max_context_chars')}",
+        ]
+    else:
+        lines.append("- memory off (or no telemetry) — clean default-V2 comparison.")
+    lines.append("")
+
     lines += ["## Role / objective breakdown (V2 dealt role)", "",
               "| Role | Games | V2 wins | V2 win% | 95% CI |", "|---|---:|---:|---:|---:|"]
     for role, d in a.by_role.items():
@@ -464,8 +508,8 @@ def build_report(run_ids: list[str], v2_name: str, baseline_name: str, store_mod
     obs = load_observations(run_ids, v2_name, baseline_name, store_module)
     analysis = analyze(obs, bootstrap_iterations=bootstrap_iterations)
     manifests = [run_manifest(r, store_module) for r in run_ids]
-    warnings = manifest_warnings(manifests, frozen_manifest)
     telemetry = summarize_telemetry(telemetry_path, v2_name)
+    warnings = manifest_warnings(manifests, frozen_manifest) + memory_warnings(telemetry)
     markdown = render_markdown(analysis, manifests, warnings, v2_name, baseline_name, telemetry)
     return {"observations": obs, "analysis": analysis, "manifests": manifests,
             "warnings": warnings, "telemetry": telemetry, "markdown": markdown}

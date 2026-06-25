@@ -31,6 +31,13 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from arena.identity import NO_ONE_REF
+from examples.wolfforge_v2_memory import (
+    CompletedGameSummary,
+    CrossRunMemory,
+    OpponentIdentity,
+    did_i_win,
+    objective_group,
+)
 from examples.wolfforge_v2_policy import (
     BASELINE_POLICY_VERSION,
     DEFAULT_MODEL,
@@ -90,6 +97,12 @@ class V2Config:
     submit_margin_s: float = 3.0
     structured_output: str = "auto"  # off | auto | json_object | json_schema
     log_path: str | None = None
+    # Optional cross-run memory (OFF by default; see examples/wolfforge_v2_memory.py + WOLFFORGE_V2_MEMORY.md).
+    memory_mode: str = "off"          # off | read | write | readwrite
+    memory_path: str | None = None
+    memory_max_prompt_chars: int = 1200
+    memory_min_games_for_opponent_hint: int = 3
+    memory_decay: float = 0.90
 
     @classmethod
     def from_env(cls) -> "V2Config":
@@ -99,6 +112,9 @@ class V2Config:
         so = _env("WOLFFORGE_V2_STRUCTURED_OUTPUT", "auto").strip().lower()
         if so not in {"off", "auto", "json_object", "json_schema"}:
             so = "auto"
+        mem = _env("WOLFFORGE_V2_MEMORY_MODE", "off").strip().lower()
+        if mem not in {"off", "read", "write", "readwrite"}:
+            mem = "off"
         return cls(
             model=_env("WOLFFORGE_V2_MODEL", DEFAULT_MODEL),
             temperature=_env_float("WOLFFORGE_V2_TEMPERATURE", 0.35),
@@ -108,6 +124,11 @@ class V2Config:
             submit_margin_s=_env_float("WOLFFORGE_V2_SUBMIT_MARGIN_S", 3.0),
             structured_output=so,
             log_path=os.environ.get("WOLFFORGE_V2_LOG_PATH") or None,
+            memory_mode=mem,
+            memory_path=os.environ.get("WOLFFORGE_V2_MEMORY_PATH") or None,
+            memory_max_prompt_chars=_env_int("WOLFFORGE_V2_MEMORY_MAX_PROMPT_CHARS", 1200),
+            memory_min_games_for_opponent_hint=_env_int("WOLFFORGE_V2_MEMORY_MIN_GAMES_FOR_OPPONENT_HINT", 3),
+            memory_decay=_env_float("WOLFFORGE_V2_MEMORY_DECAY", 0.90),
         )
 
 
@@ -206,7 +227,8 @@ class WolfForgeV2Agent:
                  policy_version: str = POLICY_VERSION,
                  prompt_hash_value: str | None = None,
                  harness: str = "wolfforge-v2",
-                 strategy_overlay: bool = True):
+                 strategy_overlay: bool = True,
+                 memory: Any | None = None):
         self.run_id = run_id
         self.config = config or V2Config.from_env()
         self.model = self.config.model
@@ -221,6 +243,40 @@ class WolfForgeV2Agent:
         self.brain = brain if brain is not None else OpenRouterBrain(self.config)
         self._now = now or (lambda: _dt.datetime.now(_dt.UTC))
         self.games: dict[str, GameState] = {}
+        # Cross-run memory is OFF by default. Instantiate only when a mode is configured (or an
+        # explicit memory object is injected for tests). On any DB error it self-disables -> off.
+        self.memory = memory if memory is not None else self._build_memory()
+        self._memory_recorded: set[str] = set()  # game_instance_ids already written (idempotent)
+
+    def _build_memory(self) -> "CrossRunMemory | None":
+        cfg = self.config
+        if cfg.memory_mode == "off":
+            return None
+        return CrossRunMemory(
+            path=cfg.memory_path, mode=cfg.memory_mode,
+            max_prompt_chars=cfg.memory_max_prompt_chars,
+            min_games_for_opponent_hint=cfg.memory_min_games_for_opponent_hint,
+            decay=cfg.memory_decay, policy_version=self.policy_version,
+            prompt_hash=self.prompt_hash_value,
+        )
+
+    def _memory_context(self, state: GameState) -> dict | None:
+        """The bounded long-term-memory block for this turn (None when memory is off or read-disabled,
+        which keeps the prompt byte-identical to pre-memory V2)."""
+        if self.memory is None or not self.memory.can_read():
+            return None
+        s = state.seat
+        opponents = [OpponentIdentity(display_name=name)
+                     for seat, name in sorted(s.roster.items()) if seat != s.seat]
+        return self.memory.load_context(my_role=s.believed_role,
+                                        objective_group=objective_group(s.believed_role),
+                                        visible_opponents=opponents).to_dict()
+
+    @staticmethod
+    def _memory_items(ctx: dict | None) -> int:
+        if not ctx:
+            return 0
+        return sum(len(ctx.get(k, [])) for k in ("role_lessons", "opponent_hints", "reliability_reminders"))
 
     @classmethod
     def charisma_baseline(cls, run_id: str | None = None, **kwargs: Any) -> "WolfForgeV2Agent":
@@ -256,7 +312,32 @@ class WolfForgeV2Agent:
         gid = getattr(event, "game_instance_id", None)
         if gid is None:
             return
-        self._state(gid).apply_event(event)
+        state = self._state(gid)
+        state.apply_event(event)
+        # Write cross-run memory ONLY on game completion, and only in write/readwrite mode — never
+        # mid-game. Idempotent per game; uses ONLY this game's own state (no cross-game leakage).
+        etype = event["type"] if isinstance(event, dict) else getattr(event, "type", None)
+        if etype == "game_result" and self.memory is not None and self.memory.can_write():
+            if gid not in self._memory_recorded:
+                self._memory_recorded.add(gid)
+                self._record_memory(state)
+
+    def _record_memory(self, state: GameState) -> None:
+        s = state.seat
+        result = s.result or {}
+        role = s.believed_role
+        won = did_i_win(role, s.seat, result.get("winner_team"), result.get("deaths"))
+        opponents = [OpponentIdentity(display_name=name)            # agent_id not visible to harness
+                     for seat, name in sorted(s.roster.items()) if seat != s.seat]
+        summary = CompletedGameSummary(
+            run_id=state.run_id, game_id=state.game_id, my_role=role, won=won,
+            fallback_count=state.fallback_count, repair_count=state.repair_count,
+            opponents=opponents,
+            # Safe aggregate-only summaries — never another player's hidden facts, never raw text.
+            summary_public=f"{len(s.public)} public messages observed.",
+            summary_private_safe=f"Own believed role {role}; {len(s.night_obs)} private night notes (counts only).",
+        )
+        self.memory.record_completed_game(game_summary=summary)
 
     def act(self, turn: Any) -> dict:
         """Decide and return {"action": <wire action>, "reasoning": <brief>} for one turn."""
@@ -273,8 +354,11 @@ class WolfForgeV2Agent:
             return self._fallback(state, turn, t0, repair_attempted=False, error_type="deadline_guard",
                                   diag=_StructuredDiag(False))
 
+        memory_ctx = self._memory_context(state)
+        self._turn_mem = (len(json.dumps(memory_ctx, sort_keys=True)) if memory_ctx else 0,
+                          self._memory_items(memory_ctx))
         messages = build_messages(state, action_kind, legal, turn.phase, turn.deadline_at,
-                                  system_prompt_text=self.system_prompt_text)
+                                  system_prompt_text=self.system_prompt_text, memory_context=memory_ctx)
         response_format = self._response_format(action_kind, legal)
         structured_requested = response_format is not None
         diag = _StructuredDiag(requested=structured_requested)
@@ -437,6 +521,12 @@ class WolfForgeV2Agent:
             "validation_failure_detail": (getattr(repair, "failure_reason", None)
                                           or getattr(initial, "failure_reason", None)),
             "fallback_action_type": _fallback_action_type(fallback_action) if fallback_used else None,
+            # Cross-run memory metadata (never the memory CONTENTS):
+            "memory_mode": (self.memory.mode if self.memory is not None else "off"),
+            "memory_snapshot_hash": (self.memory.snapshot_hash() if self.memory is not None else None),
+            "memory_context_chars": getattr(self, "_turn_mem", (0, 0))[0],
+            "memory_context_items": getattr(self, "_turn_mem", (0, 0))[1],
+            "memory_write_count": (self.memory.write_count if self.memory is not None else 0),
             # Safe STRUCTURAL fingerprints (types/field-names/lengths only, never content):
             "initial_shape": getattr(initial, "fingerprint", None),
             "repair_shape": getattr(repair, "fingerprint", None),

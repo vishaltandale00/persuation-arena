@@ -261,6 +261,15 @@ guards, structured-output rejection fallback, prompt-injection resistance, telem
 serialization, role objectives, policy-version/prompt-hash stability, the connected identity/credential
 lifecycle and session resume, and a model-free connected integration over two concurrent games.
 
+## Cross-run memory (optional, off by default)
+
+Cross-run memory is optional and **off by default**. V2's default guarantee remains **stable identity
++ isolated per-game state, not cross-run learning**. When enabled (`WOLFFORGE_V2_MEMORY_MODE != off`),
+the agent surfaces safe, compact post-game summaries as a clearly-separated **weak prior** (never as
+current-game facts), and — only in `write`/`readwrite` — records summaries on game completion. With
+memory off, the prompt is byte-identical to pre-memory V2. See
+[WOLFFORGE_V2_MEMORY.md](./WOLFFORGE_V2_MEMORY.md) for schema, privacy guarantees, and commands.
+
 ## Limitations
 
 - The connected baseline reuses V2's machinery and swaps only the strategy prompt; it reproduces the

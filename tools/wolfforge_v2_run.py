@@ -109,6 +109,22 @@ def _run_opponent(name: str, model: str, run_id: str, server: str, fake: bool) -
         _log(f"{name}: ERROR {type(e).__name__}: {e}")
 
 
+def _memory_banner() -> str:
+    """A safe one-line memory banner (never prints secrets; a local sqlite path is safe to show)."""
+    from examples.wolfforge_v2_memory import CrossRunMemory, default_memory_path, normalize_mode
+    mode = normalize_mode(os.environ.get("WOLFFORGE_V2_MEMORY_MODE", "off"))
+    if mode == "off":
+        return "memory: off"
+    path = os.environ.get("WOLFFORGE_V2_MEMORY_PATH") or str(default_memory_path())
+    try:
+        mem = CrossRunMemory(path=path, mode="read")
+        snap = mem.snapshot_hash()
+        mem.close()
+    except Exception:  # never let banner computation break the run
+        snap = "unavailable"
+    return f"memory: {mode} snapshot={snap} path={path}"
+
+
 def _wait_for_active(run_id: str, need: int, timeout_s: float = 180.0) -> int:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -135,7 +151,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--join", action="store_true",
                    help="run already exists and a remote coordinator drives it; just connect agents")
     p.add_argument("--wait", type=int, default=1200)
+    # Optional cross-run memory (OFF by default). See WOLFFORGE_V2_MEMORY.md. Flags override env.
+    p.add_argument("--memory-mode", choices=["off", "read", "write", "readwrite"], default=None,
+                   help="cross-run memory mode for WolfForgeV2 + CharismaBaseline (default: off)")
+    p.add_argument("--memory-path", default=None, help="path to the memory SQLite file")
+    p.add_argument("--memory-max-prompt-chars", type=int, default=None,
+                   help="cap on injected long-term-memory characters")
     args = p.parse_args(argv)
+
+    # Memory config flows to the agent threads via env (V2Config.from_env). Flags override existing env.
+    if args.memory_mode is not None:
+        os.environ["WOLFFORGE_V2_MEMORY_MODE"] = args.memory_mode
+    if args.memory_path is not None:
+        os.environ["WOLFFORGE_V2_MEMORY_PATH"] = args.memory_path
+    if args.memory_max_prompt_chars is not None:
+        os.environ["WOLFFORGE_V2_MEMORY_MAX_PROMPT_CHARS"] = str(args.memory_max_prompt_chars)
+    _log(_memory_banner())
 
     # Diagnostic transparency: the coordinator/runner and the --server process MUST share one store
     # backend, or signups/turns created by one are invisible to the other. This line names the active
