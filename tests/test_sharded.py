@@ -22,6 +22,19 @@ from arena.sharded import create_sharded_run, rollup_parent_status
 from arena.server import app
 
 
+class _NoopThread:
+    """Stand-in for threading.Thread that never runs the target (no real agents / network)."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def start(self):
+        pass
+
+    def join(self, timeout=None):
+        pass
+
+
 def _sqlite_store(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setattr(store, "DB_PATH", tmp_path / "sharded.db")
@@ -140,6 +153,62 @@ def test_init_schema_idempotent_preserves_rows(tmp_path, monkeypatch):
     assert child["parent_run_id"] == "run_persist"
     assert child["shard_index"] == 0
     assert store.child_run_ids("run_persist") == ["child_persist"]
+
+
+def test_normal_upsert_does_not_detach_existing_parent(tmp_path, monkeypatch):
+    """FINDING P2 (DATA-INTEGRITY): a NORMAL save_run/create_connected_run whose id collides with an
+    EXISTING sharded PARENT must NOT rewrite run_kind back to 'normal' or clear the shard cols. The
+    create_sharded_run guards reject the parent direction; this is the unguarded direction — a
+    non-sharded caller clobbering a shard. Preserve the existing shard identity on upsert."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("p_collide", run_kind="parent", num_shards=2))
+    assert store.get_run("p_collide")["run_kind"] == "parent"
+
+    # A normal create (run_kind defaults 'normal', no shard fields) re-saves the SAME id.
+    store.create_connected_run({
+        "id": "p_collide", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 4, "players": 3, "seed_base": 7,
+    })
+
+    row = store.get_run("p_collide")
+    assert row["run_kind"] == "parent", f"parent detached -> {row['run_kind']}"
+    assert row["num_shards"] == 2, f"num_shards clobbered -> {row['num_shards']}"
+
+
+def test_normal_upsert_does_not_detach_existing_child(tmp_path, monkeypatch):
+    """FINDING P2 (DATA-INTEGRITY): same as above for a CHILD shard — a normal upsert on a child id
+    must keep run_kind='child' and preserve parent_run_id / shard cols (else the child is detached
+    and may surface as a joinable normal run, breaking parent aggregation)."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("ch_parent", run_kind="parent", num_shards=2))
+    store.save_run(_base_run(
+        "ch_collide", run_kind="child", parent_run_id="ch_parent",
+        shard_index=1, num_shards=2))
+    assert store.get_run("ch_collide")["run_kind"] == "child"
+
+    store.create_connected_run({
+        "id": "ch_collide", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 4, "players": 3, "seed_base": 7,
+    })
+
+    row = store.get_run("ch_collide")
+    assert row["run_kind"] == "child", f"child detached -> {row['run_kind']}"
+    assert row["parent_run_id"] == "ch_parent", f"parent_run_id cleared -> {row['parent_run_id']}"
+    assert row["shard_index"] == 1, f"shard_index cleared -> {row['shard_index']}"
+    assert row["num_shards"] == 2, f"num_shards cleared -> {row['num_shards']}"
+
+
+def test_normal_run_resave_stays_normal_with_null_shards(tmp_path, monkeypatch):
+    """INV-2: a genuinely NORMAL run re-saved (no shard fields) stays run_kind='normal' with null
+    shard cols — the COALESCE/NULLIF preservation must not introduce any non-null shard identity."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("plain"))
+    store.save_run(_base_run("plain", status="running"))  # re-save, still normal
+    row = store.get_run("plain")
+    assert row["run_kind"] == "normal"
+    assert row["parent_run_id"] is None
+    assert row["shard_index"] is None
+    assert row["num_shards"] is None
 
 
 # --- Steps 3+4: rollup, score aggregation, discovery (REQ-2 / V-2; score half of V-4/V-5) ----
@@ -650,6 +719,90 @@ def test_launcher_shards_creates_parent_and_children(tmp_path, monkeypatch):
     parent = store.get_run("L")
     assert parent["run_kind"] == "parent" and parent["num_shards"] == 3
     assert store.child_run_ids("L") == ["L_shard_0", "L_shard_1", "L_shard_2"]
+
+
+# --- P3 (codex round-10 / SPEC §7): --external is incompatible with --shards>1 -----------------
+#
+# External sharding is out of scope (SPEC §7). With --shards>1 the launcher dispatches into
+# _run_sharded BEFORE the external-reservation branch, so any --external N would be SILENTLY
+# ignored (the launcher seats every player itself). The launcher must instead FAIL FAST and never
+# enter _run_sharded.
+
+
+def test_launcher_external_with_shards_fails_fast(tmp_path, monkeypatch, capsys):
+    """--shards>1 + --external>0 must error out (nonzero) and NOT dispatch to _run_sharded."""
+    _sqlite_store(tmp_path, monkeypatch)
+    import tools.coding_agent_run as launcher
+
+    entered = {"sharded": False}
+    monkeypatch.setattr(
+        launcher, "_run_sharded",
+        lambda *a, **k: entered.__setitem__("sharded", True) or 0,
+    )
+
+    rc = launcher.main([
+        "--run-id", "X", "--games", "6", "--rounds", "2",
+        "--shards", "2", "--external", "1",
+        "--server", "http://127.0.0.1:8000", "--ready-timeout", "0.1",
+    ])
+
+    assert rc != 0, "external + sharded should fail fast with a nonzero return code"
+    assert entered["sharded"] is False, "must NOT enter _run_sharded when external sharding requested"
+    out = capsys.readouterr().out + capsys.readouterr().err
+    assert "external" in out.lower() and "shard" in out.lower(), (
+        f"expected a clear error mentioning external + shards, got: {out!r}"
+    )
+    # No run rows of any kind should have been created.
+    assert store.get_run("X") is None
+
+
+def test_launcher_shards_no_external_still_dispatches_sharded(tmp_path, monkeypatch):
+    """INV (P3 fix): --shards>1 with --external 0 still routes to _run_sharded unchanged."""
+    _sqlite_store(tmp_path, monkeypatch)
+    import tools.coding_agent_run as launcher
+
+    entered = {"sharded": False}
+    monkeypatch.setattr(
+        launcher, "_run_sharded",
+        lambda *a, **k: entered.__setitem__("sharded", True) or 0,
+    )
+
+    rc = launcher.main([
+        "--run-id", "Y", "--games", "6", "--rounds", "2",
+        "--shards", "2", "--external", "0",
+        "--server", "http://127.0.0.1:8000", "--ready-timeout", "0.1",
+    ])
+
+    assert rc == 0
+    assert entered["sharded"] is True
+
+
+def test_launcher_external_no_shards_uses_reservation_path(tmp_path, monkeypatch):
+    """INV-2: --shards 1 + --external N still uses the existing single-run reservation path."""
+    _sqlite_store(tmp_path, monkeypatch)
+    import tools.coding_agent_run as launcher
+
+    entered = {"sharded": False}
+    monkeypatch.setattr(
+        launcher, "_run_sharded",
+        lambda *a, **k: entered.__setitem__("sharded", True) or 0,
+    )
+    # Don't launch real agents / network: stub the per-seat thread target and the active wait.
+    monkeypatch.setattr(launcher.threading, "Thread", _NoopThread)
+    monkeypatch.setattr(launcher, "_wait_for_active", lambda *a, **k: 0)
+
+    rc = launcher.main([
+        "--run-id", "Z", "--games", "6", "--rounds", "2",
+        "--shards", "1", "--external", "1",
+        "--server", "http://127.0.0.1:8000", "--ready-timeout", "0.1",
+    ])
+
+    # Aborts because no agents become active (stubbed), but it took the reservation path:
+    # it created the single open run and never entered _run_sharded.
+    assert entered["sharded"] is False
+    assert rc == 1
+    run = store.get_run("Z")
+    assert run is not None and run["run_kind"] == "normal"
 
 
 # --- P1 (INV-4 / SPEC D7): direct signups gated to parents and children -------------------------

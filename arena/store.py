@@ -453,8 +453,13 @@ def save_run(meta: dict):
             f"  submitter=excluded.submitter, created_utc=excluded.created_utc, "
             f"  deck_preset=excluded.deck_preset, "
             f"  metadata_json=COALESCE(excluded.metadata_json, runs.metadata_json), "
-            f"  run_kind=excluded.run_kind, parent_run_id=excluded.parent_run_id, "
-            f"  shard_index=excluded.shard_index, num_shards=excluded.num_shards, "
+            # Preserve existing shard identity: a NORMAL upsert (run_kind 'normal', null shard cols)
+            # whose id collides with an existing parent/child must NOT detach the shard (FINDING P2).
+            # An incoming sharded row (run_kind != 'normal') still wins, so create_sharded_run works.
+            f"  run_kind=COALESCE(NULLIF(excluded.run_kind,'normal'), runs.run_kind, 'normal'), "
+            f"  parent_run_id=COALESCE(excluded.parent_run_id, runs.parent_run_id), "
+            f"  shard_index=COALESCE(excluded.shard_index, runs.shard_index), "
+            f"  num_shards=COALESCE(excluded.num_shards, runs.num_shards), "
             f"  join_token=COALESCE(excluded.join_token, runs.join_token)",
             (meta["id"], meta["game"], meta["label"], meta["status"], meta["n_games"],
              meta["players"], meta["seed_base"], meta["created"], json.dumps(meta["agents"]),

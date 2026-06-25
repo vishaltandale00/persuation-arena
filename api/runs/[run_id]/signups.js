@@ -8,15 +8,24 @@ import {
 } from '../../_db.js';
 import { signupGateError } from '../../_shards.js';
 
-// FINDINGS #2/#3: a Postgres unique-constraint violation (uq_run_signups_run_roster) surfaces as
-// SQLSTATE 23505. The Neon serverless driver exposes it on err.code; fall back to the message so a
-// racing duplicate-seat INSERT is reliably mapped to 400 invalid_seat regardless of driver shape.
+// FINDINGS #2/#3: a Postgres unique-constraint violation surfaces as SQLSTATE 23505. The Neon
+// serverless driver exposes it on err.code.
 function isUniqueViolation(err) {
-  if (!err) return false;
-  if (err.code === '23505') return true;
-  const msg = String(err.message || err).toLowerCase();
-  return msg.includes('uq_run_signups_run_roster') ||
-    (msg.includes('unique') && msg.includes('roster_index'));
+  return !!err && err.code === '23505';
+}
+
+// FINDING P2 (codex round-10): run_signups has TWO unique constraints — the explicit-seat partial
+// index uq_run_signups_run_roster (run_id, roster_index) AND the table's UNIQUE(run_id, agent_id)
+// (run_signups_run_id_agent_id_key). BOTH surface as 23505, so the catch MUST discriminate. ONLY the
+// seat index is a seat error -> 400 invalid_seat; a (run_id, agent_id) collision is a racing/retried
+// NORMAL signup by the same agent and must reload the existing signup, NOT mislabel it 'invalid_seat'.
+// Mirrors store._is_seat_index_violation. Postgres exposes the violated constraint name on
+// err.constraint; fall back to the message text containing 'roster'/'uq_run_signups_run_roster'.
+function isSeatIndexViolation(err) {
+  const name = String((err && err.constraint) || '').toLowerCase();
+  if (name) return name === 'uq_run_signups_run_roster' || name.includes('roster');
+  const msg = String((err && err.message) || err || '').toLowerCase();
+  return msg.includes('uq_run_signups_run_roster') || msg.includes('roster_index');
 }
 
 export default async function handler(req, res) {
@@ -117,7 +126,21 @@ export default async function handler(req, res) {
         Number(run.players), candidateHandle, rosterIndex],
       );
     } catch (err) {
-      if (isUniqueViolation(err)) return send(res, 400, { error: 'invalid_seat' });
+      if (isUniqueViolation(err)) {
+        // ONLY the explicit-seat index is a seat error (FINDINGS #2/#3). A (run_id, agent_id)
+        // collision means a signup for this agent already exists (a racing/retried NORMAL signup, or
+        // this agent's prior — possibly terminal — row); reload and return it (idempotent path,
+        // FINDING P2 / round-9 Python parity), NOT 'invalid_seat'.
+        if (isSeatIndexViolation(err)) return send(res, 400, { error: 'invalid_seat' });
+        const raced = (await q(
+          'SELECT * FROM run_signups WHERE run_id=$1 AND agent_id=$2', [runId, agent.id]))[0];
+        if (raced) {
+          await advanceLobby(runId);
+          const reloaded = (await q('SELECT * FROM run_signups WHERE id=$1', [raced.id]))[0];
+          const r2 = await getRun(runId);
+          return send(res, 200, signupResponse(reloaded, r2.coordinator_url));
+        }
+      }
       throw err;
     }
     if (!inserted[0]) {

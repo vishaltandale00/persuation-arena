@@ -311,6 +311,12 @@ def main(argv: list[str] | None = None) -> int:
         return _run_shard_child(args)
 
     if args.shards and args.shards > 1:
+        # External seat reservation is out of scope for sharded runs (SPEC §7): _run_sharded seats
+        # every player itself, so an --external request here would be silently ignored. Fail fast.
+        if args.external and args.external > 0:
+            _log("error: external reservations are not supported with sharded runs (--shards>1); "
+                 "external sharding is out of scope")
+            return 1
         return _run_sharded(args)
 
     players = len(SEATS)

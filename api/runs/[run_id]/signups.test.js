@@ -38,8 +38,10 @@ function makeQ(sink, occupiedSeats = [], opts = {}) {
     if (t.startsWith('SELECT * FROM runs WHERE id =')) {
       return [{ id: params[0], run_kind: 'normal', status: 'open', players: 5, coordinator_url: null }];
     }
-    // existing active signup for this agent? -> none
-    if (t.startsWith('SELECT * FROM run_signups WHERE run_id=') && t.includes('AND agent_id=')) {
+    // existing active signup for this agent? -> none. (The pre-check excludes terminal statuses via
+    // NOT IN; the agent-collision RELOAD query has no NOT IN and is handled separately below.)
+    if (t.startsWith('SELECT * FROM run_signups WHERE run_id=') && t.includes('AND agent_id=')
+        && t.includes('NOT IN')) {
       return [];
     }
     // active seats query (duplicate-seat guard): rows with roster_index already taken
@@ -62,6 +64,16 @@ function makeQ(sink, occupiedSeats = [], opts = {}) {
       if (opts.insertUniqueViolation) {
         const e = new Error('duplicate key value violates unique constraint "uq_run_signups_run_roster"');
         e.code = '23505';
+        if (!opts.noConstraintField) e.constraint = 'uq_run_signups_run_roster';
+        throw e;
+      }
+      // FINDING P2 (codex round-10): simulate a racing/retried NORMAL signup by the SAME agent losing
+      // the UNIQUE(run_id, agent_id) race. This is ALSO a 23505 but on a DIFFERENT constraint, so the
+      // handler must NOT report 'invalid_seat'; it must reload + return the existing signup.
+      if (opts.insertAgentCollision) {
+        const e = new Error('duplicate key value violates unique constraint "run_signups_run_id_agent_id_key"');
+        e.code = '23505';
+        if (!opts.noConstraintField) e.constraint = 'run_signups_run_id_agent_id_key';
         throw e;
       }
       const row = { id: params[0], run_id: params[1], agent_id: params[2], status: 'waiting', seat: null };
@@ -69,7 +81,13 @@ function makeQ(sink, occupiedSeats = [], opts = {}) {
       return [row];
     }
     if (t.startsWith('UPDATE agents SET last_seen_utc')) return [];
+    // FINDING P2: the agent-collision reload path looks up the EXISTING signup by (run_id, agent_id).
+    if (t.startsWith('SELECT * FROM run_signups WHERE run_id=') && t.includes('AND agent_id=')
+        && !t.includes('NOT IN') && opts.existingSignup) {
+      return [opts.existingSignup];
+    }
     if (t.startsWith('SELECT * FROM run_signups WHERE id=')) {
+      if (opts.existingSignup && params[0] === opts.existingSignup.id) return [opts.existingSignup];
       return [inserted[params[0]] || { id: params[0], run_id: 'run_x', status: 'waiting', seat: null }];
     }
     return [];
@@ -180,4 +198,47 @@ test('POST signups: a racing duplicate-seat INSERT (unique violation 23505) retu
   assert.ok(sink.insertText, 'the INSERT must have been attempted (pre-read passed)');
   assert.equal(captured.status, 400, `expected 400, got ${captured.status}`);
   assert.equal(captured.body.error, 'invalid_seat');
+});
+
+// FINDING P2 (codex round-10): a 23505 on the UNIQUE(run_id, agent_id) constraint is NOT a seat
+// error — it means a concurrent/retried NORMAL signup by the SAME agent already inserted a row.
+// The handler must DISCRIMINATE by the violated constraint (err.constraint /
+// run_signups_run_id_agent_id_key) and reload + return the EXISTING signup (idempotent path),
+// NOT 400 invalid_seat. Mirrors the round-9 Python fix in store.create_signup. RED before fix:
+// today ANY 23505 -> invalid_seat.
+test('POST signups: a 23505 on (run_id, agent_id) reloads the existing signup, NOT invalid_seat', { skip: !MODULE_MOCKS && 'needs --experimental-test-module-mocks' }, async () => {
+  const existing = { id: 'signup_existing', run_id: 'run_x', agent_id: 'agent_1', status: 'waiting', seat: null };
+  const { captured } = await runHandler(
+    { protocol_version: 'arena-agent-v1' }, [], { insertAgentCollision: true, existingSignup: existing },
+  );
+  assert.equal(captured.status, 200, `expected 200 (idempotent reload), got ${captured.status}`);
+  assert.notEqual(captured.body.error, 'invalid_seat', 'an agent-id collision must NOT be a seat error');
+  assert.equal(captured.body.signup_id, 'signup_existing', 'must return the existing signup row');
+});
+
+// FINDING P2: the explicit-seat constraint MUST still map to 400 invalid_seat (regression guard for
+// the discrimination). uq_run_signups_run_roster -> seat error.
+test('POST signups: a 23505 on uq_run_signups_run_roster is still 400 invalid_seat', { skip: !MODULE_MOCKS && 'needs --experimental-test-module-mocks' }, async () => {
+  const { captured } = await runHandler(
+    { protocol_version: 'arena-agent-v1', seat: 2 }, [], { insertUniqueViolation: true },
+  );
+  assert.equal(captured.status, 400, `expected 400, got ${captured.status}`);
+  assert.equal(captured.body.error, 'invalid_seat');
+});
+
+// FINDING P2: when the driver does NOT expose err.constraint, discrimination falls back to the
+// message text. A roster-index message -> invalid_seat; an agent-id message -> reload.
+test('POST signups: constraint discrimination falls back to message text when err.constraint absent', { skip: !MODULE_MOCKS && 'needs --experimental-test-module-mocks' }, async () => {
+  const seatCase = await runHandler(
+    { protocol_version: 'arena-agent-v1', seat: 2 }, [], { insertUniqueViolation: true, noConstraintField: true },
+  );
+  assert.equal(seatCase.captured.status, 400);
+  assert.equal(seatCase.captured.body.error, 'invalid_seat');
+
+  const existing = { id: 'signup_existing', run_id: 'run_x', agent_id: 'agent_1', status: 'waiting', seat: null };
+  const agentCase = await runHandler(
+    { protocol_version: 'arena-agent-v1' }, [], { insertAgentCollision: true, noConstraintField: true, existingSignup: existing },
+  );
+  assert.equal(agentCase.captured.status, 200, 'agent-id message must NOT be a seat error');
+  assert.equal(agentCase.captured.body.signup_id, 'signup_existing');
 });
