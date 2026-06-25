@@ -32,14 +32,31 @@ export default async function handler(req, res) {
   // D5/V-7), mirroring store.create_signup(seat=). Stored as roster_index and honored by advanceLobby
   // only when EVERY seated signup carries one; otherwise arrival-order (INV-2). Absent for normal
   // signups so the request/INSERT is byte-identical to before.
-  const rosterIndex = body.seat === undefined || body.seat === null ? null : Number(body.seat);
+  const hasSeat = body.seat !== undefined && body.seat !== null;
+  // FINDING #2/#3 (codex round-6): only an actual JS number may be a seat. A boolean (true/false) must
+  // NOT coerce via Number() to 1/0, and a string ("x") / float (1.7) must be rejected — mirror
+  // store.create_signup's "bool is not an int, must be integer" rule. Do NOT Number()-coerce a
+  // non-number type.
+  const rosterIndex = hasSeat ? body.seat : null;
   // FINDING #3: bounds-check an explicit seat against run.players BEFORE insert (mirrors
   // store.create_signup). advanceLobby only seats r.seat < players, so an out-of-range / non-integer
   // seat would leave this signup unseated forever and wedge the shard. No seat (normal runs) is
   // unaffected (INV-2).
-  if (rosterIndex !== null &&
-      (!Number.isInteger(rosterIndex) || rosterIndex < 0 || rosterIndex >= Number(run.players))) {
+  if (hasSeat &&
+      (typeof rosterIndex !== 'number' || !Number.isInteger(rosterIndex) ||
+       rosterIndex < 0 || rosterIndex >= Number(run.players))) {
     return send(res, 400, { error: 'invalid_seat' });
+  }
+  // FINDING #3 (codex round-6): an explicit seat must be UNIQUE among active signups in this run.
+  // Without this, two agents could claim the same seat and advanceLobby would assign duplicate seats,
+  // corrupting the deterministic identity->seat contract (SPEC D5/V-7). No seat is unaffected (INV-2).
+  if (hasSeat) {
+    const seatTaken = await q(
+      `SELECT 1 FROM run_signups WHERE run_id=$1 AND agent_id<>$2 AND roster_index=$3
+       AND status IN ('waiting','ready_required','ready','active')`,
+      [runId, agent.id, rosterIndex],
+    );
+    if (seatTaken.length) return send(res, 400, { error: 'invalid_seat' });
   }
 
   let s = (await q(

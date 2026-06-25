@@ -558,10 +558,13 @@ def api_signup_run(run_id: str, payload: dict, authorization: str | None = Heade
         raise HTTPException(400, "unsupported protocol_version")
     # Optional explicit seat (roster index): the orchestrator's deterministic-seat request (SPEC
     # D5/V-7). Absent for normal/discovered signups -> arrival-order seating (INV-2).
+    # FINDING #2 (codex round-6): pass the RAW seat through to store.create_signup, which owns seat
+    # validation (non-integer/out-of-range/duplicate -> 'invalid_seat' -> HTTP 400 below). int()-coercing
+    # here turned a non-integer seat ("x") into a 500 (ValueError) and silently coerced JSON true/1.7.
     seat = payload.get("seat")
     signup, err = store.create_signup(
         run_id, agent["id"], int(payload.get("max_concurrent_turns") or 1),
-        seat=int(seat) if seat is not None else None,
+        seat=seat,
         join_token=payload.get("join_token"),
     )
     if err == "run_not_found":

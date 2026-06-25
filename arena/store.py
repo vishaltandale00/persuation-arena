@@ -1086,11 +1086,24 @@ def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
         # seat would leave this signup unseated forever and wedge the shard in waiting/ready_required.
         # A signup with NO seat (normal runs) skips this entirely (INV-2).
         if seat is not None:
-            try:
-                seat_idx = int(seat)
-            except (TypeError, ValueError):
+            # bool is an int subclass: a JSON true/false must NOT silently coerce to seat 1/0.
+            if isinstance(seat, bool) or not isinstance(seat, int):
                 return None, "invalid_seat"
-            if isinstance(seat, bool) or seat_idx < 0 or seat_idx >= int(run["players"]):
+            seat_idx = seat
+            if seat_idx < 0 or seat_idx >= int(run["players"]):
+                return None, "invalid_seat"
+            # FINDING #3 (codex round-6): an explicit seat must be UNIQUE among active signups in this
+            # run. Without this, two agents could claim the same seat and _maybe_ready_required would
+            # assign duplicate seats, corrupting the deterministic identity->seat contract (SPEC D5/V-7).
+            # A signup with NO seat is unaffected (INV-2). We exclude this agent's own active signup
+            # (a re-create returns the existing row below and must not collide with itself).
+            taken = c.execute(
+                f"SELECT 1 FROM run_signups WHERE run_id={ph} AND agent_id!={ph} "
+                f"AND roster_index={ph} "
+                f"AND status IN ('waiting','ready_required','ready','active')",
+                (run_id, agent_id, seat_idx),
+            ).fetchone()
+            if taken:
                 return None, "invalid_seat"
         existing = c.execute(
             f"SELECT * FROM run_signups WHERE run_id={ph} AND agent_id={ph} "

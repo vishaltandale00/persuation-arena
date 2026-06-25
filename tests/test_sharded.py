@@ -1013,6 +1013,56 @@ def test_create_sharded_run_same_count_recreate_idempotent(tmp_path, monkeypatch
     assert store.get_run("samek")["num_shards"] == 2
 
 
+def test_create_sharded_run_rejects_reused_normal_run_id(tmp_path, monkeypatch):
+    """Codex round-6 / FINDING #1 (DATA-INTEGRITY): create_sharded_run must REJECT a parent_id that
+    already belongs to a NORMAL run. Today existing_k (num_shards) is None for a normal run, so the
+    shard-count guard is skipped and save_run rewrites that normal run as a sharded parent — hiding
+    the original run's games/signups (parent read paths source only child runs). A reused --run-id or
+    payload run_id triggers this silent clobber; it must instead raise a clear ValueError and leave
+    the existing normal run's row untouched."""
+    import pytest
+    _sqlite_store(tmp_path, monkeypatch)
+    # an existing NORMAL run that an orchestrator must not silently clobber
+    store.save_run(_base_run("collide", n_games=4, players=3, seed_base=7))
+    assert store.get_run("collide")["run_kind"] == "normal"
+
+    parent_cfg = _base_run("collide", n_games=4, players=3, seed_base=7)
+    with pytest.raises(ValueError, match="(?i)in use|not a parent"):
+        create_sharded_run(parent_cfg, 2)
+
+    # the original normal run is unchanged — still a normal run, no parent rewrite, no children
+    row = store.get_run("collide")
+    assert row["run_kind"] == "normal", f"normal run was clobbered: {row['run_kind']}"
+    assert row["num_shards"] is None
+    assert store.child_run_ids("collide") == []
+
+    # a fresh id still works
+    fresh = create_sharded_run(_base_run("fresh", n_games=4, players=3, seed_base=7), 2)
+    assert fresh == ["fresh_shard_0", "fresh_shard_1"]
+    assert store.get_run("fresh")["run_kind"] == "parent"
+
+    # a same-K parent re-create stays idempotent (the round-4/round-5 retry path)
+    again = create_sharded_run(_base_run("fresh", n_games=4, players=3, seed_base=7), 2)
+    assert again == fresh
+    assert store.get_run("fresh")["num_shards"] == 2
+
+
+def test_create_sharded_run_rejects_reused_child_run_id(tmp_path, monkeypatch):
+    """Codex round-6 / FINDING #1 (DATA-INTEGRITY): the same guard must reject a parent_id that is
+    already a CHILD shard of some other parent — it is not a parent, so it must not be rewritten."""
+    import pytest
+    _sqlite_store(tmp_path, monkeypatch)
+    create_sharded_run(_base_run("realparent", n_games=4, players=3, seed_base=7), 2)
+    assert store.get_run("realparent_shard_0")["run_kind"] == "child"
+
+    with pytest.raises(ValueError, match="(?i)in use|not a parent"):
+        create_sharded_run(_base_run("realparent_shard_0", n_games=4, players=3, seed_base=7), 2)
+    # the child row is unchanged
+    child = store.get_run("realparent_shard_0")
+    assert child["run_kind"] == "child"
+    assert child["parent_run_id"] == "realparent"
+
+
 def test_create_signup_rejects_out_of_range_seat(tmp_path, monkeypatch):
     """Codex round-5 / FINDING #3 (CORRECTNESS): an explicit seat must be bounds-checked against
     run.players BEFORE insert. A seat outside [0, players) (or a non-integer) can never be assigned
@@ -1058,6 +1108,131 @@ def test_create_signup_accepts_in_range_seat_and_no_seat(tmp_path, monkeypatch):
     assert err is None and sg is not None
     sg, err = store.create_signup("seatok", "agent_1")  # no seat: INV-2
     assert err is None and sg is not None
+
+
+def test_create_signup_rejects_duplicate_seat(tmp_path, monkeypatch):
+    """Codex round-6 / FINDING #3 (CORRECTNESS): two ACTIVE signups in the same run must not be able
+    to request the SAME explicit seat. create_signup bounds-checks an explicit seat but did NOT check
+    uniqueness, so two agents could both claim seat 0; _maybe_ready_required would then assign
+    duplicate seats and corrupt the deterministic identity->seat contract (SPEC D5/V-7). The second
+    same-seat request must be rejected with 'invalid_seat' and insert nothing."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("seatdup", players=5))
+    store.register_agent("a0", "hash_a0", "arena-agent-v1", "test", agent_id="agent_0")
+    store.register_agent("a1", "hash_a1", "arena-agent-v1", "test", agent_id="agent_1")
+    store.register_agent("a2", "hash_a2", "arena-agent-v1", "test", agent_id="agent_2")
+
+    sg, err = store.create_signup("seatdup", "agent_0", seat=1)
+    assert err is None and sg is not None, (sg, err)
+
+    # a different agent requesting the SAME seat must be rejected
+    sg, err = store.create_signup("seatdup", "agent_1", seat=1)
+    assert sg is None and err == "invalid_seat", (sg, err)
+
+    # a distinct seat is still fine
+    sg, err = store.create_signup("seatdup", "agent_2", seat=2)
+    assert err is None and sg is not None, (sg, err)
+
+    # the duplicate attempt inserted nothing: exactly two signups exist (seats 1 and 2)
+    with store.conn() as c:
+        ph = store._ph()
+        rows = c.execute(
+            f"SELECT roster_index FROM run_signups WHERE run_id={ph} ORDER BY roster_index",
+            ("seatdup",),
+        ).fetchall()
+        assert [r["roster_index"] for r in rows] == [1, 2], rows
+
+
+def test_create_signup_rejects_bool_seat(tmp_path, monkeypatch):
+    """Codex round-6 / FINDING #3: a JSON boolean (True/False) is an int subclass in Python, so it
+    would silently coerce to seat 1/0. An explicit boolean seat must be rejected as 'invalid_seat'."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.save_run(_base_run("seatbool", players=5))
+    store.register_agent("a0", "hash_a0", "arena-agent-v1", "test", agent_id="agent_0")
+
+    sg, err = store.create_signup("seatbool", "agent_0", seat=True)
+    assert sg is None and err == "invalid_seat", (sg, err)
+    sg, err = store.create_signup("seatbool", "agent_0", seat=False)
+    assert sg is None and err == "invalid_seat", (sg, err)
+    sg, err = store.create_signup("seatbool", "agent_0", seat=1.7)
+    assert sg is None and err == "invalid_seat", (sg, err)
+
+    with store.conn() as c:
+        ph = store._ph()
+        n = c.execute(
+            f"SELECT COUNT(*) AS n FROM run_signups WHERE run_id={ph}", ("seatbool",)
+        ).fetchone()
+        assert n["n"] == 0, "rejected bool/float seats must not insert a row"
+
+
+def test_signup_endpoint_malformed_seat_is_400_not_500(tmp_path, monkeypatch):
+    """Codex round-6 / FINDING #2: api_signup_run must NOT int()-coerce the raw seat before store
+    validation. A non-integer seat ("x") previously raised ValueError -> HTTP 500; a JSON
+    boolean/float was silently coerced. All malformed explicit seats must surface as HTTP 400
+    'invalid_seat' through the store's validation path."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("INGEST_TOKENS", raising=False)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "seat_malformed.db")
+    with TestClient(app) as client:
+        created = client.post("/api/runs", json={
+            "connected": True, "run_id": "run_seatbad", "game": "onuw",
+            "players": 5, "games": 1, "seed": 9101,
+        })
+        assert created.status_code == 200, created.text
+        reg = client.post("/api/agents/register", json={
+            "display_name": "omega", "protocol_version": "arena-agent-v1",
+            "harness": "test", "public_key": "pk_omega",
+        })
+        assert reg.status_code == 200, reg.text
+        token = reg.json()["agent_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # non-integer string seat: must be 400 (was 500 via int("x"))
+        bad = client.post("/api/runs/run_seatbad/signups", json={
+            "protocol_version": "arena-agent-v1", "seat": "x",
+        }, headers=headers)
+        assert bad.status_code == 400, bad.text
+        assert "invalid_seat" in bad.text
+
+        # JSON boolean: must be 400 (was silently coerced to seat 1)
+        boolbad = client.post("/api/runs/run_seatbad/signups", json={
+            "protocol_version": "arena-agent-v1", "seat": True,
+        }, headers=headers)
+        assert boolbad.status_code == 400, boolbad.text
+        assert "invalid_seat" in boolbad.text
+
+
+def test_signup_endpoint_rejects_duplicate_seat(tmp_path, monkeypatch):
+    """Codex round-6 / FINDING #3: two agents requesting the SAME explicit seat in one run -> the
+    second must get HTTP 400 'invalid_seat'."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("INGEST_TOKENS", raising=False)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "seat_dup_ep.db")
+    with TestClient(app) as client:
+        created = client.post("/api/runs", json={
+            "connected": True, "run_id": "run_seatdupep", "game": "onuw",
+            "players": 5, "games": 1, "seed": 9102,
+        })
+        assert created.status_code == 200, created.text
+        tokens = []
+        for name in ("dup_a", "dup_b"):
+            reg = client.post("/api/agents/register", json={
+                "display_name": name, "protocol_version": "arena-agent-v1",
+                "harness": "test", "public_key": f"pk_{name}",
+            })
+            assert reg.status_code == 200, reg.text
+            tokens.append(reg.json()["agent_token"])
+
+        first = client.post("/api/runs/run_seatdupep/signups", json={
+            "protocol_version": "arena-agent-v1", "seat": 3,
+        }, headers={"Authorization": f"Bearer {tokens[0]}"})
+        assert first.status_code == 200, first.text
+
+        dup = client.post("/api/runs/run_seatdupep/signups", json={
+            "protocol_version": "arena-agent-v1", "seat": 3,
+        }, headers={"Authorization": f"Bearer {tokens[1]}"})
+        assert dup.status_code == 400, dup.text
+        assert "invalid_seat" in dup.text
 
 
 def test_signup_endpoint_rejects_out_of_range_seat(tmp_path, monkeypatch):

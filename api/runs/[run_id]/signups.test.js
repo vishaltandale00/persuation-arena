@@ -29,7 +29,9 @@ function fakeReqRes(runId, body) {
 }
 
 // SQL-routing mock for q(text, params). Captures the run_signups INSERT params for assertions.
-function makeQ(sink) {
+// `occupiedSeats` (optional) seeds the run with existing ACTIVE signups already holding those
+// roster_index seats, so the duplicate-seat guard can be exercised.
+function makeQ(sink, occupiedSeats = []) {
   const inserted = {};
   return async (text, params = []) => {
     const t = text.replace(/\s+/g, ' ').trim();
@@ -39,6 +41,14 @@ function makeQ(sink) {
     // existing active signup for this agent? -> none
     if (t.startsWith('SELECT * FROM run_signups WHERE run_id=') && t.includes('AND agent_id=')) {
       return [];
+    }
+    // active seats query (duplicate-seat guard): rows with roster_index already taken
+    if (t.includes('FROM run_signups') && t.includes('roster_index') && t.includes("status IN ('waiting'")
+        && !t.includes('JOIN agents')) {
+      sink.seatQueryRan = true;
+      // The handler binds the requested seat as the last param; only a row at THAT seat collides.
+      const wanted = params[params.length - 1];
+      return occupiedSeats.filter((seat) => seat === wanted).map((seat) => ({ roster_index: seat }));
     }
     // active roster (for capacity / unique-name checks) -> empty
     if (t.includes('FROM run_signups s JOIN agents a') && t.includes("status IN ('waiting'")) {
@@ -60,11 +70,11 @@ function makeQ(sink) {
   };
 }
 
-async function runHandler(body) {
+async function runHandler(body, occupiedSeats = []) {
   const sink = {};
   mock.module(DB_PATH, {
     namedExports: {
-      q: makeQ(sink),
+      q: makeQ(sink, occupiedSeats),
       send(res, status, b) { res.statusCode = status; res.end(JSON.stringify(b)); },
       readBody: async (req) => req.body || {},
       agentFromToken: async () => ({ id: 'agent_1', display_name: 'alpha' }),
@@ -80,7 +90,7 @@ async function runHandler(body) {
       validateUniquePublicNames: () => null,
     },
   });
-  const mod = await import(`../../runs/[run_id]/signups.js?case=${encodeURIComponent(JSON.stringify(body))}`);
+  const mod = await import(`../../runs/[run_id]/signups.js?case=${encodeURIComponent(JSON.stringify(body))}&occ=${occupiedSeats.join(',')}`);
   const { req, res, captured } = fakeReqRes('run_x', body);
   await mod.default(req, res);
   mock.reset();
@@ -123,4 +133,32 @@ test('POST signups: in-range seat is accepted (200) and inserted', { skip: !MODU
   const { captured, sink } = await runHandler({ protocol_version: 'arena-agent-v1', seat: 2 });
   assert.equal(captured.status, 200);
   assert.ok(sink.insertParams.includes(2), 'in-range seat 2 must reach the INSERT params');
+});
+
+// FINDING #3 (codex round-6): a JSON boolean/float seat must NOT slip through Number() coercion.
+// true -> 1, false -> 0, 1.7 -> 1.7 (non-integer). All must be rejected 400 'invalid_seat' with no INSERT.
+test('POST signups: boolean/float seat is rejected 400 with no INSERT', { skip: !MODULE_MOCKS && 'needs --experimental-test-module-mocks' }, async () => {
+  for (const seat of [true, false, 1.7]) {
+    const { captured, sink } = await runHandler({ protocol_version: 'arena-agent-v1', seat });
+    assert.equal(captured.status, 400, `seat=${seat} expected 400, got ${captured.status}`);
+    assert.equal(captured.body.error, 'invalid_seat');
+    assert.equal(sink.insertText, undefined, `rejected seat=${seat} must not run the INSERT`);
+  }
+});
+
+// FINDING #3 (codex round-6): a seat already held by another ACTIVE signup in the run must be
+// rejected 400 'invalid_seat' before insert (duplicate-seat guard, mirrors store.create_signup).
+test('POST signups: duplicate seat already held by an active signup is rejected 400', { skip: !MODULE_MOCKS && 'needs --experimental-test-module-mocks' }, async () => {
+  // seat 3 is already occupied by an existing active signup
+  const { captured, sink } = await runHandler({ protocol_version: 'arena-agent-v1', seat: 3 }, [3]);
+  assert.equal(captured.status, 400, `expected 400, got ${captured.status}`);
+  assert.equal(captured.body.error, 'invalid_seat');
+  assert.equal(sink.insertText, undefined, 'duplicate seat must not run the INSERT');
+});
+
+test('POST signups: a distinct seat is accepted even when other seats are occupied', { skip: !MODULE_MOCKS && 'needs --experimental-test-module-mocks' }, async () => {
+  // seats 0,1 occupied; requesting seat 4 is fine
+  const { captured, sink } = await runHandler({ protocol_version: 'arena-agent-v1', seat: 4 }, [0, 1]);
+  assert.equal(captured.status, 200, `expected 200, got ${captured.status}`);
+  assert.ok(sink.insertParams.includes(4), 'distinct seat 4 must reach the INSERT params');
 });

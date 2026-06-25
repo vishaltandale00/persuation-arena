@@ -93,6 +93,17 @@ def create_sharded_run(parent_config: dict, num_shards: int) -> list[str]:
     # fresh one — save_run upserts join_token=COALESCE(excluded, existing), so a new token would
     # rotate the secret out from under any token an orchestrator already handed to agents.
     existing = store.get_run(parent_id)
+    # A parent_id that already belongs to a NORMAL or CHILD run must NOT be rewritten as a sharded
+    # parent (FINDING #1, DATA-INTEGRITY): num_shards is None for a normal run, so the shard-count
+    # guard below would be skipped and save_run would clobber that run's row into run_kind='parent',
+    # hiding its games/signups (parent read paths source only child runs). A reused --run-id or
+    # payload run_id triggers this; reject it loudly. Only an existing run_kind=='parent' is a legal
+    # re-create target (the same-K idempotent retry path; a different K is rejected just below).
+    if existing is not None and ((existing.get("run_kind") or "normal") != "parent"):
+        raise ValueError(
+            f"run id {parent_id!r} is already in use by a non-parent run "
+            f"(run_kind={existing.get('run_kind') or 'normal'!r}); refusing to overwrite it"
+        )
     # Re-creating an existing parent with a DIFFERENT num_shards is not supported: shrinking K would
     # only upsert the new range and leave stale orphan children (e.g. {parent}_shard_2) still
     # pointing at parent_run_id, so child_run_ids() and every parent rollup/score keep counting them.
