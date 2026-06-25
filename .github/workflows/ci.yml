@@ -47,7 +47,9 @@ jobs:
         run: npm ci
 
       - name: Python tests
-        run: uv run python -m pytest tests/ -q
+        # pytest is not a declared dependency (matches the README's documented command),
+        # so add it ad-hoc for this run rather than relying on `uv sync`.
+        run: uv run --with pytest python -m pytest tests/ -q
 
       - name: JS tests (rating parity + import endpoint)
         # Dummy DATABASE_URL: _db.js's neon() constructs at import but never opens a
