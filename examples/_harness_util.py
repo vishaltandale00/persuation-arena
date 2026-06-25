@@ -19,6 +19,8 @@ from typing import Any
 
 from openai import OpenAI
 
+from examples._action_schema import canonicalize_action, clamp_action, validate_action
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
@@ -220,11 +222,17 @@ REPAIR_MESSAGE = ("That action was missing or illegal. "
 def interpret(turn, raw_text: str) -> tuple[Any, str, bool]:
     """Parse one brain's raw text into (action, reasoning, is_legal). Pure: no model call, no
     mutation. Every harness brain (OpenRouter chat, codex, opencode, Claude Agent SDK) funnels its
-    output through here, so JSON extraction, coercion, and legality live in exactly one place."""
+    output through here, so JSON extraction, coercion, and legality live in exactly one place.
+
+    Legality is the EXACT `turn.legal_action` schema + distinct rules (examples._action_schema), not a
+    looser hand-coded approximation, so nothing that the server's /reply would 422 is ever submitted.
+    A long-but-valid discussion speech is clamped to the schema's maxLength rather than rejected."""
     obj = _extract_json(raw_text) or {}
-    action = _coerce(turn, obj.get("action"))
+    action = clamp_action(turn.action_kind, turn.legal_action,
+                          canonicalize_action(turn.action_kind, _coerce(turn, obj.get("action"))))
     reasoning = str(obj.get("reasoning", "")).strip()
-    return action, reasoning, _is_legal(turn, action)
+    legal = _is_legal(turn, action) and validate_action(turn.legal_action, action)[0]
+    return action, reasoning, legal
 
 
 def fallback_action(turn) -> dict:

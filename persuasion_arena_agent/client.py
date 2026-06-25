@@ -10,6 +10,32 @@ from .credentials import AgentCredentials, DEFAULT_SERVER
 from .models import PollResponse, Signup
 
 
+class ArenaApiError(httpx.HTTPStatusError):
+    """A non-retryable HTTP error from the Arena API that carries the SAFE server-provided detail
+    (e.g. a 422 "invalid action: speak: string too long"), so a failed step is diagnosable without
+    digging into raw response bodies. Subclasses httpx.HTTPStatusError so existing `except
+    httpx.HTTPStatusError` handlers keep working. The detail is the FastAPI `detail` string only —
+    never headers, tokens, or request bodies — and is length-capped."""
+
+    def __init__(self, status_code: int, detail: str, *, request: httpx.Request,
+                 response: httpx.Response):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(f"{status_code} {request.method} {request.url.path}: {detail}",
+                         request=request, response=response)
+
+
+def _safe_detail(response: httpx.Response) -> str:
+    """Extract a short, safe error description from a response. Prefers FastAPI's `detail`; never
+    includes headers or credentials; capped to keep logs bounded."""
+    try:
+        body = response.json()
+        detail = body.get("detail") if isinstance(body, dict) else body
+    except (ValueError, AttributeError):
+        detail = (response.text or "").strip()
+    return str(detail)[:300] if detail else f"HTTP {response.status_code}"
+
+
 class ArenaHttpClient:
     def __init__(self, server: str = DEFAULT_SERVER, transport: httpx.BaseTransport | None = None,
                  timeout: float = 30.0, max_retries: int = 3):
@@ -48,7 +74,11 @@ class ArenaHttpClient:
                     delay = retry_after if retry_after is not None else min(0.25 * (2 ** attempt), 2.0)
                     time.sleep(delay)
                     continue
-                response.raise_for_status()
+                if response.is_error:
+                    # Raise a typed error carrying the safe server detail (e.g. the 422 validation
+                    # reason) instead of httpx's generic "Client error '422 ...'" message.
+                    raise ArenaApiError(response.status_code, _safe_detail(response),
+                                        request=response.request, response=response)
                 return response
             except httpx.TransportError as exc:
                 last_error = exc
