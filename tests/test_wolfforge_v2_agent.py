@@ -706,3 +706,99 @@ def test_connected_two_games_model_free_isolated(tmp_path, monkeypatch):
         for st in states:
             for eid in st._processed_event_ids:
                 assert evmap.get(eid) == st.game_id
+
+
+def test_connected_smoke_with_generic_opponents_no_422(tmp_path, monkeypatch):
+    """Reproduce the fake-brain smoke scenario (run wf_v2_refs_fake_…): a connected run mixing V2 +
+    CharismaBaseline harnesses WITH generic model-free opponents (examples/random_agent). Asserts the
+    smoke is clean under the participant-ref + speech-bid protocol: every reply accepted (no 422 / no
+    forfeit), vote targets are @refs or @no-one, discussion actions carry urgency or a structured pass,
+    and no integer seat / -1 is ever submitted."""
+    import threading
+    import time as _time
+
+    from arena import store
+    from arena.connected import run_connected_batch
+    from examples import random_agent
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "smoke.db")
+    store.init_schema()
+    store.create_connected_run({
+        "id": "wf_smoke", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 1, "players": 5, "seed_base": 909,
+    })
+
+    agent_by_signup: dict[str, str] = {}
+    harness_by_signup: dict[str, WolfForgeV2Agent | None] = {}
+    cursor: dict[str, str | None] = {}
+    for i in range(5):
+        agent = store.register_agent(f"Smoke {i}", f"shash_{i}", "arena-agent-v1", "test")
+        signup, err = store.create_signup("wf_smoke", agent["id"])
+        assert err is None
+        agent_by_signup[signup["id"]] = agent["id"]
+        cfg = V2Config(structured_output="off")
+        if i == 0:
+            harness_by_signup[signup["id"]] = WolfForgeV2Agent(run_id="wf_smoke", config=cfg, brain=FakeBrain([]))
+        elif i == 1:
+            harness_by_signup[signup["id"]] = WolfForgeV2Agent.charisma_baseline(run_id="wf_smoke", config=cfg, brain=FakeBrain([]))
+        else:
+            harness_by_signup[signup["id"]] = None  # seats 2-4: generic model-free opponents
+        cursor[signup["id"]] = None
+    for signup_id, agent_id in agent_by_signup.items():
+        ready, err = store.mark_signup_ready(signup_id, agent_id)
+        assert err is None or err == "not_ready_required"
+    assert {s["status"] for s in store.list_run_signups("wf_smoke")} == {"active"}
+
+    stop = threading.Event()
+    submitted: list[tuple[str, dict]] = []
+    lock = threading.Lock()
+
+    def responder():
+        while not stop.is_set():
+            for signup_id, agent_id in agent_by_signup.items():
+                harness = harness_by_signup[signup_id]
+                if harness is not None:
+                    for ev in store.list_events_for_signup(signup_id, after_event_id=cursor[signup_id],
+                                                            max_events=200):
+                        cursor[signup_id] = ev["event_id"]
+                        harness.on_event(Event.from_dict(ev))
+                turn = store.pending_turn_for_signup(signup_id)
+                if turn:
+                    sdk_turn = Turn(turn_id=turn["id"], game_instance_id=turn["game_instance_id"],
+                                    game="onuw", seat=turn["seat"], participant=turn.get("participant"),
+                                    phase=turn["phase"], action_kind=turn["action_kind"],
+                                    deadline_at=turn["deadline_utc"], observation=turn["observation"],
+                                    legal_action=turn["legal_action"])
+                    out = harness.act(sdk_turn) if harness is not None else random_agent.act(sdk_turn)
+                    with lock:
+                        submitted.append((turn["action_kind"], out["action"]))
+                    store.reply_to_turn(turn["id"], agent_id, out["action"], out["reasoning"], 1)
+            if {s["status"] for s in store.list_run_signups("wf_smoke")} == {"completed"}:
+                return
+            _time.sleep(0.01)
+
+    thread = threading.Thread(target=responder)
+    thread.start()
+    try:
+        run_connected_batch("wf_smoke", discussion_rounds=3)
+    finally:
+        stop.set()
+    thread.join(timeout=5)
+
+    assert store.get_run("wf_smoke")["status"] == "done"
+    events = store.list_run_events("wf_smoke", max_events=2000)
+    results = [e for e in events if e["type"] == "action_result"]
+    assert results and all(e["payload"]["accepted"] for e in results)   # zero 422 -> every reply accepted
+    assert not [e for e in events if e["type"] == "forfeit"]
+
+    saw_discussion = saw_vote = False
+    for kind, a in submitted:
+        assert not isinstance(a.get("target"), int)                     # never an int seat / -1
+        if kind == "onuw.vote":
+            saw_vote = True
+            assert isinstance(a["target"], str) and a["target"].startswith("@")
+        if kind == "onuw.discussion.speak_or_pass":
+            saw_discussion = True
+            assert ("speak" in a and isinstance(a.get("urgency"), int)) or a.get("pass") is True
+    assert saw_discussion and saw_vote

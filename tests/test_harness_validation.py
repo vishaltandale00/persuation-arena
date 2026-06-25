@@ -14,6 +14,7 @@ import httpx
 from arena import store
 from arena.games.onuw import ONUW
 from examples import _harness_util as hu
+from examples import random_agent
 from examples._action_schema import clamp_action, normalize_action, validate_action
 from persuasion_arena_agent import ArenaApiError
 from persuasion_arena_agent.client import ArenaHttpClient
@@ -181,6 +182,36 @@ def test_every_kind_fallback_is_server_valid():
         fb = hu.fallback_action(_Turn(kind, legal))
         ok, reason = store._validate_action(fb, legal)
         assert ok is True, f"{kind} fallback {fb} rejected: {reason}"
+
+
+# --- the fake-brain opponent path: every action it submits is server-valid (run wf_v2_refs_fake_…) --
+
+def test_reference_opponent_actions_valid_for_every_kind():
+    # The fake-brain opponent (examples/random_agent) must emit only server-valid actions under the
+    # CURRENT protocol. Repeat many times to cover its random branches.
+    for kind in ("onuw.discussion.speak_or_pass", "onuw.vote", "onuw.seer.inspect",
+                 "onuw.robber.swap_or_decline", "onuw.troublemaker.swap_two_or_decline"):
+        legal = _engine_legal(kind)
+        turn = _Turn(kind, legal)
+        for _ in range(40):
+            action = random_agent.act(turn)["action"]
+            ok, reason = store._validate_action(action, legal)
+            assert ok, f"{kind}: reference opponent submitted invalid {action}: {reason}"
+            # never an integer seat or the legacy -1 sentinel
+            assert not isinstance(action.get("target"), int)
+
+
+def test_old_discussion_speak_missing_urgency_rejected_and_not_emitted():
+    # Exact wf_v2_refs_fake_20260625_175134 failure: a discussion speak WITHOUT urgency is invalid.
+    legal = _engine_legal("onuw.discussion.speak_or_pass")
+    assert store._validate_action({"speak": "hi"}, legal)[0] is False           # server rejects
+    assert validate_action(legal, {"speak": "hi"})[0] is False                  # client rejects too
+    # and the reference opponent NEVER emits that stale shape — speak carries urgency, pass is structured
+    turn = _Turn("onuw.discussion.speak_or_pass", legal)
+    for _ in range(40):
+        a = random_agent.act(turn)["action"]
+        assert store._validate_action(a, legal)[0] is True
+        assert ("speak" in a and isinstance(a.get("urgency"), int)) or a.get("pass") is True
 
 
 # --- parity: client validator never disagrees with the server's on these cases ---------------------
