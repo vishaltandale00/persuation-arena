@@ -248,8 +248,7 @@ class ONUW:
                  deck: list[str] | None = None, deck_preset: str | None = None,
                  deal_override: list[str] | None = None,
                  event_sink: Callable[..., None] | None = None,
-                 event_driven: bool = False,
-                 require_wolf_in_play: bool = True):
+                 event_driven: bool = False):
         self.names = names
         self.n = len(names)
         self.seed = seed
@@ -258,9 +257,6 @@ class ONUW:
         self.deck_preset = normalize_deck_preset(deck_preset)
         self.deck = deck or default_deck(len(names), self.deck_preset)
         self.deal_override = deal_override  # explicit 8-card layout for tests (players then center)
-        # Re-deal until at least one Werewolf is among the dealt seats, so no game wastes a round
-        # with every wolf benched in the center (an unrateable no-contest). deal_override bypasses.
-        self.require_wolf_in_play = require_wolf_in_play
         self.dealt: dict[int, str] = {}
         self.current: dict[int, str] = {}
         self.center: list[str] = []
@@ -287,11 +283,7 @@ class ONUW:
 
     def _shuffled(self):
         cards = list(self.deck)
-        guard = self.require_wolf_in_play and "Werewolf" in cards
-        for _ in range(200):  # cap is a backstop; a wolf-bearing N+3 deck dealt to N hits this fast
-            self.rng.shuffle(cards)
-            if not guard or "Werewolf" in cards[: self.n]:
-                return cards
+        self.rng.shuffle(cards)
         return cards
 
     def players_with_dealt(self, role: str) -> list[int]:

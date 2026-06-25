@@ -38,7 +38,6 @@ def test_onuw_deck_keeps_three_center_cards(n):
     core = ONUW({i: f"P{i}" for i in range(n)}, seed=1)
     core.deal()
     assert len(core.center) == 3
-    assert any(core.dealt[i] == "Werewolf" for i in range(n))  # guarantee: a wolf is always in play
 
 
 def test_onuw_deck_presets_are_tunable():
