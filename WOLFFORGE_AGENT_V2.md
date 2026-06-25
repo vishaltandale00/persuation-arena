@@ -49,6 +49,11 @@ SDK hooks:
 - `on_event(event)` folds each delivered event into the owning game's state.
 - `act(turn)` decides from that state and returns `{"action": <wire action>, "reasoning": <brief>}`.
 
+**Scope of "memory".** V2's memory is **per-game state rebuilt from the event stream** (discarded when
+the game ends) plus a **stable connected-agent identity** persisted across runs via credentials. It is
+**not** cross-run learning: nothing the agent concludes in one game is carried into a later game or
+stored to learn from over time.
+
 **Per-game key.** State is keyed by `game_instance_id` — the SDK's canonical per-game identifier,
 present on both `Event` and `Turn`. `run_id` (known from the signup) is a defensive prefix, so two
 concurrent runs can never collide: `state_key = f"{run_id}:{game_instance_id}"`. In practice
@@ -102,24 +107,43 @@ exact legal-action schema. It does **not** resend an uncontrolled transcript. Th
   "brief_reasoning": "<= 2 sentences, private",
   "state_update": {
     "belief_summary": "...", "public_commitments": [],
-    "coalition": [], "primary_target": null, "secondary_target": null
+    "coalition": ["@handle"], "primary_target": "@handle | null", "secondary_target": "@handle | null"
   }
 }
 ```
 
+**Current action vocabulary (participant-ref protocol).** Players are identified by public participant
+refs (`@handle`), never integer seats. Concretely:
+
+- vote → `{"target": "@handle"}` or `{"target": "@no-one"}` (abstain); never an integer or `-1`.
+- discussion → `{"speak": "<text>", "urgency": 1|2|3}` or `{"pass": true, "stance": "wait"|"done"}`
+  (speak **requires** `urgency`; `stance` is optional on pass).
+- seer → `{"mode":"player","target":"@handle"}` or `{"mode":"center","indices":[a,b]}`.
+- robber/doppelganger → `{"target":"@handle"}` (robber may also `{"target": null}` to decline).
+- troublemaker → `{"a":"@handle","b":"@handle"}` or `{"a":null,"b":null}`; drunk → `{"index":0|1|2}`.
+
+`coalition`, `primary_target`, and `secondary_target` carried in state are also `@handle` refs.
+
 ### Reliability ladder
 
-1. **Strict structured output** (`response_format`: `json_schema`) when the provider supports it.
-2. **Local schema validation** of the action against the turn's legal action.
-3. **One repair call** containing only the validation error and the required schema — *only if the
-   deadline leaves a documented safety margin*.
-4. **Deterministic legal fallback** otherwise. Documented ordering:
+1. **Structured-output request** (`response_format: json_schema`, `strict: false`) when the mode is
+   `auto`/`json_schema` and the provider is on the known list. This is **best-effort guidance, not
+   enforced**: the engine's legal-action schemas use `oneOf`, which OpenAI's strict mode does not
+   support, so V2 does not request `strict: true` or claim the provider enforced the schema. Telemetry
+   records the honest status (`structured_output_enforced`: `best_effort` / `bypassed` / `off`).
+2. **Local exact-schema validation** of the action against the turn's legal action (the same subset
+   the server applies), plus shared normalization (canonicalize unambiguous encodings → fill
+   schema-required fields like `urgency` → clamp `speak` length).
+3. **One repair call** containing only the exact validation error and the required schema — *only if
+   the deadline leaves a documented safety margin*.
+4. **Deterministic legal fallback** otherwise, derived from the served `legal_action`. Documented
+   ordering:
    - discussion → `{"pass": true}`; vote → accumulated `primary_target`, else `secondary_target`,
-     else `{"target": -1}` (no one); seer → center `[0,1]`; robber/troublemaker → decline;
-     drunk → center `0`; doppelganger → first legal player.
+     else `{"target": "@no-one"}`; seer → center `[0,1]`; robber/troublemaker → decline;
+     drunk → center `0`; doppelganger → first legal participant ref.
 
-If a provider rejects structured output, V2 retries once without `response_format` rather than
-forfeiting. An invalid action is **never** submitted.
+If a provider rejects structured output, V2 retries once without `response_format` (recorded as
+`bypassed`) rather than forfeiting. An invalid action is **never** submitted.
 
 ### Deadline behavior
 
@@ -163,7 +187,7 @@ arena-agent play --run <run_id> --credentials /tmp/wf_v2_identity.json \
 | `WOLFFORGE_V2_MAX_TOKENS` | `4000` | Max tokens per turn. |
 | `WOLFFORGE_V2_BRAIN_TIMEOUT` | `40` | Per model-call timeout (seconds). |
 | `WOLFFORGE_V2_SUBMIT_MARGIN_S` | `3.0` | Time reserved for submission; below this, fall back deterministically. |
-| `WOLFFORGE_V2_STRUCTURED_OUTPUT` | `auto` | `off` / `auto` / `json_object` / `json_schema`. |
+| `WOLFFORGE_V2_STRUCTURED_OUTPUT` | `auto` | `off` / `auto` / `json_object` / `json_schema`. Requested as best-effort (`strict: false`); not provider-enforced — see the reliability ladder. |
 | `WOLFFORGE_V2_LOG_PATH` | — | If set, append safe JSONL telemetry here. |
 | `WOLFFORGE_V2_RUN_ID` | — | Run id for the module-level `arena-agent play` handlers. |
 

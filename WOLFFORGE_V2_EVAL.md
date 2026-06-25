@@ -17,15 +17,18 @@ worse.
 
 `WolfForgeV2Agent.charisma_baseline(...)` reuses the **identical** connected harness machinery
 (event-sourced state, reliability ladder, deterministic fallback, deadline handling) and swaps in the
-**verbatim Charisma strategy text** from `arena/wolf_profiles.py` (`BASE_SYSTEM` + `ONUW_COMMON` +
-`PROFILE_INSTRUCTIONS["charisma"]`), wrapped in V2's structured-output contract so the same parser
-drives it. The single experimental variable between V2 and the baseline is the **strategy prompt** —
-exactly the design of the original WolfForge ablation.
+**verbatim Charisma strategy paragraph** from `arena/wolf_profiles.py`
+(`PROFILE_INSTRUCTIONS["charisma"]`, plus the `BASE_SYSTEM` framing and `ONUW_COMMON`), wrapped in the
+**same single output contract V2 uses** so both arms are protocol-equivalent. The single experimental
+variable between V2 and the baseline is the **strategy prompt** — exactly the design of the original
+WolfForge ablation.
 
 Faithfulness caveat: the original experiment ran in-process with full-context turns; the connected
 architecture uses delta transport, so the baseline is "as faithful as the current connected
-architecture permits," not byte-identical. Its frozen identity is recorded as
-`policy_version = "charisma-baseline-1.0"` with its own `prompt_hash`.
+architecture permits," not byte-identical. To keep both arms on one output contract, `BASE_SYSTEM`'s
+old `{"reasoning","action"}` format sentence is dropped (it contradicted V2's contract); the
+substantive Charisma strategy text is unchanged. Its frozen identity is recorded as
+`policy_version = "charisma-baseline-1.1"` with its own `prompt_hash`.
 
 **Do not silently update the baseline during development.** Its prompt and version are frozen.
 
