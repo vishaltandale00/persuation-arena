@@ -118,7 +118,8 @@ function deckPresetFromPayload(game, payload) {
 }
 
 // Port of arena/server.py _create_connected_run + store.create_connected_run: a concrete open run
-// that connected agents sign up for (no job row). The Modal coordinator spawn is a no-op here.
+// that connected agents sign up for (no job row). After the row is written we best-effort POST the
+// Modal spawn endpoint (ARENA_SPAWN_URL / ARENA_SPAWN_TOKEN) to launch the per-run coordinator.
 async function createConnectedRun(payload, res) {
   const game = payload.game || 'onuw';
   if (!(game in GAME_LABELS)) return send(res, 400, { error: `unknown game: ${game}` });
@@ -162,6 +163,35 @@ async function createConnectedRun(payload, res) {
        deck_preset=excluded.deck_preset, metadata_json=excluded.metadata_json`,
     [runId, game, GAME_LABELS[game], games, players, seed, created, submitter, now, deckPreset, metadataJson],
   );
+
+  // Fire the per-run coordinator. Best-effort: the row already exists as 'open', so on any failure the
+  // run just waits coordinator-less (agents poll coordinator_url=null) instead of failing creation.
+  const spawnUrl = process.env.ARENA_SPAWN_URL;
+  const spawnTok = process.env.ARENA_SPAWN_TOKEN;
+  if (spawnUrl && spawnTok) {
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5000);
+      const r = await fetch(spawnUrl, {
+        method: 'POST',
+        signal: ac.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: spawnTok,
+          rounds,
+          run_config: {
+            id: runId, game, label: GAME_LABELS[game], status: 'open',
+            n_games: games, players, seed_base: seed, submitter,
+            deck_preset: deckPreset, metadata: JSON.parse(metadataJson),
+          },
+        }),
+      });
+      clearTimeout(timer);
+      if (!r.ok) console.error(`[spawn] non-ok ${r.status} for ${runId}`);
+    } catch (e) {
+      console.error(`[spawn] failed for ${runId}:`, e);
+    }
+  }
 
   return send(res, 200, {
     run_id: runId, status: 'open', game, games, players, rounds, deck_preset: deckPreset,

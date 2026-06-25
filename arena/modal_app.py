@@ -44,6 +44,9 @@ image = (
 # calls, so no LLM key is ever shipped to Modal. This is just the credential, not a database we create.
 db_secret = modal.Secret.from_name("neon-database-url", required_keys=["DATABASE_URL"])
 
+# Shared secret the Vercel central API presents to trigger a coordinator spawn (see spawn_endpoint).
+spawn_secret = modal.Secret.from_name("arena-spawn-token", required_keys=["ARENA_SPAWN_TOKEN"])
+
 # run_id -> public tunnel URL. The central API / agents read this to find the run's container.
 coordinator_urls = modal.Dict.from_name(URL_DICT_NAME, create_if_missing=True)
 
@@ -99,18 +102,38 @@ def run_server(run_config: dict, rounds: int = 5, wait_timeout: float = 300.0,
     return result
 
 
-@app.function(image=image, secrets=[db_secret], min_containers=0, timeout=600)
-@modal.concurrent(max_inputs=50)
-@modal.asgi_app(label="api")
-def api():
-    """The central Arena API (arena.server:app), served on Modal — register/signup/ready/poll/reply,
-    runs, models, keys. This is where ALL the Python lives now: the static observer (on Vercel) talks
-    to this URL, and creating a connected run spawns a per-run coordinator Modal->Modal (no SDK or
-    tokens on the frontend). DATABASE_URL comes from the neon secret."""
+@app.function(image=image, secrets=[spawn_secret, db_secret], timeout=60)
+@modal.fastapi_endpoint(method="POST", label="spawn")
+def spawn_endpoint(body: dict):
+    """Token-protected trigger for the per-run coordinator. The Vercel central API POSTs here when an
+    open connected run is created, so the frontend needs no Modal SDK or tokens. Body:
+      {"token": <ARENA_SPAWN_TOKEN>, "run_config": {...}, "rounds": int}
+
+    Reads are deferred into the body (fastapi/store imported in-container only) so `modal deploy` can
+    register this module with just the modal client installed. db_secret is attached so the
+    idempotency guard can check the run's status in Neon."""
+    import hmac
     import os
-    os.environ["ARENA_MODAL_COORDINATOR"] = "1"   # enable coordinator spawning from the API
-    from arena.server import app as web
-    return web
+    import fastapi
+    from arena import store
+
+    if not hmac.compare_digest(str(body.get("token") or ""), os.environ["ARENA_SPAWN_TOKEN"]):
+        raise fastapi.HTTPException(status_code=401, detail="bad spawn token")
+
+    run_config = body.get("run_config") or {}
+    run_id = run_config.get("id")
+    if not run_id:
+        raise fastapi.HTTPException(status_code=400, detail="run_config.id required")
+
+    # Idempotency: run_server unconditionally opens a tunnel and drives the game, so a retried or
+    # duplicate POST must be a no-op. Only spawn for a run that is still 'open' with no coordinator.
+    existing = store.get_run(run_id)
+    if existing and (existing.get("status") != "open" or existing.get("coordinator_url")):
+        return {"skipped": "already coordinated", "run_id": run_id, "status": existing.get("status")}
+
+    call = run_server.spawn(run_config, int(body.get("rounds") or 5))
+    print(f"[spawn] {run_id} -> {call.object_id}", flush=True)
+    return {"spawned": run_id, "call_id": call.object_id}
 
 
 @app.function(image=image, secrets=[db_secret], timeout=120)
