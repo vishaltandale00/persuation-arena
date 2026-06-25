@@ -15,7 +15,7 @@
 //     emits plain numbers (BIGINT can arrive as a string from the driver).
 //   - game_players.won is INTEGER; SUM(won) (a bigint aggregate) is coerced with Number().
 import { q, send, utcnow } from '../../_db.js';
-import { scoreRun, deckForApi, DEFAULT_DECK_PRESET } from '../../_read.js';
+import { scoreRun, deckForApi, DEFAULT_DECK_PRESET, apiEvent } from '../../_read.js';
 
 // Port of store._expire_signup_if_needed (store.py:764-777), which store.list_run_signups
 // (store.py:873) applies to EVERY returned signup. Lazily flips a stale 'waiting' signup past its
@@ -137,6 +137,13 @@ export default async function handler(req, res) {
 
   // Partial scores while a run is in progress, full when done; {} until any game exists.
   const scores = hasGames ? await scoreRun(runId) : {};
+  const recentEventRows = (r.status === 'running' || signups.length > 0)
+    ? await q(
+        `SELECT * FROM run_events WHERE run_id = $1 ORDER BY seq DESC LIMIT 120`,
+        [runId],
+      )
+    : [];
+  recentEventRows.reverse();
 
   return send(res, 200, {
     id: r.id,
@@ -153,6 +160,8 @@ export default async function handler(req, res) {
     teamSplit,
     games: gamesOut,
     runConfig: metadata.run_config || {},
+    runConfigOverrides: metadata.run_config_overrides || {},
+    recentEvents: recentEventRows.map((row) => apiEvent(row)),
     connected: signups.length > 0,
     connectedSummary: {
       signups: signups.length,

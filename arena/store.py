@@ -25,13 +25,16 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
 from .config import STORE_DIR
+from .identity import validate_unique_public_names
 
 DB_PATH = STORE_DIR / "arena.db"
+_event_seq_lock = threading.Lock()
 
 # --- schema ------------------------------------------------------------------
 # SQLite: a single script (run on every conn() — cheap, local).
@@ -186,6 +189,13 @@ PG_MIGRATION_STMTS = [
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS signup_id TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_model TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_harness TEXT",
+    # Dedup duplicate (run_id,gid,seat) rows, then add the unique index the JS import path needs for
+    # ON CONFLICT (run_id,gid,seat) DO NOTHING. Use CREATE UNIQUE INDEX IF NOT EXISTS (idempotent on
+    # re-run) rather than ALTER TABLE ADD CONSTRAINT (no IF NOT EXISTS in PG; re-run would throw).
+    "DELETE FROM game_players a USING game_players b "
+    "WHERE a.ctid < b.ctid AND a.run_id=b.run_id AND a.gid=b.gid AND a.seat=b.seat",
+    "CREATE UNIQUE INDEX IF NOT EXISTS game_players_rgs_uq "
+    "ON game_players (run_id,gid,seat)",
 ]
 
 
@@ -255,6 +265,22 @@ def _migrate(c: sqlite3.Connection) -> None:
         for name, decl in cols:
             if name not in have:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    # Enforce one row per (run_id,gid,seat) so re-pushing a game is idempotent (the JS import path
+    # relies on ON CONFLICT (run_id,gid,seat)). Once the index exists it guarantees no duplicates, so
+    # do the (DML-issuing) dedup ONLY on first creation — running a DELETE on every conn() would leave
+    # an implicit SQLite transaction open and break callers that issue their own BEGIN IMMEDIATE.
+    have_idx = c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='game_players_rgs_uq'"
+    ).fetchone()
+    if not have_idx:
+        c.execute(
+            "DELETE FROM game_players WHERE rowid NOT IN ("
+            "  SELECT MIN(rowid) FROM game_players GROUP BY run_id,gid,seat)"
+        )
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS game_players_rgs_uq "
+            "ON game_players (run_id,gid,seat)"
+        )
 
 
 def _backfill_connected_game_player_identities(c) -> dict:
@@ -376,6 +402,24 @@ def update_run_status(run_id: str, status: str):
     ph = _ph()
     with conn() as c:
         c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'", (status, run_id))
+
+
+def mark_orphaned_local_runs_partial() -> int:
+    """Recover in-process local runs left as running by a server shutdown/crash.
+
+    Static local runs execute in a background thread owned by the server process. If that process
+    exits before the thread finishes, no worker can resume it. Connected runs and queued worker jobs
+    have external coordination state, so leave those alone.
+    """
+    ph = _ph()
+    with conn() as c:
+        cur = c.execute(
+            f"UPDATE runs SET status='partial' "
+            f"WHERE status='running' "
+            f"AND NOT EXISTS (SELECT 1 FROM run_signups s WHERE s.run_id = runs.id) "
+            f"AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.run_id = runs.id)",
+        )
+        return cur.rowcount or 0
 
 
 def save_game(run_id: str, gid: int, transcript: dict, agents: list[dict]):
@@ -691,6 +735,15 @@ def distinct_gids(run_id: str) -> list[int]:
         return [r["gid"] for r in rows]
 
 
+def game_player_count() -> int:
+    """Total game_players rows on the active backend. The push recompute-guard compares this on prod
+    Neon before/after to ensure the leaderboard's source data never shrinks (replace_ratings wipes
+    all three rating tables, so a recompute over fewer rows would silently gut the board)."""
+    with conn() as c:
+        row = c.execute("SELECT COUNT(*) n FROM game_players").fetchone()
+        return int(row["n"]) if row else 0
+
+
 # --- connected-agent run protocol -------------------------------------------
 OPEN_RUN_STATUSES = {"open", "waiting", "ready_required"}
 ACTIVE_SIGNUP_STATUSES = {"waiting", "ready_required", "ready", "active"}
@@ -974,6 +1027,13 @@ def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
             return None, "run_full"
         if run["status"] not in OPEN_RUN_STATUSES:
             return None, "run_not_open"
+        agent = c.execute(f"SELECT display_name FROM agents WHERE id={ph}", (agent_id,)).fetchone()
+        if not agent:
+            return None, "agent_not_found"
+        identity_err = validate_unique_public_names([s["display_name"] for s in active] +
+                                                    [agent["display_name"]])
+        if identity_err:
+            return None, identity_err
         signup_id = f"signup_{uuid.uuid4().hex[:16]}"
         c.execute(
             f"INSERT INTO run_signups (id,run_id,agent_id,status,seat,created_utc,updated_utc,"
@@ -1138,9 +1198,10 @@ def append_event_tx(c, run_id: str, event_type: str, payload: dict,
 def append_event(run_id: str, event_type: str, payload: dict,
                  visibility: str = "public", target_signup_id: str | None = None,
                  game_instance_id: str | None = None, phase: str | None = None) -> dict:
-    with conn() as c:
-        return append_event_tx(c, run_id, event_type, payload, visibility, target_signup_id,
-                               game_instance_id, phase)
+    with _event_seq_lock:
+        with conn() as c:
+            return append_event_tx(c, run_id, event_type, payload, visibility, target_signup_id,
+                                   game_instance_id, phase)
 
 
 def list_events_for_signup(signup_id: str, after_event_id: str | None = None,
@@ -1173,6 +1234,23 @@ def list_events_for_signup(signup_id: str, after_event_id: str | None = None,
         else:
             c.execute(f"UPDATE run_signups SET last_poll_utc={ph} WHERE id={ph}", (_utcnow(), signup_id))
         return out
+
+
+def list_game_rosters(run_id: str) -> dict[str, dict[int, str]]:
+    ph = _ph()
+    with conn() as c:
+        rows = c.execute(
+            f"SELECT game_instance_id, payload_json FROM run_events "
+            f"WHERE run_id={ph} AND type='game_setup' AND game_instance_id IS NOT NULL "
+            f"ORDER BY seq",
+            (run_id,),
+        ).fetchall()
+    out: dict[str, dict[int, str]] = {}
+    for row in rows:
+        payload = json.loads(row["payload_json"])
+        roster = payload.get("roster") or {}
+        out[row["game_instance_id"]] = {int(seat): str(name) for seat, name in roster.items()}
+    return out
 
 
 def list_run_events(run_id: str, max_events: int = 200) -> list[dict]:

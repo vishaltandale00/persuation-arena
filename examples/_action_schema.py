@@ -120,6 +120,44 @@ def validate_action(legal_action: dict | None, action: Any) -> tuple[bool, str |
     return True, None
 
 
+def _schema_options(legal_action: dict | None) -> list:
+    schema = (legal_action or {}).get("schema") or {}
+    return schema.get("oneOf") or schema.get("anyOf") or [schema]
+
+
+def _required_urgency_enum(legal_action: dict | None) -> list | None:
+    """If the discussion speak option requires an `urgency` field, return its allowed enum values.
+    Returns None for older schemas that don't require urgency (forward/backward compatible)."""
+    for opt in _schema_options(legal_action):
+        if isinstance(opt, dict) and "urgency" in (opt.get("required") or []):
+            enum = ((opt.get("properties") or {}).get("urgency") or {}).get("enum")
+            return list(enum) if enum else [1, 2, 3]
+    return None
+
+
+def fill_required_defaults(action_kind: str, legal_action: dict | None, action: Any) -> Any:
+    """Add schema-REQUIRED fields the model commonly omits, when the value is unambiguous. Currently:
+    a discussion `speak` whose schema requires `urgency` but where the model omitted it gets the
+    lowest allowed urgency. Never overrides a value the model did provide; schema-driven, so it is a
+    no-op on older schemas without an urgency requirement."""
+    if (action_kind == "onuw.discussion.speak_or_pass" and isinstance(action, dict)
+            and isinstance(action.get("speak"), str) and "urgency" not in action):
+        enum = _required_urgency_enum(legal_action)
+        if enum:
+            return {**action, "urgency": enum[0]}
+    return action
+
+
+def normalize_action(action_kind: str, legal_action: dict | None, action: Any) -> Any:
+    """The single client-side normalization pipeline applied by every harness arm before validation:
+    canonicalize unambiguous encodings -> fill schema-required defaults (urgency) -> clamp lengths.
+    Lossless and strategy-neutral; identical for WolfForgeV2 and CharismaBaseline."""
+    action = canonicalize_action(action_kind, action)
+    action = fill_required_defaults(action_kind, legal_action, action)
+    action = clamp_action(action_kind, legal_action, action)
+    return action
+
+
 def _speak_max_length(legal_action: dict | None) -> int | None:
     """Find the maxLength the schema imposes on a discussion `speak` string, if any."""
     schema = (legal_action or {}).get("schema") or {}

@@ -143,7 +143,10 @@ class OpenRouterAgent:
 
     def _messages_for_turn(self, observation: str) -> list[dict[str, Any]]:
         caps = self.caps
-        prior = self._messages[-max(0, caps.prior_message_turns) * 2:]
+        if caps.prior_message_turns < 0:
+            prior = self._messages
+        else:
+            prior = self._messages[-max(0, caps.prior_message_turns) * 2:]
         return [
             {"role": "system", "content": prompt_for(self.harness)},
             *prior,
@@ -175,6 +178,9 @@ class OpenRouterAgent:
                 "effort": caps.reasoning_effort,
                 "exclude": False,
             },
+            "plugins": [
+                {"id": "context-compression", "enabled": True},
+            ],
         }
 
     def _response_format(self, action_kind: str | None, action_schema: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -204,15 +210,16 @@ class OpenRouterAgent:
         messages: list[dict[str, Any]],
         response_format: dict[str, Any] | None,
     ) -> Any:
-        caps = SETTINGS.caps
+        caps = self.caps
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "max_tokens": caps.max_tokens_per_turn,
-            "temperature": caps.temperature,
             "timeout": caps.request_timeout_s,
             "extra_body": self._request_extra_body(),
         }
+        if caps.temperature is not None:
+            kwargs["temperature"] = caps.temperature
         if response_format is not None:
             kwargs["response_format"] = response_format
         return client().chat.completions.create(**kwargs)

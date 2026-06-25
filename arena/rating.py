@@ -260,6 +260,49 @@ def recompute() -> dict:
             "difficulty_cells": len(difficulty_rows)}
 
 
+# --- recompute safety guard (used by `arena push`) -------------------------------------------
+
+class RecomputeAborted(RuntimeError):
+    """Raised when the recompute safety guard refuses to run (e.g. it would shrink the board)."""
+
+
+def rating_snapshot() -> dict:
+    """Capture the three rating tables (and run headers) as plain dicts — a backup of the current
+    leaderboard state, shaped like the existing arena-backup-*.json files, taken BEFORE a destructive
+    recompute so a bad rebuild can be rolled back by hand."""
+    return {
+        "runs": store.list_runs(),
+        "ratings": store.leaderboard_rows(),
+        "rating_events": store.all_rating_events(),
+        "role_difficulty": [
+            {"bucket": bucket, "role": role, **cell}
+            for (bucket, role), cell in store.role_difficulty_map().items()
+        ],
+        "game_player_count": store.game_player_count(),
+    }
+
+
+def guard_recompute(local_game_players: int, prior_prod_count: int, current_prod_count: int) -> None:
+    """Fail-closed precondition for a prod recompute. ABORTS (raises RecomputeAborted) if the local
+    SQLite is empty (nothing legitimate to publish — likely a misconfigured/foreign store), OR if the
+    prod game_players row count would DROP versus the prior snapshot (a regression that the
+    destructive replace_ratings would bake into the live leaderboard).
+
+    Pure: callers pass the three counts so this is unit-testable without any DB.
+      local_game_players  — COUNT(*) game_players in the local SQLite (the upload source)
+      prior_prod_count    — prod COUNT(*) game_players captured in the pre-upload snapshot
+      current_prod_count  — prod COUNT(*) game_players after the upload, i.e. what recompute will read
+    """
+    if local_game_players <= 0:
+        raise RecomputeAborted(
+            "local SQLite has no game_players rows — refusing to recompute the prod leaderboard "
+            "from an empty/foreign store")
+    if current_prod_count < prior_prod_count:
+        raise RecomputeAborted(
+            f"prod game_players would drop from {prior_prod_count} to {current_prod_count}; "
+            "recompute would shrink the leaderboard's source data — aborting")
+
+
 # --- API assembly: descriptive per-role/objective breakdown on top of the snapshot -----------
 
 def _conservative(row: dict) -> float:

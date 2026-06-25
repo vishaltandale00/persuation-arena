@@ -6,6 +6,7 @@ import time
 from arena import store
 from arena.connected import ConnectedAgent, run_connected_batch
 from arena.games.onuw import ONUW
+from arena.identity import NO_ONE_REF
 
 
 def _sqlite_store(tmp_path, monkeypatch):
@@ -156,13 +157,13 @@ def test_connected_batch_completes_with_store_backed_replies(tmp_path, monkeypat
         if kind == "onuw.discussion.speak_or_pass":
             return {"pass": True}
         if kind == "onuw.vote":
-            return {"target": -1}
+            return {"target": NO_ONE_REF}
         if kind == "onuw.seer.inspect":
             return {"mode": "center", "indices": [0, 1]}
         if kind == "onuw.troublemaker.swap_two_or_decline":
             return {"a": None, "b": None}
         if kind in {"onuw.doppelganger.copy_player", "onuw.robber.swap_or_decline"}:
-            return {"target": players[0]["seat"] if players else None}
+            return {"target": players[0].get("ref", players[0].get("seat")) if players else None}
         if kind == "onuw.drunk.swap_center":
             return {"index": 0}
         raise AssertionError(kind)

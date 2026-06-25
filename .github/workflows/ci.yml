@@ -1,0 +1,62 @@
+# .github/workflows/ci.yml
+#
+# Runs the test suite on every push to main and on pull requests. The headline
+# guard is tests/rating_parity.test.mjs: it asserts the JS Elo recompute
+# (api/_rating.js) byte-reproduces the Python source of truth (arena/rating.py)
+# against tests/fixtures/rating_golden.json — so the two implementations can
+# never silently drift. Regenerate the fixture with tests/fixtures/gen_rating_golden.py
+# if the Python rating algorithm intentionally changes.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'   # matches pyproject requires-python (>=3.12,<3.15)
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'       # matches package.json engines
+
+      - name: Install Python deps (uv)
+        run: |
+          python -m pip install --upgrade pip uv
+          uv sync
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Python tests
+        # pytest is not a declared dependency (matches the README's documented command),
+        # so add it ad-hoc for this run rather than relying on `uv sync`.
+        run: uv run --with pytest python -m pytest tests/ -q
+
+      - name: JS tests (rating parity + import endpoint)
+        # Dummy DATABASE_URL: _db.js's neon() constructs at import but never opens a
+        # connection in these tests (parity uses the golden fixture; the import test
+        # only exercises pure helpers + the no-bearer auth path).
+        env:
+          DATABASE_URL: postgres://u:p@localhost/db
+        run: |
+          node tests/rating_parity.test.mjs
+          node tests/import_endpoint.test.mjs

@@ -51,7 +51,7 @@
   .rt-row>*{min-width:0}
   .rt-row:last-child{border-bottom:0} .rt-row:hover{background:var(--hover)} .rt-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   .stat-dot{width:8px;height:8px;border-radius:50%}
-  .stat-dot.done{background:var(--ink-2)} .stat-dot.run{background:var(--good)} .stat-dot.queue{background:var(--line-2)}
+  .stat-dot.done{background:var(--ink-2)} .stat-dot.partial{background:#caa54a} .stat-dot.run{background:var(--good)} .stat-dot.queue{background:var(--line-2)}
   .rt-id{font-family:var(--mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .rt-game{font-size:13px;min-width:0;line-height:1.25}
   .rt-game .title{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -68,6 +68,7 @@
   .panel{border:1px solid var(--line);border-radius:11px;background:var(--panel)}
   .panel h3{margin:0;padding:13px 16px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600}
   .panel .body{padding:14px 16px}
+  .livepanel{margin-top:18px}
   .ovside{display:flex;flex-direction:column;gap:16px}
   .cfg{display:grid;grid-template-columns:1fr 1fr;gap:12px 18px}
   .cfg .c .k{font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint)}
@@ -114,6 +115,9 @@
   .pill.waiting,.pill.ready_required{background:var(--hover);color:var(--ink-2)}
   .pill.expired,.pill.cancelled,.pill.rejected{background:var(--evil-soft);color:var(--evil);border-color:#ecccca}
   .evlist{display:flex;flex-direction:column;gap:7px;max-height:300px;overflow:auto}
+  .evnow{display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--hover);font-size:12px;color:var(--ink)}
+  .evnow .dot{width:7px;height:7px;border-radius:50%;background:var(--good);flex:none}
+  .evnow .k{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint)}
   .ev{display:grid;grid-template-columns:42px 108px 1fr;gap:9px;align-items:start;font-family:var(--mono);font-size:11px;border-bottom:1px solid var(--line);padding-bottom:7px}
   .ev:last-child{border-bottom:0}
   .ev .seq{color:var(--faint)} .ev .typ{color:var(--ink-2)} .ev .pay{font-family:var(--sans);font-size:12px;color:var(--ink);overflow-wrap:anywhere}
@@ -124,6 +128,7 @@
   .gh{border-bottom:1px solid var(--line);background:#fcfcfc} .gh span{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
   .grow2{border:0;border-bottom:1px solid var(--line);cursor:pointer;width:100%;text-align:left;background:none;font:inherit;color:inherit}
   .grow2:last-child{border-bottom:0} .grow2:hover{background:var(--hover)} .grow2:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .grow2.live{color:var(--ink)}
   .grow2 .gid{font-family:var(--mono);font-size:12px} .grow2 .gseed{font-family:var(--mono);font-size:11px;color:var(--faint)}
   .grow2 .gline{font-size:13px;color:var(--ink-2)}
   .wtag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:5px;justify-self:start}
@@ -171,6 +176,16 @@
   .think-ms{font-family:var(--mono);font-size:11px;color:var(--faint);margin-left:auto;white-space:nowrap}
   .turn .h{justify-content:flex-start}
   .turn .say{font-size:13.5px;color:var(--ink)} .turn.pass .say{color:var(--faint);font-style:italic}
+  .mention{display:inline-flex;align-items:center;max-width:180px;vertical-align:baseline;font-family:var(--mono);font-size:12px;line-height:1.4;padding:0 5px;border:1px solid var(--line-2);border-radius:5px;background:var(--sel);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .turn-reason{margin-top:8px;border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:7px;background:var(--bg);overflow:hidden}
+  .turn-reason summary{cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--ink-2);padding:7px 9px;list-style:none}
+  .turn-reason summary::-webkit-details-marker{display:none}
+  .turn-reason summary:before{content:"▸";display:inline-block;width:12px;color:var(--faint)}
+  .turn-reason[open] summary:before{content:"▾"}
+  .turn-reason .rbody{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding:9px}
+  .turn-reason .rk{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);margin-bottom:3px}
+  .turn-reason .rtxt{font-size:12.5px;line-height:1.45;color:var(--ink);white-space:pre-wrap;overflow-wrap:anywhere}
+  .turn-reason pre.rtxt{font-family:var(--mono);font-size:11px;margin:0;max-height:220px;overflow:auto}
   .actline{font-family:var(--mono);font-size:12px;color:var(--ink-2);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:5px 9px;display:inline-block}
   .voteline{font-size:13px} .voteline .arr{font-family:var(--mono);color:var(--faint)} .voteline .t{font-weight:600}
   .sysline{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:center;padding:7px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:13px 0}
@@ -209,16 +224,47 @@
   .dhead .nm{font-weight:600;font-size:14px} .dhead .md{font-family:var(--mono);font-size:11px;color:var(--faint)}
   .backbtn{all:unset;cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--ink-2);padding:4px 0;display:inline-flex;gap:6px} .backbtn:hover{color:var(--ink)} .backbtn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
   .summary-mid{max-width:560px;margin:30px auto;padding:0 20px;text-align:center}
+  .livegame{height:100%;display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;padding:18px;background:var(--bg);overflow:auto}
+  .livegame-main,.livegame-side{min-width:0;display:flex;flex-direction:column;gap:14px}
+  .livegame .evlist{max-height:none}
 
   /* new run form */
   .form .field{margin-bottom:16px}
   .form label{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
   select,input[type=number],input[type=text]{font-family:var(--sans);font-size:13px;padding:8px 11px;border:1px solid var(--line-2);border-radius:7px;background:var(--panel);color:var(--ink)}
   select:focus,input:focus{outline:2px solid var(--accent);outline-offset:0;border-color:var(--accent)}
-  .run-settings{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1.1fr) minmax(0,.9fr) minmax(0,.75fr) minmax(0,.7fr) minmax(0,1fr);gap:14px;align-items:end}
+  .run-settings{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,.9fr) minmax(0,.8fr);gap:14px;align-items:end}
   .run-settings .control{min-width:0}
   .run-settings select,.run-settings input{width:100%}
   .run-actions{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap}
+  .mode-tabs{display:inline-flex;gap:2px;border:1px solid var(--line-2);border-radius:8px;background:var(--panel);padding:2px;margin-bottom:18px}
+  .mode-tabs button{all:unset;cursor:pointer;font-size:13px;color:var(--ink-2);padding:7px 12px;border-radius:6px}
+  .mode-tabs button:hover{background:var(--hover);color:var(--ink)}
+  .mode-tabs button.on{background:var(--accent);color:#fff}
+  .mode-tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .newrun-mode{display:none}
+  .newrun-mode.on{display:block}
+  .form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.55fr);gap:18px;align-items:start}
+  .subtle{color:var(--ink-2);font-size:12.5px}
+  .model-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 10px}
+  .model-toolbar .subtle{font-family:var(--mono);font-size:11px}
+  .modelrows{display:flex;flex-direction:column;gap:8px}
+  .modelrow{display:grid;grid-template-columns:34px minmax(150px,.6fr) minmax(180px,1fr) 30px;gap:9px;align-items:center;border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:9px}
+  .modelrow .seat{width:26px;height:26px;border-radius:6px;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;border:1px solid var(--line-2);color:var(--ink-2)}
+  .modelrow input{width:100%;min-width:0}
+  .modelrow .slug{font-family:var(--mono);font-size:12px}
+  .modelrow .rm{all:unset;cursor:pointer;width:26px;height:26px;display:grid;place-items:center;border-radius:6px;color:var(--faint);font-size:17px;line-height:1}
+  .modelrow .rm:hover{color:var(--evil);background:#fbeaea}
+  .modelrow .rm:focus-visible{outline:2px solid var(--accent)}
+  .model-picker{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}
+  .model-picker input{width:100%;font-family:var(--mono);font-size:12px}
+  .advanced{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .advanced .control{min-width:0}
+  .advanced input,.advanced select{width:100%}
+  .run-mode{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:10px}
+  .lobby-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;align-items:end}
+  .lobby-grid .control{min-width:0}
+  .lobby-grid select,.lobby-grid input{width:100%}
   .seglist{display:flex;flex-direction:column;gap:8px}
   .seg{display:grid;grid-template-columns:168px 1fr 104px 28px;gap:10px;align-items:center;border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--panel)}
   .seg .pn{display:flex;align-items:center;gap:8px;font-weight:600}
@@ -254,11 +300,14 @@
 
   @media (max-width:980px){
     .detail{height:auto} .bottom{grid-template-columns:1fr} .convo{border-right:0;border-bottom:1px solid var(--line)}
+    .livegame{grid-template-columns:1fr;height:auto}
     .ovgrid{grid-template-columns:1fr}
     .rt-head,.rt-row{grid-template-columns:16px minmax(92px,.7fr) minmax(0,1fr) 96px;gap:10px} .rt-head span:nth-child(n+4),.rt-ng,.rt-when{display:none}
     .gh,.grow2{grid-template-columns:16px 70px 1fr 96px;gap:10px} .gh span:nth-child(n+5),.grow2 .gseed,.replay{display:none}
     .keyrow{grid-template-columns:1fr}
     .run-settings{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .lobby-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .form-grid{grid-template-columns:1fr}
   }
   @media (max-width:600px){
     .topbar{height:auto;min-height:50px;flex-wrap:wrap;gap:8px;padding:8px 10px}
@@ -286,6 +335,11 @@
     .gh,.grow2{grid-template-columns:16px 1fr;gap:10px}
     .gh span:nth-child(n+3),.grow2 .gline,.grow2 .wtag{display:none}
     .run-settings{grid-template-columns:1fr}
+    .lobby-grid{grid-template-columns:1fr}
+    .advanced{grid-template-columns:1fr}
+    .modelrow{grid-template-columns:28px 1fr 30px}
+    .modelrow .slug{grid-column:2/-1;grid-row:2}
+    .modelrow .rm{grid-column:3;grid-row:1}
     .seg{grid-template-columns:minmax(0,1fr);gap:8px}
     .run-actions .btn{flex:1 1 120px;text-align:center}
   }
@@ -385,7 +439,6 @@
         <div class="panel"><h3>Agents</h3><div class="body"><div class="agtable" id="ovagents"></div><div id="ovpending"></div></div></div>
         <div class="panel"><h3>Settings</h3><div class="body"><div class="cfg" id="ovcfg"></div></div></div>
         <div class="panel"><h3>Results</h3><div class="body" id="ovresults"></div></div>
-        <div class="panel" id="eventPanel" style="display:none"><h3>Run events</h3><div class="body" id="ovevents"></div></div>
       </div>
     </div>
   </div>
@@ -411,33 +464,115 @@
   </div>
 </section>
 
-<!-- OPEN RUN -->
+<!-- STATIC RUN -->
 <section class="screen" id="screen-newrun">
-  <div class="wrap" style="max-width:720px">
-    <div class="pagehead"><h1>Open a run</h1><p>Open a lobby for connected agents to sign up and play. Agents discover the open run, claim the seats, and the coordinator runs the games — you don't pick the agents here.</p></div>
+  <div class="wrap" style="max-width:1040px">
+    <div class="pagehead"><h1>New run</h1><p>Start a fixed model comparison for research, or open a connected-agent lobby for submitted agents.</p></div>
+    <div class="mode-tabs" id="nf-mode-tabs" role="tablist" aria-label="Run type">
+      <button type="button" class="on" data-mode="static">Static models</button>
+      <button type="button" data-mode="connected">Connected agents</button>
+    </div>
     <div class="form">
-      <div class="field run-settings">
-        <div class="control"><label>Game</label>
-          <select id="nf-game">
-            <option>One Night Ultimate Werewolf</option>
-            <option>The Resistance: Avalon</option>
-            <option>Secret Mafia</option>
-          </select></div>
-        <div class="control" id="nf-deck-field"><label>ONUW deck</label>
-          <select id="nf-deck">
-            <option value="arena">Arena pressure</option>
-            <option value="classic">Classic</option>
-            <option value="tanner">Tanner puzzle</option>
-          </select></div>
-        <div class="control"><label>Players (seats agents fill)</label>
-          <select id="nf-p"><option>5</option><option>6</option><option>7</option></select></div>
-        <div class="control"><label>Games to play</label>
-          <input type="number" id="nf-n" value="8" min="1" max="2000"></div>
-        <div class="control"><label>Discussion rounds / game</label>
-          <input type="number" id="nf-rounds" value="5" min="1" max="20"></div>
+      <div class="newrun-mode on" id="nf-static">
+        <div class="form-grid">
+        <section class="panel">
+          <h3>Roster</h3>
+          <div class="body">
+            <div class="field run-settings">
+              <div class="control"><label>Game</label>
+                <select id="nf-game">
+                  <option value="onuw">One Night Ultimate Werewolf</option>
+                  <option value="avalon">The Resistance: Avalon</option>
+                  <option value="secret_mafia">Secret Mafia</option>
+                </select></div>
+              <div class="control" id="nf-deck-field"><label>ONUW deck</label>
+                <select id="nf-deck">
+                  <option value="arena">Arena pressure</option>
+                  <option value="classic">Classic</option>
+                  <option value="tanner">Tanner puzzle</option>
+                </select></div>
+              <div class="control" id="nf-deal-field"><label>Deal schedule</label>
+                <select id="nf-deal">
+                  <option value="balanced">Balanced roles</option>
+                  <option value="random">Random</option>
+                </select></div>
+              <div class="control"><label>Games</label>
+                <input type="number" id="nf-n" value="8" min="1" max="2000"></div>
+              <div class="control"><label>Seed base</label>
+                <input type="number" id="nf-seed" min="1" placeholder="auto"></div>
+            </div>
+            <div class="model-toolbar">
+              <span class="subtle" id="nf-seat-help">5 to 7 model seats</span>
+              <button class="btn" id="nf-add" type="button">Add model</button>
+            </div>
+            <div class="modelrows" id="nf-models"></div>
+            <div class="model-picker">
+              <input type="text" id="nf-model-search" list="model-options" placeholder="search OpenRouter models">
+              <button class="btn" id="nf-use-model" type="button">Use</button>
+              <datalist id="model-options"></datalist>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <h3>Run parameters</h3>
+          <div class="body">
+            <div class="advanced">
+              <div class="control"><label>Max discussion messages</label>
+                <input type="number" id="nf-rounds" value="20" min="1" max="200"></div>
+              <div class="control"><label>Reasoning effort</label>
+                <select id="nf-effort">
+                  <option>medium</option>
+                  <option>none</option>
+                  <option>minimal</option>
+                  <option>low</option>
+                  <option>high</option>
+                  <option>xhigh</option>
+                  <option>max</option>
+                </select></div>
+              <div class="control"><label>Max tokens / response</label>
+                <input type="number" id="nf-tokens" value="4000" min="1" max="200000"></div>
+              <div class="control"><label>Temperature</label>
+                <input type="number" id="nf-temp" min="0" max="2" step="0.1" placeholder="default"></div>
+              <div class="control"><label>Retries</label>
+                <input type="number" id="nf-retries" value="1" min="0" max="10"></div>
+              <div class="control"><label>Prior turns</label>
+                <input type="text" id="nf-prior" placeholder="all"></div>
+            </div>
+            <div class="run-mode" id="nf-mode">Local server runs immediately; hosted deployments queue for a worker.</div>
+          </div>
+        </section>
+        </div>
+      </div>
+      <div class="newrun-mode" id="nf-connected">
+        <section class="panel">
+          <h3>Connected-agent lobby</h3>
+          <div class="body">
+            <div class="subtle" style="margin-bottom:14px">Agents discover the open run, sign up for seats, and the coordinator runs the games once the lobby is full.</div>
+            <div class="lobby-grid">
+              <div class="control"><label>Game</label>
+                <select id="cf-game">
+                  <option value="onuw">One Night Ultimate Werewolf</option>
+                  <option value="avalon">The Resistance: Avalon</option>
+                  <option value="secret_mafia">Secret Mafia</option>
+                </select></div>
+              <div class="control" id="cf-deck-field"><label>ONUW deck</label>
+                <select id="cf-deck">
+                  <option value="arena">Arena pressure</option>
+                  <option value="classic">Classic</option>
+                  <option value="tanner">Tanner puzzle</option>
+                </select></div>
+              <div class="control"><label>Seats</label>
+                <select id="cf-p"><option>5</option><option>6</option><option>7</option></select></div>
+              <div class="control"><label>Games</label>
+                <input type="number" id="cf-n" value="8" min="1" max="2000"></div>
+              <div class="control"><label>Max discussion messages</label>
+                <input type="number" id="cf-rounds" value="20" min="1" max="200"></div>
+            </div>
+          </div>
+        </section>
       </div>
       <div class="run-actions">
-        <button class="btn primary" id="nf-launch">Open run</button>
+        <button class="btn primary" id="nf-launch">Start run</button>
         <button class="btn" id="nf-cancel">Cancel</button>
       </div>
     </div>
@@ -453,6 +588,23 @@ const DECK_LABELS={arena:"Arena pressure",classic:"Classic",tanner:"Tanner puzzl
 function tagOf(n){ return (n[0]+(n[1]||"")).toUpperCase(); }
 function escAttr(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function publicRef(name){
+  const h=String(name||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
+  return h?"@"+h:"";
+}
+function mentionMap(m){
+  const out={};
+  (m.players||[]).forEach(p=>{ const ref=publicRef(p.name); if(ref) out[ref]=p; });
+  return out;
+}
+function renderMentions(text,m){
+  const refs=mentionMap(m);
+  return esc(text).replace(/(^|[^\w@.-])(@[a-z0-9][a-z0-9-]*)\b/g,(all,prefix,ref)=>{
+    const p=refs[ref.toLowerCase()];
+    if(!p) return all;
+    return prefix+'<span class="mention" title="'+escAttr(p.name+' '+ref)+'">'+esc(ref)+'</span>';
+  });
+}
 
 /* ===== RUNS — each has its own agent roster (same agents only within the run) ===== */
 const API="/api";  // same-origin Vercel serverless functions under /api
@@ -460,7 +612,15 @@ let RUNS={}, RUN_ORDER=[];
 let curDebug=null;
 const TRANSCRIPTS={};
 async function jget(u){ const r=await fetch(API+u); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
-async function jpost(u,body){ const r=await fetch(API+u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})}); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
+async function jpost(u,body){
+  const r=await fetch(API+u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
+  if(!r.ok){
+    let msg=u+" "+r.status;
+    try{ const d=await r.json(); msg=d.error||d.detail||msg; }catch(_){}
+    const e=new Error(msg); e.status=r.status; throw e;
+  }
+  return r.json();
+}
 // Only replace the cache on a successful array fetch; keep last-good runs on any failure so
 // navigating away and back (e.g. to Model keys) never blanks the list if a refresh hiccups.
 async function loadRuns(){
@@ -477,6 +637,33 @@ function voteName(pid){ return pid===-1 ? "no one" : (T().players[pid] ? nm(pid)
 function tag(pid){ return tagOf(T().players[pid].name); }
 function modelOf(pid){ return T().players[pid].model; }
 function teamCls(t){ return t==="evil"?"evil":(t==="void"?"void":"good"); }
+function gameShort(g){ return g==="onuw"?"ONUW":(g==="avalon"?"AVALON":"MAFIA"); }
+function gameInstanceId(gid){ return curRun.id+"_game_"+String(gid).padStart(3,"0"); }
+function gidFromInstance(id){
+  const m=String(id||"").match(/_game_(\d+)$/);
+  return m?parseInt(m[1],10):null;
+}
+function runEvents(){
+  return (curDebug&&curDebug.recent_events&&curDebug.recent_events.length)
+    ? curDebug.recent_events
+    : ((curRun&&curRun.recentEvents)||[]);
+}
+function eventsForGame(gid){ const iid=gameInstanceId(gid); return runEvents().filter(e=>e.game_instance_id===iid); }
+function liveGameGids(){
+  if(!curRun) return [];
+  const done=new Set((curRun.games||[]).map(g=>g.gid));
+  const gids=[...new Set(runEvents().map(e=>gidFromInstance(e.game_instance_id)).filter(gid=>gid&&!done.has(gid)))].sort((a,b)=>a-b);
+  if(curRun.status==="run" && gids.length===0 && (curRun.games||[]).length<curRun.nGames) gids.push((curRun.games||[]).length+1);
+  return gids;
+}
+function isLiveGame(g){ return g&&g.live; }
+function runStatusLabel(r){
+  if(r.status==="done") return "completed";
+  if(r.status==="partial") return "partial";
+  if(r.status==="run") return "running";
+  if(r.status==="open"||r.status==="waiting"||r.status==="ready_required") return "open";
+  return "queued";
+}
 
 /* ===== URL routing — keep the current view in the address bar so refresh / back restore it =====
    Hashes: #/ index · #/new · #/run/<id> · #/run/<id>/game/<gid> */
@@ -491,32 +678,72 @@ function setHash(h){
   if(location.hash===h) return;       // already there — don't fire a redundant hashchange
   lastSetHash=h; location.hash=h;     // our own change; the listener below skips routing for it
 }
+const SCROLL_KEEPERS=["#convo","#gamebody","#livegame-scroll","#livegame-events",".livegame"];
+function scrollSnapshot(){
+  return SCROLL_KEEPERS.map(sel=>{
+    const el=document.querySelector(sel);
+    return el?{sel,top:el.scrollTop,left:el.scrollLeft}:null;
+  }).filter(Boolean);
+}
+function restoreScrollSnapshot(snapshot){
+  snapshot.forEach(s=>{
+    const el=document.querySelector(s.sel);
+    if(el){ el.scrollTop=s.top; el.scrollLeft=s.left; }
+  });
+}
+function restoreViewport(x,y,nested,active){
+  window.scrollTo(x,y);
+  restoreScrollSnapshot(nested);
+  if(active && active.focus && document.contains(active)) active.focus({preventScroll:true});
+}
+function preserveViewport(fn){
+  const x=window.scrollX, y=window.scrollY;
+  const nested=scrollSnapshot();
+  const active=document.activeElement;
+  fn();
+  requestAnimationFrame(()=>{
+    restoreViewport(x,y,nested,active);
+    requestAnimationFrame(()=>restoreViewport(x,y,nested,active));
+  });
+}
+async function preserveViewportAsync(fn){
+  const x=window.scrollX, y=window.scrollY;
+  const nested=scrollSnapshot();
+  const active=document.activeElement;
+  await fn();
+  requestAnimationFrame(()=>{
+    restoreViewport(x,y,nested,active);
+    requestAnimationFrame(()=>restoreViewport(x,y,nested,active));
+  });
+}
 async function route(){
   const parts=location.hash.replace(/^#\/?/,"").split("/").filter(Boolean);
-  try{
-    if(parts[0]==="new"){ show("newrun"); return; }
-    if(parts[0]==="run" && parts[1]){
-      await openRun(parts[1]);
-      if(parts[2]==="game" && parts[3]!==undefined){
-        const gid=+parts[3];
-        if(curRun.games.some(g=>g.gid===gid)) await openGame(gid);  // ignore stale/invalid game ids
-      }
-      return;
-    }
+	  try{
+	    if(parts[0]==="new"){ show("newrun"); return; }
+	    if(parts[0]==="run" && parts[1]){
+	      await openRun(parts[1], {show:false});
+	      if(parts[2]==="game" && parts[3]!==undefined){
+	        const gid=+parts[3];
+	        if(curRun.games.some(g=>g.gid===gid) || liveGameGids().includes(gid)){ await openGame(gid); return; }  // ignore stale/invalid game ids
+	      }
+	      show("run");
+	      return;
+	    }
   }catch(e){ console.error("route failed for",location.hash,e); }
   show("index");
 }
 
 async function show(s){
+  const was=screen;
   screen=s; stopPlay(); setHash(hashFor(s));
-  if(runPoll){ clearInterval(runPoll); runPoll=null; }  // stop live polling when leaving a run
+  if(runPoll && !["run","game"].includes(s)){ clearInterval(runPoll); runPoll=null; }  // stop live polling when leaving a run
   ["index","run","game","newrun"].forEach(x=>document.getElementById("screen-"+x).classList.toggle("on",x===s));
   const navmap={run:"index",game:"index",newrun:"index"};
   document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("on",b.dataset.s===(navmap[s]||s)));
   if(s==="index"){ renderIndex(); renderLeaderboard(); applyCollapse();   // show what we have, then refresh
     loadRuns().then(renderIndex); loadLeaderboard().then(renderLeaderboard); }
   if(s==="newrun") renderNewRun();
-  window.scrollTo(0,0);
+  if(was!==s) window.scrollTo(0,0);
 }
 
 /* ===== INDEX ===== */
@@ -530,11 +757,11 @@ function renderIndex(){
       .map(s=>'<div class="stat"><div class="n">'+s[1]+'</div><div class="k lbl">'+s[0]+'</div></div>').join("");
   document.getElementById("runrows").innerHTML=all.map(r=>{
     let result;
-    if(r.status==="done") result='<span class="split"><span class="g">'+r.teamSplit.good+'</span><span class="s">–</span><span class="e">'+r.teamSplit.evil+'</span> <span class="s">'+(r.game==="onuw"?"vil/wolf":"good/evil")+'</span></span>';
-    else result='<span class="wintag pending">'+(r.status==="run"?"in progress":"queued")+'</span>';
+    if(r.status==="done"||r.status==="partial") result='<span class="split"><span class="g">'+r.teamSplit.good+'</span><span class="s">–</span><span class="e">'+r.teamSplit.evil+'</span> <span class="s">'+(r.game==="onuw"?"vil/wolf":"good/evil")+'</span></span>';
+    else result='<span class="wintag pending">'+(r.status==="run"?"in progress":(r.status==="open"||r.status==="waiting"?"open":"queued"))+'</span>';
     return '<button class="rt-row" data-run="'+r.id+'"><span class="stat-dot '+r.status+'"></span>'+
       '<span class="rt-id" title="'+escAttr(r.id)+'">'+esc(r.id)+'</span>'+
-      '<span class="rt-game" title="'+escAttr(r.label)+'"><span class="title">'+esc(r.label)+'</span><span class="sub">'+(r.game==="onuw"?"ONUW":"AVALON")+' · '+r.players+' players</span></span>'+
+      '<span class="rt-game" title="'+escAttr(r.label)+'"><span class="title">'+esc(r.label)+'</span><span class="sub">'+gameShort(r.game)+' · '+r.players+' players</span></span>'+
       '<span class="rt-ng">'+r.nGames+' games</span>'+result+
       '<span class="rt-when">'+r.when+'</span></button>';
   }).join("");
@@ -638,37 +865,52 @@ function bindCollapse(){
 /* ===== RUN OVERVIEW ===== */
 let runPoll=null;
 function normStatus(s){ return s==="running"?"run":(s==="queued"?"queue":s); }
-async function openRun(id){
+async function openRun(id, opts={}){
   if(runPoll){ clearInterval(runPoll); runPoll=null; }
   try{ curRun=await jget("/runs/"+id); }catch(e){ console.error(e); return; }
   curRun.status=normStatus(curRun.status); curGame=null;
   curDebug=await loadRunDebug(id);
   renderRunOverview();
-  show("run");
-  if(curRun.status==="run") runPoll=setInterval(()=>pollRun(id),4000);  // live game-by-game updates
+  if(opts.show!==false) show("run");
+  if(["run","queue","open","waiting","ready_required"].includes(curRun.status)) runPoll=setInterval(()=>pollRun(id),4000);  // live game-by-game updates
 }
 async function loadRunDebug(id){
-  if(!curRun || !curRun.connected) return null;
   try{ return await jget("/runs/"+id+"/debug"); }
   catch(e){ console.error("run debug failed", e); return null; }
 }
 async function pollRun(id){
-  try{ const r=await jget("/runs/"+id); r.status=normStatus(r.status); curRun=r; curDebug=await loadRunDebug(id); renderRunOverview();
-       if(r.status!=="run"){ clearInterval(runPoll); runPoll=null; } }
+  try{ const r=await jget("/runs/"+id); r.status=normStatus(r.status); curRun=r; curDebug=await loadRunDebug(id);
+       if(screen==="game"&&curGame&&isLiveGame(curGame)){
+         const finished=curRun.games.find(g=>g.gid===curGame.gid);
+         if(finished&&finished.full) await preserveViewportAsync(()=>openGame(curGame.gid));
+         else preserveViewport(renderLiveGameDetail);
+       } else {
+         preserveViewport(renderRunOverview);
+       }
+       if(!["run","queue","open","waiting","ready_required"].includes(r.status)){ clearInterval(runPoll); runPoll=null; } }
   catch(e){ /* keep showing last-good */ }
 }
 function renderRunOverview(){
   const prog=curRun.games.length+" / "+curRun.nGames;
   const running=curRun.status==="run";
+  const rc=curRun.runConfig||{};
   document.getElementById("ovid").textContent=curRun.id;
   document.getElementById("ovtitle").textContent=curRun.label;
-  document.getElementById("ovsub").textContent=(running?(prog+" games"):(curRun.nGames+" games"))+" · "+curRun.players+" agents · "+(curRun.status==="done"?"completed":running?"running":"queued");
+  document.getElementById("ovsub").textContent=(running?(prog+" games"):(curRun.nGames+" games"))+" · "+curRun.players+" agents · "+runStatusLabel(curRun);
   document.getElementById("ovagents").innerHTML=curRun.agents.map(agentRow).join("");
   document.getElementById("ovcfg").innerHTML=
     cfgItem("Game",curRun.label)+cfgItem("Players",curRun.players)+cfgItem("Games to play",curRun.nGames)+
     (curRun.game==="onuw"?cfgItem("Deck",DECK_LABELS[curRun.deckPreset]||curRun.deckPreset||"Arena pressure"):"")+
+    (curRun.game==="onuw"?cfgItem("Deal schedule",((curRun.dealSchedule||{}).mode==="balanced"?"Balanced roles":"Random")):"")+
     (curRun.deck&&curRun.deck.length?cfgItem("Roles",curRun.deck.join(", ")):"")+
-    cfgItem("Status",curRun.status==="done"?"Completed":running?("Running · "+prog):"Queued")+
+    cfgItem("Status",curRun.status==="done"?"Completed":curRun.status==="partial"?"Partial":running?("Running · "+prog):runStatusLabel(curRun))+
+    cfgItem("Total cost",formatCost(curRun.usage&&curRun.usage.cost))+
+    cfgItem("Reasoning effort",rc.reasoning_effort||"—")+
+    cfgItem("Max tokens / response",rc.max_tokens_per_turn||"—")+
+    cfgItem("Temperature",rc.temperature!=null?rc.temperature:"—")+
+    cfgItem("Discussion budget",rc.discussion_rounds||"—")+
+    cfgItem("Retries",rc.retries!=null?rc.retries:"—")+
+    cfgItem("Prior turns",formatPriorTurns(rc.prior_message_turns))+
     cfgItem("Seed base",curRun.seedBase)+cfgItem("Created",curRun.created);
   const res=document.getElementById("ovresults");
   const sc=curRun.scores||{}, hasScores=Object.keys(sc).length>0;
@@ -695,19 +937,28 @@ function renderRunOverview(){
     res.innerHTML='<div class="lbl">'+(running?("Running — "+prog+" games complete. Results appear as games finish."):"Not started yet.")+'</div>';
   }
   document.getElementById("gameslbl").textContent=running?(prog+" games · running…"):(curRun.nGames+" games in this run");
-  const gl=document.getElementById("ovgames");
-  let rows=curRun.games.map(g=>
-    '<button class="grow2" data-g="'+g.gid+'"><span class="stat-dot done"></span>'+
-    '<span class="gid">Game '+g.gid+'</span><span class="gseed">'+g.seed+'</span>'+
-    '<span class="gline">'+g.line+'</span>'+
-    '<span class="wtag '+g.win+'">'+(g.win==="void"?"no contest":(curRun.game==="onuw"?(g.win==="good"?"village":"werewolf"):(g.win==="good"?"good":"evil")))+'</span>'+
-    '<span class="replay'+(g.full?"":" no")+'">'+(g.full?"full replay":"summary")+'</span></button>').join("");
-  if(running) rows+='<div class="grow2" style="cursor:default;color:var(--faint)"><span class="stat-dot run"></span><span class="gid">…</span><span></span><span class="gline">'+(curRun.nGames-curRun.games.length)+' more game(s) playing</span><span></span><span></span></div>';
-  if(!curRun.games.length && !running) rows='<div style="padding:16px"><span class="lbl">No games yet — run is '+curRun.status+'.</span></div>';
-  gl.innerHTML=rows;
-  document.querySelectorAll(".grow2[data-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.g));
-  renderConnectedDebug();
-}
+	  const gl=document.getElementById("ovgames");
+	  let rows=curRun.games.map(g=>
+	    '<button class="grow2" data-g="'+g.gid+'"><span class="stat-dot done"></span>'+
+	    '<span class="gid">Game '+g.gid+'</span><span class="gseed">'+g.seed+'</span>'+
+	    '<span class="gline">'+g.line+'</span>'+
+	    '<span class="wtag '+g.win+'">'+(g.win==="void"?"no contest":(curRun.game==="onuw"?(g.win==="good"?"village":"werewolf"):(g.win==="good"?"good":"evil")))+'</span>'+
+	    '<span class="replay'+(g.full?"":" no")+'">'+(g.full?"full replay":"summary")+'</span></button>').join("");
+	  const liveGids=liveGameGids();
+	  if(running && liveGids.length){
+	    rows+=liveGids.map(gid=>
+	      '<button class="grow2 live" data-live-g="'+gid+'"><span class="stat-dot run"></span>'+
+	      '<span class="gid">Game '+gid+'</span><span class="gseed">'+(Number(curRun.seedBase)+gid-1)+'</span>'+
+		      '<span class="gline">In progress</span>'+
+		      '<span class="wtag pending">running</span><span class="replay">live stream</span></button>'
+	    ).join("");
+	  } else if(running) rows+='<div class="grow2" style="cursor:default;color:var(--faint)"><span class="stat-dot run"></span><span class="gid">…</span><span></span><span class="gline">'+(curRun.nGames-curRun.games.length)+' more game(s) playing</span><span></span><span></span></div>';
+	  if(!curRun.games.length && !running) rows='<div style="padding:16px"><span class="lbl">No games yet — run is '+curRun.status+'.</span></div>';
+	  gl.innerHTML=rows;
+	  document.querySelectorAll(".grow2[data-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.g));
+	  document.querySelectorAll(".grow2[data-live-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.liveG));
+		  renderConnectedDebug();
+		}
 function agentRow(a){
   const connected=curRun.connected||a.signup_id||a.status;
   const status=a.status||"waiting";
@@ -727,6 +978,8 @@ function agentRow(a){
     '<div class="meta">'+esc(a.model)+' · '+esc(a.harness)+'</div>'+conn+'</div>';
 }
 function cfgItem(k,v){ return '<div class="c"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'; }
+function formatPriorTurns(v){ return v===-1?"All":(v!=null?v:"—"); }
+function formatCost(v){ return v!=null?"$"+Number(v).toFixed(4):"—"; }
 function relTime(ts){
   if(!ts) return "never";
   const t=Date.parse(ts); if(!Number.isFinite(t)) return ts;
@@ -737,51 +990,98 @@ function relTime(ts){
 }
 function compactPayload(e){
   const p=e.payload||{};
+  if(e.type==="game_started") return "game "+p.gid+" · seed "+p.seed;
+  if(e.type==="game_setup") return "deck: "+((p.deck||[]).join(", "));
+  if(e.type==="role_info") return "seat "+p.seat+" dealt "+p.role;
+  if(e.type==="night_observation") return "seat "+p.seat+": "+(p.text||"");
+  if(e.type==="model_turn_started") return "seat "+p.seat+" thinking · "+(p.action_kind||"turn");
+  if(e.type==="model_turn_completed") return "seat "+p.seat+" answered in "+fmtMs(p.ms||0)+(p.reasoning?" · "+p.reasoning:"");
   if(e.type==="speech") return "seat "+p.actor_seat+": "+(p.text||"");
-  if(e.type==="pass") return "seat "+p.actor_seat+" passed";
+  if(e.type==="pass") return "seat "+p.actor_seat+" "+(p.stance==="wait"?"waited":p.stance==="done"?"is done":"passed");
+  if(e.type==="discussion_notice") return p.text||"";
   if(e.type==="vote_revealed") return "seat "+p.actor_seat+" -> "+p.target;
   if(e.type==="phase_started"||e.type==="phase_ended") return p.text||p.phase||e.phase||"";
   if(e.type==="game_result") return p.text||p.winner_team||"";
   if(e.type==="forfeit") return p.reason||JSON.stringify(p);
   return JSON.stringify(p);
 }
+function eventStreamHtml(events, emptyText){
+  const lastEvent=events.length?events[events.length-1]:null;
+  const now=lastEvent
+    ? '<div class="evnow"><span class="dot"></span><span class="k">'+(lastEvent.type==="model_turn_started"?"Now":"Latest")+'</span><span>'+esc(compactPayload(lastEvent))+'</span></div>'
+    : '';
+  return events.length?
+    now+'<div class="evlist">'+events.slice(-120).map(e=>
+      '<div class="ev"><span class="seq">#'+e.seq+'</span><span class="typ">'+esc(e.type)+'</span><span class="pay">'+esc(compactPayload(e))+'</span></div>'
+    ).join("")+'</div>':
+    '<div class="lbl">'+esc(emptyText||"No run events recorded yet.")+'</div>';
+}
 function renderConnectedDebug(){
-  const ep=document.getElementById("eventPanel"), pending=document.getElementById("ovpending");
-  if(!curRun.connected){
-    pending.innerHTML=""; ep.style.display="none"; return;
-  }
-  ep.style.display="";
+  const pending=document.getElementById("ovpending");
+  const hasDebug=curRun.connected;
+  pending.innerHTML="";
+  if(!hasDebug) return;
   pending.innerHTML=(curDebug&&curDebug.pending_turns&&curDebug.pending_turns.length)?
       '<div class="pending"><div class="lbl" style="margin-bottom:6px">Pending turns</div>'+
       '<div class="connrows">'+curDebug.pending_turns.map(t=>
         '<div class="connrow"><div class="seat">s'+t.seat+'</div><div><div class="nm">'+esc(t.action_kind)+'</div><div class="sub">'+esc(t.turn_id)+' · '+esc(t.phase)+'</div></div><span class="pill active">pending</span><div class="sub">'+esc((t.deadline_at||"").slice(11,19))+'</div></div>'
       ).join("")+'</div></div>':'';
-  const events=(curDebug&&curDebug.recent_events)||[];
-  document.getElementById("ovevents").innerHTML=events.length?
-    '<div class="evlist">'+events.slice(-80).map(e=>
-      '<div class="ev"><span class="seq">#'+e.seq+'</span><span class="typ">'+esc(e.type)+'</span><span class="pay">'+esc(compactPayload(e))+'</span></div>'
-    ).join("")+'</div>':
-    '<div class="lbl">No run events recorded yet.</div>';
 }
 
 /* ===== GAME DETAIL ===== */
 async function openGame(gid){
-  curGame=curRun.games.find(g=>g.gid===gid); selected=null;
+  curGame=curRun.games.find(g=>g.gid===gid) || {
+    gid,
+    seed:Number(curRun.seedBase)+gid-1,
+    full:false,
+    live:true,
+    line:"In progress"
+  };
+  selected=null;
   document.getElementById("crumbid").textContent=curRun.id+" · Game "+gid;
   document.getElementById("crumbtitle").textContent=curRun.label;
-  try{ TRANSCRIPTS[curRun.id+"/"+gid]=await jget("/runs/"+curRun.id+"/games/"+gid); }catch(e){ console.error(e); }
+  if(!curGame.live){
+    try{ TRANSCRIPTS[curRun.id+"/"+gid]=await jget("/runs/"+curRun.id+"/games/"+gid); }catch(e){ console.error(e); }
+  }
   if(hasT()){
     buildMoments(); step=moments.length-1;  // lens defaults to the final phase (outcome visible); convo is full
     document.getElementById("crumbmeta").textContent=T().meta;
     ["prev","next","play"].forEach(x=>document.getElementById(x).style.display="");
     renderGameDetail();
+  } else if(curGame.live){
+    document.getElementById("crumbmeta").textContent="Game "+gid+" · seed "+curGame.seed+" · live";
+    ["prev","next","play"].forEach(x=>document.getElementById(x).style.display="none");
+    document.getElementById("stepc").textContent="";
+    renderLiveGameDetail();
   } else {
     document.getElementById("crumbmeta").textContent="Game "+gid+" · seed "+curGame.seed+" · summary only";
     ["prev","next","play"].forEach(x=>document.getElementById(x).style.display="none");
     document.getElementById("stepc").textContent="";
     renderSummaryOnly();
   }
-  show("game");
+	  show("game");
+	}
+function renderLiveGameDetail(){
+  const events=eventsForGame(curGame.gid);
+  const seats=curRun.agents.map((a,i)=>
+    '<div class="trow"><span class="who">'+esc(a.name)+'</span><span class="roletag">'+esc("seat "+i)+'</span></div>'
+  ).join("");
+  const rc=curRun.runConfig||{};
+  document.getElementById("gamebody").innerHTML=
+    '<div class="livegame" id="livegame-scroll">'+
+      '<div class="livegame-main">'+
+        '<div class="panel"><h3>Live game stream</h3><div class="body" id="livegame-events">'+eventStreamHtml(events, "No events for this game yet.")+'</div></div>'+
+      '</div>'+
+      '<div class="livegame-side">'+
+        '<div class="panel"><h3>Seats</h3><div class="body">'+seats+'</div></div>'+
+        '<div class="panel"><h3>Game settings</h3><div class="body"><div class="cfg">'+
+          cfgItem("Deck",DECK_LABELS[curRun.deckPreset]||curRun.deckPreset||"Arena pressure")+
+          cfgItem("Discussion budget",rc.discussion_rounds||"—")+
+          cfgItem("Prior turns",formatPriorTurns(rc.prior_message_turns))+
+          cfgItem("Temperature",rc.temperature!=null?rc.temperature:"—")+
+        '</div></div></div>'+
+      '</div>'+
+    '</div>';
 }
 function renderSummaryOnly(){
   const g=curGame, lbl=g.win==="void"?"NO CONTEST":(curRun.game==="onuw"?(g.win==="good"?"VILLAGE WINS":"WEREWOLF WINS"):(g.win==="good"?"GOOD WINS":"EVIL WINS"));
@@ -851,6 +1151,22 @@ function renderStrip(){
     s.appendChild(b); });
 }
 function fmtMs(ms){ return ms>=1000?(ms/1000).toFixed(1)+"s":Math.round(ms)+"ms"; }
+function reasoningText(v){
+  if(v==null || v==="") return "";
+  return typeof v==="string" ? v : JSON.stringify(v,null,2);
+}
+function turnReasoningHtml(e){
+  const declared=reasoningText(e.declared_reasoning);
+  const provider=reasoningText(e.provider_reasoning || e.provider_reasoning_details);
+  const raw=reasoningText(e.raw_model_output);
+  if(!declared && !provider && !raw) return "";
+  let body="";
+  if(declared) body+='<div><div class="rk">Declared reasoning</div><div class="rtxt">'+esc(declared)+'</div></div>';
+  if(provider) body+='<div><div class="rk">Provider reasoning</div><div class="rtxt">'+esc(provider)+'</div></div>';
+  if(raw) body+='<details><summary>Raw model output</summary><pre class="rtxt">'+esc(raw)+'</pre></details>';
+  const summary=provider&&declared?"Reasoning · declared + provider":(provider?"Reasoning · provider":"Reasoning · declared");
+  return '<details class="turn-reason"><summary>'+summary+'</summary><div class="rbody">'+body+'</div></details>';
+}
 function convoItem(m,e){
   const el=document.createElement("div");
   if(e.t==="sys"){ el.className="sysline"; el.textContent=e.text; return el; }
@@ -858,11 +1174,15 @@ function convoItem(m,e){
   if(e.t==="result"){ el.className="resline "+teamCls(e.team); el.textContent=e.text; return el; }
   const pl=m.players[e.pid];
   const tms=e.ms?'<span class="think-ms" title="time the agent took to decide">⏱ '+fmtMs(e.ms)+'</span>':'';
-  const head='<div class="h"><span class="nm">'+nm(e.pid)+'</span><span class="role">'+pl.end+'</span>'+tms+'</div>';
-  if(e.t==="pass"){ el.className="turn pass"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">— holds, says nothing —</div></div>'; return el; }
-  if(e.t==="act"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="actline">'+e.text+'</div></div>'; return el; }
-  if(e.t==="vote"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="voteline"><span class="arr">votes</span> <span class="t">'+voteName(e.tgt)+'</span> <span class="role">· '+e.text+'</span></div></div>'; return el; }
-  el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">'+e.text+'</div></div>'; return el;
+  const head='<div class="h"><span class="nm">'+esc(nm(e.pid))+'</span><span class="role">'+esc(pl.end)+'</span>'+tms+'</div>';
+  const reasoning=turnReasoningHtml(e);
+  if(e.t==="pass"){
+    const passText=e.stance==="wait"?"— waits for more discussion —":(e.stance==="done"?"— ready to vote —":"— holds, says nothing —");
+    el.className="turn pass"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">'+passText+'</div>'+reasoning+'</div>'; return el;
+  }
+  if(e.t==="act"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="actline">'+renderMentions(e.text,m)+'</div>'+reasoning+'</div>'; return el; }
+  if(e.t==="vote"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="voteline"><span class="arr">votes</span> <span class="t">'+esc(voteName(e.tgt))+'</span> <span class="role">· '+renderMentions(e.text,m)+'</span></div>'+reasoning+'</div>'; return el; }
+  el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">'+renderMentions(e.text,m)+'</div>'+reasoning+'</div>'; return el;
 }
 function block(title,inner){ return '<div class="sblock"><h4>'+title+'</h4>'+inner+'</div>'; }
 function renderState(){
@@ -922,10 +1242,137 @@ function startPlay(){ if(!hasT())return; if(curPhase()>=T().phases.length-1){ st
 function stopPlay(){ if(timer){clearInterval(timer);timer=null;} setPlayUI(false); }
 function setPlayUI(on){ const i=document.getElementById("playicon"),t=document.getElementById("playtxt"); if(i)i.textContent=on?"❚❚":"▶"; if(t)t.textContent=on?"Pause":"Play"; }
 
-/* OPEN RUN — a connected lobby; agents sign up for the seats, no roster is chosen here */
+/* STATIC RUN — fixed model roster, persisted transcripts/reasoning/results */
+let MODEL_CATALOG=[], modelCatalogLoaded=false;
+let nfMode="static";
+let nfRows=[
+  {name:"GPT-5.5",model:"openai/gpt-5.5"},
+  {name:"Grok 4.20",model:"x-ai/grok-4.20"},
+  {name:"DeepSeek V4 Pro",model:"deepseek/deepseek-v4-pro"},
+  {name:"Claude Opus 4.8",model:"anthropic/claude-opus-4.8"},
+  {name:"Gemini 3.1 Pro Preview",model:"google/gemini-3.1-pro-preview"},
+];
+function modelNameFromSlug(slug){
+  const last=String(slug||"model").split("/").pop().replace(/[-_]+/g," ").trim();
+  return last ? last.replace(/\b\w/g,c=>c.toUpperCase()).slice(0,32) : "Model";
+}
+async function loadModelsForPicker(){
+  if(modelCatalogLoaded) return;
+  modelCatalogLoaded=true;
+  try{
+    const d=await jget("/models");
+    MODEL_CATALOG=(d.models||[]).filter(m=>m&&m.id);
+    const dl=document.getElementById("model-options");
+    if(dl) dl.innerHTML=MODEL_CATALOG.map(m=>'<option value="'+escAttr(m.id)+'">'+esc((m.name||m.id))+'</option>').join("");
+  }catch(e){ console.error("model catalog failed",e); }
+}
+function syncNfRowsFromDom(){
+  const rows=[...document.querySelectorAll("#nf-models .modelrow")];
+  if(!rows.length) return;
+  nfRows=rows.map(row=>({
+    name:row.querySelector(".name").value.trim(),
+    model:row.querySelector(".slug").value.trim(),
+  }));
+}
 function renderNewRun(){
   const g=document.getElementById("nf-game").value;
-  document.getElementById("nf-deck-field").style.display=g.indexOf("Werewolf")>=0?"":"none";
+  document.getElementById("nf-deck-field").style.display=g==="onuw"?"":"none";
+  document.getElementById("nf-deal-field").style.display=g==="onuw"?"":"none";
+  const cg=document.getElementById("cf-game").value;
+  document.getElementById("cf-deck-field").style.display=cg==="onuw"?"":"none";
+  document.getElementById("nf-static").classList.toggle("on",nfMode==="static");
+  document.getElementById("nf-connected").classList.toggle("on",nfMode==="connected");
+  document.querySelectorAll("#nf-mode-tabs button").forEach(b=>b.classList.toggle("on",b.dataset.mode===nfMode));
+  document.getElementById("nf-launch").textContent=nfMode==="static"?"Start run":"Open lobby";
+  document.getElementById("nf-seat-help").textContent=nfRows.length+" model seats · games support 5 to 7";
+  document.getElementById("nf-models").innerHTML=nfRows.map((r,i)=>
+    '<div class="modelrow" data-i="'+i+'"><div class="seat">P'+(i+1)+'</div>'+
+    '<input class="name" type="text" value="'+escAttr(r.name)+'" placeholder="display name">'+
+    '<input class="slug" type="text" value="'+escAttr(r.model)+'" placeholder="provider/model-slug">'+
+    '<button class="rm" type="button" title="Remove model" aria-label="Remove model">×</button></div>'
+  ).join("");
+  document.querySelectorAll("#nf-models .rm").forEach(b=>b.onclick=()=>{
+    syncNfRowsFromDom();
+    if(nfRows.length<=5){ toast("Runs need at least 5 models."); return; }
+    nfRows.splice(+b.closest(".modelrow").dataset.i,1);
+    renderNewRun();
+  });
+  document.querySelectorAll("#nf-models input").forEach(inp=>inp.oninput=syncNfRowsFromDom);
+  loadModelsForPicker();
+}
+function addSelectedModel(){
+  syncNfRowsFromDom();
+  if(nfRows.length>=7){ toast("Runs support at most 7 models."); return; }
+  const input=document.getElementById("nf-model-search");
+  const slug=input.value.trim();
+  if(!slug){ toast("Enter an OpenRouter model slug."); return; }
+  nfRows.push({name:modelNameFromSlug(slug),model:slug});
+  input.value="";
+  renderNewRun();
+}
+function runPayload(){
+  syncNfRowsFromDom();
+  const agents=nfRows.map((r,i)=>({
+    name:(r.name||("Model "+(i+1))).trim(),
+    model:r.model.trim(),
+    harness:"base",
+  })).filter(a=>a.name&&a.model);
+  if(agents.length<5||agents.length>7) throw new Error("Choose 5 to 7 models.");
+  const seen=new Set();
+  agents.forEach((a,i)=>{
+    if(!a.model.includes("/")) throw new Error("Model "+(i+1)+" should be an OpenRouter slug like provider/model.");
+    let base=a.name, n=2;
+    while(seen.has(a.name)){ a.name=base+" "+n; n+=1; }
+    seen.add(a.name);
+  });
+  const game=document.getElementById("nf-game").value;
+  const payload={
+    game,
+    agents,
+    games:+document.getElementById("nf-n").value||6,
+    rounds:+document.getElementById("nf-rounds").value||5,
+    reasoning_effort:document.getElementById("nf-effort").value,
+    max_tokens_per_turn:+document.getElementById("nf-tokens").value||4000,
+    retries:+document.getElementById("nf-retries").value,
+  };
+  const prior=document.getElementById("nf-prior").value.trim();
+  if(prior!==""){
+    if(["all","infinite","inf"].includes(prior.toLowerCase())) payload.prior_message_turns=-1;
+    else {
+      const n=parseInt(prior,10);
+      if(!Number.isFinite(n)||String(n)!==prior||n<-1) throw new Error("Prior turns must be blank, all, -1, or a nonnegative integer.");
+      payload.prior_message_turns=n;
+    }
+  }
+  const temperature=document.getElementById("nf-temp").value.trim();
+  if(temperature!=="") payload.temperature=+temperature;
+  const seed=document.getElementById("nf-seed").value.trim();
+  if(seed) payload.seed=+seed;
+  if(game==="onuw"){
+    payload.deck_preset=document.getElementById("nf-deck").value;
+    payload.deal_schedule=document.getElementById("nf-deal").value;
+  }
+  return payload;
+}
+async function launchStaticRun(payload){
+  try{
+    return await jpost("/run",payload);
+  }catch(e){
+    if(e.status===404||e.status===405) return await jpost("/runs",payload);
+    throw e;
+  }
+}
+function connectedPayload(){
+  const game=document.getElementById("cf-game").value;
+  const payload={
+    connected:true,
+    game,
+    players:+document.getElementById("cf-p").value||5,
+    games:+document.getElementById("cf-n").value||6,
+    rounds:+document.getElementById("cf-rounds").value||5,
+  };
+  if(game==="onuw") payload.deck_preset=document.getElementById("cf-deck").value;
+  return payload;
 }
 let toastTimer=null;
 function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.classList.add("show"); if(toastTimer)clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),1900); }
@@ -939,22 +1386,44 @@ document.getElementById("gback").onclick=()=>openRun(curRun.id);
 document.getElementById("next").onclick=()=>{ stopPlay(); goNext(); };
 document.getElementById("prev").onclick=()=>{ stopPlay(); goPrev(); };
 document.getElementById("play").onclick=()=>{ timer?stopPlay():startPlay(); };
-document.getElementById("nf-game").addEventListener("change",()=>{ const g=document.getElementById("nf-game").value; document.getElementById("nf-deck-field").style.display=g.indexOf("Werewolf")>=0?"":"none"; });
+document.getElementById("nf-game").addEventListener("change",renderNewRun);
+document.getElementById("cf-game").addEventListener("change",renderNewRun);
+document.getElementById("nf-mode-tabs").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-mode]");
+  if(!b) return;
+  nfMode=b.dataset.mode;
+  renderNewRun();
+});
+document.getElementById("nf-add").onclick=()=>{
+  syncNfRowsFromDom();
+  if(nfRows.length>=7){ toast("Runs support at most 7 models."); return; }
+  nfRows.push({name:"Model "+(nfRows.length+1),model:""});
+  renderNewRun();
+};
+document.getElementById("nf-use-model").onclick=addSelectedModel;
+document.getElementById("nf-model-search").addEventListener("keydown",e=>{
+  if(e.key==="Enter"){ e.preventDefault(); addSelectedModel(); }
+});
 document.getElementById("nf-launch").onclick=async ()=>{
-  const gsel=document.getElementById("nf-game").value;
-  const game=gsel.indexOf("Avalon")>=0?"avalon":(gsel.indexOf("Mafia")>=0?"secret_mafia":"onuw");
-  const deck_preset=game==="onuw"?document.getElementById("nf-deck").value:null;
-  const games=+document.getElementById("nf-n").value||6;
-  const players=+document.getElementById("nf-p").value||5;
-  const rounds=+document.getElementById("nf-rounds").value||5;
+  const btn=document.getElementById("nf-launch");
   try{
-    const r=await fetch(API+"/runs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({connected:true,game,players,games,rounds,deck_preset})});
-    if(!r.ok) throw new Error(r.status);
-    const d=await r.json();
-    toast("Run opened: "+d.run_id+" — "+players+"-seat "+game+" lobby, "+games+" games × "+rounds+" rounds. Agents can sign up now.");
+    btn.setAttribute("disabled","");
+    btn.textContent=nfMode==="static"?"Starting…":"Opening…";
+    const payload=nfMode==="static"?runPayload():connectedPayload();
+    const d=nfMode==="static"?await launchStaticRun(payload):await jpost("/runs",payload);
+    if(nfMode==="static"){
+      const queued=d.status==="queued";
+      toast((queued?"Run queued: ":"Run started: ")+d.run_id+" — "+payload.agents.length+" models, "+payload.games+" games · "+payload.rounds+" discussion messages.");
+    }else{
+      toast("Lobby opened: "+d.run_id+" — "+payload.players+" seats, "+payload.games+" games · "+payload.rounds+" discussion messages.");
+    }
     await new Promise(r=>setTimeout(r,600));  // let the run row get created
     openRun(d.run_id);  // jump straight to the overview
-  }catch(e){ toast("Could not open the run — try again."); }
+  }catch(e){ toast(e.message||(nfMode==="static"?"Could not start the run.":"Could not open the lobby.")); }
+  finally{
+    btn.removeAttribute("disabled");
+    btn.textContent=nfMode==="static"?"Start run":"Open lobby";
+  }
 };
 document.getElementById("nf-cancel").onclick=()=>show("index");
 document.addEventListener("keydown",e=>{

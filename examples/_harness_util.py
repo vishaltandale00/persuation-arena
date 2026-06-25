@@ -19,7 +19,8 @@ from typing import Any
 
 from openai import OpenAI
 
-from examples._action_schema import canonicalize_action, clamp_action, validate_action
+from arena.identity import NO_ONE_REF, participant
+from examples._action_schema import normalize_action, validate_action
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
@@ -43,19 +44,19 @@ ACTION_INSTRUCTIONS = {
         'Speak to the whole table — be persuasive for YOUR team (claim a role, share or fake info, '
         'accuse, defend). action = {"speak": "<what you say>"} or {"pass": true}.',
     "onuw.vote":
-        'Vote for who should be eliminated. action = {"target": <seat>} or {"target": -1} for no one.',
+        f'Vote for who should be eliminated. action = {{"target": "@participant"}} or {{"target": "{NO_ONE_REF}"}} for no one.',
     "onuw.seer.inspect":
-        'NIGHT (Seer): action = {"mode":"player","target":<seat>} to see a player\'s card, OR '
+        'NIGHT (Seer): action = {"mode":"player","target":"@participant"} to see a player\'s card, OR '
         '{"mode":"center","indices":[a,b]} to see two center cards.',
     "onuw.robber.swap_or_decline":
-        'NIGHT (Robber): action = {"target":<seat>} to swap and learn your new role, or {"target": null}.',
+        'NIGHT (Robber): action = {"target":"@participant"} to swap and learn your new role, or {"target": null}.',
     "onuw.troublemaker.swap_two_or_decline":
-        'NIGHT (Troublemaker): action = {"a":<seat>,"b":<seat>} to swap two others (unseen), or '
+        'NIGHT (Troublemaker): action = {"a":"@participant","b":"@participant"} to swap two others (unseen), or '
         '{"a": null, "b": null}.',
     "onuw.drunk.swap_center":
         'NIGHT (Drunk): action = {"index": 0|1|2} to blindly swap with that center card.',
     "onuw.doppelganger.copy_player":
-        'NIGHT (Doppelganger): action = {"target":<seat>} to copy that player\'s role.',
+        'NIGHT (Doppelganger): action = {"target":"@participant"} to copy that player\'s role.',
 }
 
 _client: OpenAI | None = None
@@ -126,8 +127,8 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-def _legal_players(turn) -> list[int]:
-    return [p["seat"] for p in (turn.legal_action.get("choices", {}).get("players") or [])]
+def _legal_players(turn) -> list:
+    return [p.get("ref", p.get("seat")) for p in (turn.legal_action.get("choices", {}).get("players") or [])]
 
 
 def _coerce(turn, a: Any) -> Any:
@@ -143,7 +144,7 @@ def _is_legal(turn, a: Any) -> bool:
     if kind == "onuw.discussion.speak_or_pass":
         return (isinstance(a.get("speak"), str) and a["speak"].strip() != "") or a.get("pass") is True
     if kind == "onuw.vote":
-        return a.get("target") == -1 or a.get("target") in players
+        return a.get("target") in {NO_ONE_REF, -1} or a.get("target") in players
     if kind == "onuw.seer.inspect":
         if a.get("mode") == "center":
             return isinstance(a.get("indices"), list) and len(a["indices"]) >= 1
@@ -166,7 +167,7 @@ def _is_legal(turn, a: Any) -> bool:
 def _fallback_action(turn) -> dict:
     kind, players = turn.action_kind, _legal_players(turn)
     if kind == "onuw.vote":
-        return {"target": -1}
+        return {"target": NO_ONE_REF}
     if kind == "onuw.seer.inspect":
         return {"mode": "center", "indices": [0, 1]}
     if kind == "onuw.troublemaker.swap_two_or_decline":
@@ -184,23 +185,30 @@ def render_event(event) -> str:
     """One readable line per event — what a harness appends to its memory."""
     et = getattr(event, "type", None)
     p = getattr(event, "payload", None) or {}
+    def who(value) -> str:
+        if isinstance(value, dict):
+            return f"{value.get('name')} ({value.get('ref')})"
+        return f"Participant {int(value) + 1}" if isinstance(value, int) else "Participant"
     if et == "game_setup":
-        roster = ", ".join(f"seat {k}={v}" for k, v in (p.get("roster") or {}).items())
+        participants = p.get("participants")
+        if participants is None:
+            participants = [participant(v) for v in (p.get("roster") or {}).values()]
+        roster = ", ".join(who(x) for x in participants)
         return (f"SETUP: {p.get('n')}-player ONUW. Players: {roster}. Cards in play (public): "
                 f"{p.get('deck')}. {p.get('center_count')} face-down center cards. "
                 f"Win condition: {p.get('win_condition')}")
     if et == "role_info":
-        return f"YOUR ROLE: you are seat {p.get('seat')}; your dealt card is {p.get('role')}."
+        return f"YOUR ROLE: you are {who(p.get('participant') or p.get('seat'))}; your dealt card is {p.get('role')}."
     if et == "night_observation":
         return f"NIGHT (private to you): {p.get('text')}"
     if et == "speech":
-        return f"seat {p.get('actor_seat')} says: {p.get('text')}"
+        return f"{who(p.get('actor') or p.get('actor_seat'))} says: {p.get('text')}"
     if et == "pass":
-        return f"seat {p.get('actor_seat')} stays silent."
+        return f"{who(p.get('actor') or p.get('actor_seat'))} stays silent."
     if et in ("phase_started", "phase_ended"):
         return f"PHASE {et.split('_')[1]}: {p.get('phase')} — {p.get('text', '')}"
     if et == "vote_revealed":
-        return f"seat {p.get('actor_seat')} voted for {p.get('target')}."
+        return f"{who(p.get('actor') or p.get('actor_seat'))} voted for {who(p.get('target'))}."
     if et == "game_result":
         return f"RESULT: {p.get('text')}"
     return f"{et}: {json.dumps(p)}"
@@ -228,8 +236,7 @@ def interpret(turn, raw_text: str) -> tuple[Any, str, bool]:
     looser hand-coded approximation, so nothing that the server's /reply would 422 is ever submitted.
     A long-but-valid discussion speech is clamped to the schema's maxLength rather than rejected."""
     obj = _extract_json(raw_text) or {}
-    action = clamp_action(turn.action_kind, turn.legal_action,
-                          canonicalize_action(turn.action_kind, _coerce(turn, obj.get("action"))))
+    action = normalize_action(turn.action_kind, turn.legal_action, _coerce(turn, obj.get("action")))
     reasoning = str(obj.get("reasoning", "")).strip()
     legal = _is_legal(turn, action) and validate_action(turn.legal_action, action)[0]
     return action, reasoning, legal

@@ -14,7 +14,7 @@ import httpx
 from arena import store
 from arena.games.onuw import ONUW
 from examples import _harness_util as hu
-from examples._action_schema import clamp_action, validate_action
+from examples._action_schema import clamp_action, normalize_action, validate_action
 from persuasion_arena_agent import ArenaApiError
 from persuasion_arena_agent.client import ArenaHttpClient
 from persuasion_arena_agent.credentials import AgentCredentials
@@ -47,7 +47,7 @@ def _engine_legal(action_kind: str) -> dict:
     if action_kind == "onuw.seer.inspect":
         core._seer_action(0, agent)
     elif action_kind == "onuw.discussion.speak_or_pass":
-        core._speak(0, agent)
+        core._speech_bid(0, agent)
     elif action_kind == "onuw.troublemaker.swap_two_or_decline":
         core._tm_action(0, agent)
     elif action_kind == "onuw.robber.swap_or_decline":
@@ -107,12 +107,12 @@ def test_additional_properties_rejected():
 def test_troublemaker_distinct_rule_matches_server():
     legal = _engine_legal("onuw.troublemaker.swap_two_or_decline")
     assert "distinct" in (legal.get("rules") or {})
-    # same-seat pair is rejected by both
-    assert store._validate_action({"a": 1, "b": 1}, legal)[0] is False
-    assert validate_action(legal, {"a": 1, "b": 1})[0] is False
+    # same-participant pair is rejected by both (refs, post seat->@ref migration)
+    assert store._validate_action({"a": "@p1", "b": "@p1"}, legal)[0] is False
+    assert validate_action(legal, {"a": "@p1", "b": "@p1"})[0] is False
     # distinct pair and the decline form are accepted by both
-    assert store._validate_action({"a": 1, "b": 2}, legal)[0] is True
-    assert validate_action(legal, {"a": 1, "b": 2})[0] is True
+    assert store._validate_action({"a": "@p1", "b": "@p2"}, legal)[0] is True
+    assert validate_action(legal, {"a": "@p1", "b": "@p2"})[0] is True
     assert store._validate_action({"a": None, "b": None}, legal)[0] is True
     assert validate_action(legal, {"a": None, "b": None})[0] is True
 
@@ -125,23 +125,25 @@ def test_generic_harness_canonicalizes_type_speak():
     legal = _engine_legal("onuw.discussion.speak_or_pass")
     action, _, legal_flag = hu.interpret(_Turn("onuw.discussion.speak_or_pass", legal),
                                          json.dumps({"action": {"type": "speak", "text": "hi table"}}))
-    assert legal_flag is True and action == {"speak": "hi table"}
+    # canonicalized to {"speak":...} and the schema-required urgency is filled in -> server-valid
+    assert legal_flag is True and action == {"speak": "hi table", "urgency": 1}
     assert store._validate_action(action, legal)[0] is True
 
 
 def test_over_long_speak_rejected_by_server_and_clamped_client_side():
     legal = _engine_legal("onuw.discussion.speak_or_pass")
-    long_speak = {"speak": "x" * 1500}
-    # server rejects it (this is the wf_v2_canary_20260625_114536 422)
-    ok, reason = store._validate_action(long_speak, legal)
+    # server rejects an over-long speak (this is the wf_v2_canary_20260625_114536 422)
+    ok, reason = store._validate_action({"speak": "x" * 1500, "urgency": 1}, legal)
     assert ok is False and "too long" in reason
-    # client clamps to the schema maxLength so a valid speech is sent instead of 422-ing
-    clamped = clamp_action("onuw.discussion.speak_or_pass", legal, long_speak)
+    # clamp_action truncates to maxLength; normalize_action also fills the required urgency -> valid
+    clamped = clamp_action("onuw.discussion.speak_or_pass", legal, {"speak": "x" * 1500})
     assert len(clamped["speak"]) == 1000
-    assert store._validate_action(clamped, legal)[0] is True
+    fixed = normalize_action("onuw.discussion.speak_or_pass", legal, {"speak": "x" * 1500})
+    assert len(fixed["speak"]) == 1000 and fixed["urgency"] in (1, 2, 3)
+    assert store._validate_action(fixed, legal)[0] is True
     # end-to-end through the generic harness interpret(): long speak comes back legal + clamped
     action, _, legal_flag = hu.interpret(_Turn("onuw.discussion.speak_or_pass", legal),
-                                         json.dumps({"action": long_speak}))
+                                         json.dumps({"action": {"speak": "x" * 1500}}))
     assert legal_flag is True and len(action["speak"]) == 1000
 
 
@@ -191,16 +193,18 @@ def test_client_validator_matches_server_battery():
         ],
         "onuw.seer.inspect": [
             {"mode": "center", "indices": [0, 1]}, {"mode": "center", "indices": [0]},
-            {"mode": "center", "indices": [0, 0]}, {"mode": "player", "target": 1},
-            {"mode": "player", "target": 99}, {"mode": "bogus"},
+            {"mode": "center", "indices": [0, 0]}, {"mode": "player", "target": "@p1"},
+            {"mode": "player", "target": "@p99"}, {"mode": "bogus"},
         ],
         "onuw.troublemaker.swap_two_or_decline": [
-            {"a": 1, "b": 2}, {"a": 1, "b": 1}, {"a": None, "b": None}, {"a": 1, "b": 99},
+            {"a": "@p1", "b": "@p2"}, {"a": "@p1", "b": "@p1"}, {"a": None, "b": None},
+            {"a": "@p1", "b": "@p99"},
         ],
         "onuw.robber.swap_or_decline": [
-            {"target": 1}, {"target": None}, {"target": 99}, {},
+            {"target": "@p1"}, {"target": None}, {"target": "@p99"}, {},
         ],
-        "onuw.vote": [{"target": 1}, {"target": -1}, {"target": 0}, {"target": 99}, {}],
+        "onuw.vote": [{"target": "@p1"}, {"target": "@no-one"}, {"target": "@p0"},
+                      {"target": "@p99"}, {}],
     }
     for kind, actions in cases.items():
         legal = _engine_legal(kind)

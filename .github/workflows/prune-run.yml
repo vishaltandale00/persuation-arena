@@ -1,0 +1,62 @@
+# .github/workflows/prune-run.yml
+#
+# Admin: delete a run (and all its child rows) from prod Neon, then recompute the
+# leaderboard so the dropped run's games stop counting. Manual-only — triggered
+# from the Actions tab (or `gh workflow run prune-run.yml -f run_id=...`).
+#
+# Server-side, using the NEON_DATABASE_URL secret, so no one needs prod DB creds
+# locally. tools/arena_admin.py does the delete (game_players/games/runs + child
+# tables); arena.rating recompute rebuilds the derived rating tables from the
+# remaining games.
+name: Prune Run (admin)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run id to delete from the prod leaderboard (then recompute)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prune-run-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install deps (uv)
+        run: |
+          python -m pip install --upgrade pip uv
+          uv sync
+
+      - name: Delete run + recompute
+        # run_id passed via env (NOT inline ${{ }} in the script) to avoid shell injection.
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          RUN_ID: ${{ inputs.run_id }}
+          # tools/arena_admin.py does `from arena import store`; running it by file path puts
+          # sys.path[0]=tools/, so add the repo root explicitly.
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "NEON_DATABASE_URL secret not set — cannot prune."
+            exit 1
+          fi
+          echo "Pruning run: $RUN_ID"
+          uv run python tools/arena_admin.py delete --ids "$RUN_ID" --yes
+          uv run python -m arena.rating recompute
+          echo "pruned '$RUN_ID' and recomputed the leaderboard"

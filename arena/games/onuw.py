@@ -18,6 +18,15 @@ import random
 from collections import Counter
 from typing import Any, Callable
 
+from arena.identity import (
+    NO_ONE_REF,
+    participant,
+    participant_choices,
+    participant_label,
+    participant_refs,
+    roster_line,
+    seat_for_participant_ref,
+)
 from .base import NO_KILL, Agent, agent_call_log, agent_stats, compute_winners, player_won, tally_votes, team_of
 
 ROLE_DESC = {
@@ -114,7 +123,7 @@ def onuw_rules_payload(
         },
         "vote_rules": {
             "timing": "Votes are simultaneous and collected from a frozen pre-vote public state.",
-            "legal_targets": "Vote for one other player, or vote for no one with target -1. You cannot vote for yourself.",
+            "legal_targets": f"Vote for one other player by @handle, or vote for no one with {NO_ONE_REF}. You cannot vote for yourself.",
             "elimination": (
                 "Plurality target(s) are eliminated. If everyone receives exactly one vote, nobody "
                 "is eliminated. If no-one is tied for or has the plurality, nobody is eliminated."
@@ -239,8 +248,7 @@ class ONUW:
                  deck: list[str] | None = None, deck_preset: str | None = None,
                  deal_override: list[str] | None = None,
                  event_sink: Callable[..., None] | None = None,
-                 event_driven: bool = False,
-                 require_wolf_in_play: bool = True):
+                 event_driven: bool = False):
         self.names = names
         self.n = len(names)
         self.seed = seed
@@ -249,9 +257,6 @@ class ONUW:
         self.deck_preset = normalize_deck_preset(deck_preset)
         self.deck = deck or default_deck(len(names), self.deck_preset)
         self.deal_override = deal_override  # explicit 8-card layout for tests (players then center)
-        # Re-deal until at least one Werewolf is among the dealt seats, so no game wastes a round
-        # with every wolf benched in the center (an unrateable no-contest). deal_override bypasses.
-        self.require_wolf_in_play = require_wolf_in_play
         self.dealt: dict[int, str] = {}
         self.current: dict[int, str] = {}
         self.center: list[str] = []
@@ -278,11 +283,7 @@ class ONUW:
 
     def _shuffled(self):
         cards = list(self.deck)
-        guard = self.require_wolf_in_play and "Werewolf" in cards
-        for _ in range(200):  # cap is a backstop; a wolf-bearing N+3 deck dealt to N hits this fast
-            self.rng.shuffle(cards)
-            if not guard or "Werewolf" in cards[: self.n]:
-                return cards
+        self.rng.shuffle(cards)
         return cards
 
     def players_with_dealt(self, role: str) -> list[int]:
@@ -290,7 +291,7 @@ class ONUW:
 
     # ---- prompt building (information-filtered per seat) -------------------
     def _roster_line(self) -> str:
-        return ", ".join(f"{self.names[i]}(seat {i})" for i in range(self.n))
+        return roster_line(self.names)
 
     def _deck_line(self) -> str:
         return ", ".join(f"{k} x{v}" for k, v in Counter(self.deck).items())
@@ -309,7 +310,7 @@ class ONUW:
         self.obs[pid].append(text)
         if believed is not None:
             self.believes[pid] = believed
-        payload: dict[str, Any] = {"seat": pid, "text": text}
+        payload: dict[str, Any] = {"seat": pid, "participant": participant(self.names[pid]), "text": text}
         if believed is not None:
             payload["believed_role"] = believed
         payload.update(extra)
@@ -322,6 +323,7 @@ class ONUW:
         self._emit("game_setup", {
             "n": self.n,
             "roster": {i: self.names[i] for i in range(self.n)},
+            "participants": [participant(self.names[i]) for i in range(self.n)],
             "deck": list(self.deck),
             "center_count": len(self.center),
             "rules_payload": onuw_rules_payload(
@@ -335,18 +337,26 @@ class ONUW:
         }, phase="setup", visibility="public")
 
     def _players_choice(self, seats: list[int]) -> list[dict[str, Any]]:
-        return [{"seat": i, "name": self.names[i]} for i in seats]
+        return participant_choices(self.names, seats)
 
-    def _target_schema(self, field: str, seats: list[int], nullable: bool = False) -> dict:
-        enum = list(seats)
-        typ: str | list[str] = "integer"
+    def _participant_target_schema(self, field: str, seats: list[int], nullable: bool = False) -> dict:
+        enum = participant_refs(self.names, seats)
+        typ: str | list[str] = "string"
         if nullable:
             enum.append(None)
-            typ = ["integer", "null"]
+            typ = ["string", "null"]
         return {
             "type": "object",
             "required": [field],
             "properties": {field: {"type": typ, "enum": enum}},
+            "additionalProperties": False,
+        }
+
+    def _index_schema(self, field: str, indices: list[int]) -> dict:
+        return {
+            "type": "object",
+            "required": [field],
+            "properties": {field: {"type": "integer", "enum": list(indices)}},
             "additionalProperties": False,
         }
 
@@ -375,12 +385,13 @@ class ONUW:
             return ""
         believed = self.believes[pid]
         lines = [
-            f"You are {self.names[pid]}, seat {pid}, in a {self.n}-player One Night Ultimate Werewolf game.",
+            f"You are {participant_label(self.names, pid)} in a {self.n}-player One Night Ultimate Werewolf game.",
             f"Your role right now (as far as you know): {believed}. {ROLE_DESC.get(believed,'')}",
             f"The {len(self.deck)} cards in play (public): {self._deck_line()}.",
             f"There are {len(self.center)} face-down center cards nobody was dealt.",
             f"Players: {self._roster_line()}.",
             "Roles can be secretly swapped at night, so what you were dealt may not be what you are now.",
+            "When naming another participant in speech, use their @handle so references stay unambiguous.",
             "",
             format_onuw_rules_block(self.n, self.deck, len(self.center), phase=phase, action_kind=action_kind),
         ]
@@ -479,11 +490,11 @@ class ONUW:
         targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.doppelganger.copy_player") + (
             "\n\nNIGHT ACTION (Doppelganger): look at one player's card and become a copy of that role.\n"
-            'Reply JSON {"reasoning":"...","action":{"target":<seat>}}.'
+            'Reply JSON {"reasoning":"...","action":{"target":"@participant"}}.'
         )
 
         def parse(a, raw):
-            t = int(a["target"])
+            t = seat_for_participant_ref(a["target"], self.names, targets)
             if t not in targets:
                 raise ValueError("bad target")
             return t
@@ -496,10 +507,10 @@ class ONUW:
             phase="night",
             action_kind="onuw.doppelganger.copy_player",
             legal_action={
-                "schema": self._target_schema("target", targets),
+                "schema": self._participant_target_schema("target", targets),
                 "choices": {"players": self._players_choice(targets)},
             },
-            default_wire_action={"target": targets[0]},
+            default_wire_action={"target": participant(self.names[targets[0]])["ref"]},
         )
         t = resp.action
         copied = self.current[t]
@@ -525,14 +536,14 @@ class ONUW:
         alive_targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.seer.inspect") + (
             "\n\nNIGHT ACTION (Seer): choose ONE:\n"
-            '  {"mode":"player","target":<seat>}  view one other player\'s card, OR\n'
+            '  {"mode":"player","target":"@participant"}  view one other player\'s card, OR\n'
             '  {"mode":"center","indices":[a,b]}  view two of the three center cards (0-based).\n'
             'Reply JSON {"reasoning":"...","action":{...}}.'
         )
 
         def parse(a, raw):
             if a.get("mode") == "player":
-                t = int(a["target"])
+                t = seat_for_participant_ref(a["target"], self.names, alive_targets)
                 if t not in alive_targets:
                     raise ValueError("bad target")
                 return ("player", t)
@@ -559,7 +570,7 @@ class ONUW:
                             "required": ["mode", "target"],
                             "properties": {
                                 "mode": {"enum": ["player"]},
-                                "target": {"type": "integer", "enum": alive_targets},
+                                "target": {"type": "string", "enum": participant_refs(self.names, alive_targets)},
                             },
                             "additionalProperties": False,
                         },
@@ -599,14 +610,14 @@ class ONUW:
         targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.robber.swap_or_decline") + (
             "\n\nNIGHT ACTION (Robber): swap your card with a player's and see your new role, or decline.\n"
-            'Reply JSON {"reasoning":"...","action":{"target":<seat or null>}}.'
+            'Reply JSON {"reasoning":"...","action":{"target":"@participant or null"}}.'
         )
 
         def parse(a, raw):
             t = a.get("target")
             if t is None:
                 return None
-            t = int(t)
+            t = seat_for_participant_ref(t, self.names, targets)
             if t not in targets:
                 raise ValueError("bad target")
             return t
@@ -619,10 +630,10 @@ class ONUW:
             phase="night",
             action_kind="onuw.robber.swap_or_decline",
             legal_action={
-                "schema": self._target_schema("target", targets, nullable=True),
+                "schema": self._participant_target_schema("target", targets, nullable=True),
                 "choices": {"players": self._players_choice(targets), "decline": True},
             },
-            default_wire_action={"target": targets[0]},
+            default_wire_action={"target": participant(self.names[targets[0]])["ref"]},
         )
         t = resp.action
         if t is None:
@@ -638,13 +649,14 @@ class ONUW:
         others = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.troublemaker.swap_two_or_decline") + (
             "\n\nNIGHT ACTION (Troublemaker): swap two OTHER players' cards (you don't see them), or decline.\n"
-            'Reply JSON {"reasoning":"...","action":{"a":<seat or null>,"b":<seat or null>}}.'
+            'Reply JSON {"reasoning":"...","action":{"a":"@participant or null","b":"@participant or null"}}.'
         )
 
         def parse(a, raw):
             if a.get("a") is None or a.get("b") is None:
                 return None
-            x, y = int(a["a"]), int(a["b"])
+            x = seat_for_participant_ref(a["a"], self.names, others)
+            y = seat_for_participant_ref(a["b"], self.names, others)
             if x == y or x not in others or y not in others:
                 raise ValueError("bad pair")
             return (x, y)
@@ -663,8 +675,8 @@ class ONUW:
                             "type": "object",
                             "required": ["a", "b"],
                             "properties": {
-                                "a": {"type": "integer", "enum": others},
-                                "b": {"type": "integer", "enum": others},
+                                "a": {"type": "string", "enum": participant_refs(self.names, others)},
+                                "b": {"type": "string", "enum": participant_refs(self.names, others)},
                             },
                             "additionalProperties": False,
                         },
@@ -682,7 +694,10 @@ class ONUW:
                 "choices": {"players": self._players_choice(others), "decline": True},
                 "rules": {"distinct": [["a", "b"]]},
             },
-            default_wire_action={"a": others[0], "b": others[1]},
+            default_wire_action={
+                "a": participant(self.names[others[0]])["ref"],
+                "b": participant(self.names[others[1]])["ref"],
+            },
         )
         pair = resp.action
         if pair is None:
@@ -715,7 +730,7 @@ class ONUW:
             phase="night",
             action_kind="onuw.drunk.swap_center",
             legal_action={
-                "schema": self._target_schema("index", indices),
+                "schema": self._index_schema("index", indices),
                 "choices": {"center": indices},
             },
             default_wire_action={"index": 0},
@@ -729,67 +744,125 @@ class ONUW:
 
     # ---- discussion --------------------------------------------------------
     def run_discussion(self, agents: dict[int, Agent]):
-        # discussion_rounds is a CAP: discussion runs round-robin until a full round is all-passes
-        # (conversation died) or the cap is reached. So lively games run long, dead ones end early.
-        max_rounds = self.discussion_rounds
-        events: list[dict] = [{"t": "sys", "text": f"Day breaks. Round-robin discussion (up to {max_rounds} rounds; ends once a full round passes in silence)."}]
+        # Responsive discussion: on each pass every seat decides whether it wants to speak and how
+        # urgently. The highest urgency speaker gets the floor; ties are randomized. Agents can
+        # pass because they are waiting for someone else, or mark themselves done. Discussion ends
+        # naturally when everybody is done, after repeated no-speaker deadlock, or at the message
+        # budget. The configured discussion_rounds value is retained for API compatibility, but
+        # ONUW now interprets it as a total discussion-message budget.
+        max_messages = self.discussion_rounds
+        events: list[dict] = [{
+            "t": "sys",
+            "text": (
+                "Day breaks. Responsive discussion begins: each pass asks who wants the floor; "
+                "highest urgency speaks, randomizing ties. Passing can mean waiting or being done. "
+                f"Discussion ends once everyone is done or {max_messages} messages have been spoken."
+            ),
+        }]
         reason: dict[int, str] = {}
         self._emit("phase_started", {"phase": "discussion", "text": "Day discussion begins."},
                    phase="discussion")
-        order = list(range(self.n))
-        self.rng.shuffle(order)
         msgs = 0
-        rnd = 0
-        for rnd in range(max_rounds):
-            events.append({"t": "round", "text": f"Round {rnd+1}"})
-            spoke = 0
+        passes = 0
+        idle_no_speaker_passes = 0
+        while msgs < max_messages:
+            passes += 1
+            events.append({"t": "round", "text": f"Pass {passes}"})
+            bids = []
+            pass_events = []
+            order = list(range(self.n))
+            self.rng.shuffle(order)
             for pid in order:
-                txt, r, passed, ms = self._speak(pid, agents[pid]); reason[pid] = r
-                if passed:
-                    events.append({"t": "pass", "pid": pid, "ms": ms}); self.public.append(f"{self.names[pid]} passes.")
-                    self._emit("pass", {"actor_seat": pid}, phase="discussion")
+                txt, urgency, r, pass_stance, ms = self._speech_bid(pid, agents[pid])
+                if pass_stance:
+                    pass_events.append((pid, ms, r, pass_stance))
                 else:
-                    events.append({"t": "say", "pid": pid, "text": txt, "ms": ms}); self.public.append(f"{self.names[pid]}: {txt}"); msgs += 1; spoke += 1
-                    self._emit("speech", {"actor_seat": pid, "text": txt}, phase="discussion")
-            if spoke == 0:
-                events.append({"t": "sys", "text": "A full round passed in silence — discussion ends."})
-                break
-        events.append({"t": "sys", "text": f"Discussion closes ({msgs} messages over {rnd+1} round(s)). Moving to the vote."})
-        self._emit("phase_ended", {"phase": "discussion", "messages": msgs, "rounds": rnd + 1},
+                    bids.append((urgency, self.rng.random(), pid, txt, r, ms))
+            if not bids:
+                for pid, ms, r, stance in pass_events:
+                    reason[pid] = r
+                    events.append({"t": "pass", "pid": pid, "ms": ms, "stance": stance})
+                    if stance == "done":
+                        self.public.append(f"{self.names[pid]} is ready to end discussion.")
+                    else:
+                        self.public.append(f"{self.names[pid]} passes for now, waiting for more discussion.")
+                    self._emit("pass", {"actor_seat": pid, "stance": stance}, phase="discussion")
+                if pass_events and all(stance == "done" for _, _, _, stance in pass_events):
+                    events.append({"t": "sys", "text": "Everyone is done — discussion ends."})
+                    break
+                idle_no_speaker_passes += 1
+                if idle_no_speaker_passes >= 2:
+                    events.append({"t": "sys", "text": "No one took the floor twice — discussion ends to avoid deadlock."})
+                    break
+                nudge = (
+                    "No one took the floor, but at least one player is still waiting rather than done. "
+                    "Discussion remains open: speak now if you have a defense, rebuttal, or unresolved claim; "
+                    "otherwise mark yourself done."
+                )
+                events.append({"t": "sys", "text": nudge})
+                self.public.append(nudge)
+                self._emit("discussion_notice", {"text": nudge}, phase="discussion")
+                continue
+            idle_no_speaker_passes = 0
+            urgency, _, pid, txt, r, ms = max(bids)
+            reason[pid] = r
+            events.append({"t": "say", "pid": pid, "text": txt, "urgency": urgency, "ms": ms})
+            self.public.append(f"{self.names[pid]}: {txt}")
+            msgs += 1
+            self._emit("speech", {"actor_seat": pid, "text": txt, "urgency": urgency}, phase="discussion")
+        else:
+            events.append({"t": "sys", "text": f"Message budget reached ({max_messages}) — discussion ends."})
+        events.append({"t": "sys", "text": f"Discussion closes ({msgs} messages over {passes} pass(es)). Moving to the vote."})
+        self._emit("phase_ended", {"phase": "discussion", "messages": msgs, "passes": passes},
                    phase="discussion")
         synth = {
-            "state": f"Round-robin discussion ran {rnd+1} round(s) (cap {max_rounds}); agents claim roles and accuse.",
+            "state": f"Responsive discussion produced {msgs} message(s) over {passes} pass(es).",
             "key": "Claims are cheap once cards can move; players weigh hard night-info against unverifiable stories.",
             "note": "Watch who anchors on real information vs who deflects.",
         }
         return {"name": "Discussion", "kind": "talk", "events": events, "reason": reason, "synth": synth}
 
-    def _speak(self, pid: int, agent: Agent):
+    def _speech_bid(self, pid: int, agent: Agent):
         prompt = self.base_prompt(pid, phase="discussion", action_kind="onuw.discussion.speak_or_pass") + (
-            "\n\nIt is your turn to speak to the whole table. Say something persuasive that helps your team — "
-            "claim a role, share (or fake) information, accuse, or defend yourself. You may stay silent.\n"
-            'Reply JSON {"reasoning":"...","action":"<what you say>"} or {"action":"pass"} to stay silent.'
+            "\n\nThe table is deciding who, if anyone, should speak next. If you have something useful "
+            "to say now, provide the message and an urgency from 1 to 3. Use 3 only for immediate "
+            "corrections, direct rebuttals, or critical claims; use 1 for low-priority contributions. "
+            "You may pass with stance \"wait\" if you specifically want more discussion before voting, "
+            "or stance \"done\" if you are ready to end discussion and vote.\n"
+            'Reply JSON {"reasoning":"...","action":{"speak":"<what you say>","urgency":1|2|3}} '
+            'or {"reasoning":"...","action":{"pass":true,"stance":"wait"|"done"}}.'
         )
 
         def parse(a, raw):
             if isinstance(a, dict):
                 if a.get("pass") is True:
-                    return "pass"
+                    stance = str(a.get("stance", "done")).strip().lower()
+                    if stance not in {"wait", "done"}:
+                        raise ValueError("pass stance must be wait or done")
+                    return {"pass": True, "stance": stance}
                 if "speak" in a:
                     s = str(a["speak"]).strip()
+                    urgency = int(a.get("urgency", 1))
+                    if urgency < 1 or urgency > 3:
+                        raise ValueError("urgency must be 1, 2, or 3")
+                    if not s:
+                        raise ValueError("empty")
+                    return {"speak": s, "urgency": urgency}
                 else:
                     raise ValueError("bad speech action")
             else:
                 s = str(a).strip()
-            if not s:
-                raise ValueError("empty")
-            return s
+                if s.lower() in ("pass", "(pass)", "stay silent", "silent"):
+                    return {"pass": True}
+                if not s:
+                    raise ValueError("empty")
+                return {"speak": s, "urgency": 1}
 
         resp = self._act(
             agent,
             prompt,
             parse,
-            default_action="pass",
+            default_action={"pass": True},
             phase="discussion",
             action_kind="onuw.discussion.speak_or_pass",
             legal_action={
@@ -797,26 +870,37 @@ class ONUW:
                     "oneOf": [
                         {
                             "type": "object",
-                            "required": ["speak"],
-                            "properties": {"speak": {"type": "string", "minLength": 1, "maxLength": 1000}},
+                            "required": ["speak", "urgency"],
+                            "properties": {
+                                "speak": {"type": "string", "minLength": 1, "maxLength": 1000},
+                                "urgency": {"type": "integer", "enum": [1, 2, 3]},
+                            },
                             "additionalProperties": False,
                         },
                         {
                             "type": "object",
                             "required": ["pass"],
-                            "properties": {"pass": {"enum": [True]}},
+                            "properties": {
+                                "pass": {"enum": [True]},
+                                "stance": {"enum": ["wait", "done"]},
+                            },
                             "additionalProperties": False,
                         },
                     ]
                 },
-                "choices": {"pass": True},
+                "choices": {"pass": True, "stances": ["wait", "done"]},
             },
-            default_wire_action={"pass": True},
+            default_wire_action={"pass": True, "stance": "done"},
         )
-        s = resp.action
+        action = resp.action
+        if isinstance(action, dict) and action.get("pass") is True:
+            return "", 0, resp.declared_reasoning, action.get("stance", "done"), resp.ms
+        if isinstance(action, dict):
+            return str(action["speak"]), int(action.get("urgency", 1)), resp.declared_reasoning, None, resp.ms
+        s = str(action)
         if s.lower() in ("pass", "(pass)", "stay silent", "silent"):
-            return "", resp.declared_reasoning, True, resp.ms
-        return s, resp.declared_reasoning, False, resp.ms
+            return "", 0, resp.declared_reasoning, "done", resp.ms
+        return s, 1, resp.declared_reasoning, None, resp.ms
 
     # ---- vote --------------------------------------------------------------
     def run_vote(self, agents: dict[int, Agent]):
@@ -867,13 +951,13 @@ class ONUW:
         prompt = self.base_prompt(pid, phase="vote", action_kind="onuw.vote") + (
             "\n\nFINAL VOTE: point at the player you believe should be eliminated, or vote for no one. "
             "You cannot vote for yourself.\n"
-            'Reply JSON {"reasoning":"...","action":<seat number, or -1 for no one>}.'
+            f'Reply JSON {{"reasoning":"...","action":{{"target":"@participant"}}}} or {{"action":{{"target":"{NO_ONE_REF}"}}}} for no one.'
         )
 
         def parse(a, raw):
             if isinstance(a, dict):
                 a = a["target"]
-            t = int(a)
+            t = seat_for_participant_ref(a, self.names, targets, allow_no_one=True)
             if t == NO_KILL:
                 return NO_KILL
             if t not in targets:
@@ -889,10 +973,17 @@ class ONUW:
             phase="vote",
             action_kind="onuw.vote",
             legal_action={
-                "schema": self._target_schema("target", targets + [NO_KILL]),
-                "choices": {"players": self._players_choice(targets), "no_one": NO_KILL},
+                "schema": {
+                    "type": "object",
+                    "required": ["target"],
+                    "properties": {
+                        "target": {"type": "string", "enum": participant_refs(self.names, targets) + [NO_ONE_REF]},
+                    },
+                    "additionalProperties": False,
+                },
+                "choices": {"players": self._players_choice(targets), "no_one": NO_ONE_REF},
             },
-            default_wire_action={"target": default_target},
+            default_wire_action={"target": participant(self.names[default_target])["ref"]},
         )
         resp = req_or_resp.wait() if wait and hasattr(req_or_resp, "wait") else req_or_resp
         if hasattr(resp, "action"):

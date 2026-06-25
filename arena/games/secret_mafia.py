@@ -11,6 +11,7 @@ from __future__ import annotations
 import random
 from collections import Counter
 
+from arena.identity import participant_label, seat_for_participant_ref
 from .base import Agent, agent_call_log, agent_stats, team_of
 
 ROLE_DESC = {
@@ -78,9 +79,10 @@ class SecretMafia:
 
     def base_prompt(self, pid):
         lines = [
-            f"You are {self.names[pid]}, seat {pid}, in a {self.n}-player game of Secret Mafia.",
+            f"You are {participant_label(self.names, pid)} in a {self.n}-player game of Secret Mafia.",
             f"Your role: {self.role[pid]}. {ROLE_DESC[self.role[pid]]}",
-            f"Alive players: {', '.join(self.names[i] for i in self._alive_list())}.",
+            f"Alive players: {', '.join(participant_label(self.names, i) for i in self._alive_list())}.",
+            "When naming another participant in speech, use their @handle so references stay unambiguous.",
         ]
         if self.obs[pid]:
             lines.append("What you know privately:")
@@ -94,7 +96,7 @@ class SecretMafia:
         prompt = self.base_prompt(pid) + prompt_extra
 
         def parse(a, raw):
-            t = int(a)
+            t = seat_for_participant_ref(a, self.names, candidates)
             if t not in candidates:
                 raise ValueError("bad target")
             return t
@@ -111,7 +113,7 @@ class SecretMafia:
         if mafia and victims:
             kill, r, ms = self._pick(mafia[0], agents[mafia[0]],
                                   f"\n\nNIGHT (Mafia): choose a player to kill.\nReply JSON "
-                                  '{"reasoning":"...","action":<seat>}.',
+                                  '{"reasoning":"...","action":"@participant"}.',
                                   victims)
             reason[mafia[0]] = r
             events.append({"t": "act", "pid": mafia[0], "text": "Mafia targets " + self.names[kill], "ms": ms})
@@ -120,7 +122,7 @@ class SecretMafia:
         if doc is not None:
             protect, r, ms = self._pick(doc, agents[doc],
                                     "\n\nNIGHT (Doctor): choose a player to protect (may be yourself).\nReply JSON "
-                                    '{"reasoning":"...","action":<seat>}.',
+                                    '{"reasoning":"...","action":"@participant"}.',
                                     self._alive_list(), default=doc)
             reason[doc] = r
             events.append({"t": "act", "pid": doc, "text": "Doctor protects " + self.names[protect], "ms": ms})
@@ -129,7 +131,7 @@ class SecretMafia:
             others = [i for i in self.alive if i != det]
             tgt, r, ms = self._pick(det, agents[det],
                                 "\n\nNIGHT (Detective): choose a player to investigate.\nReply JSON "
-                                '{"reasoning":"...","action":<seat>}.',
+                                '{"reasoning":"...","action":"@participant"}.',
                                 others)
             reason[det] = r
             is_maf = self.role[tgt] == "Mafia"
@@ -184,7 +186,7 @@ class SecretMafia:
             targets = [i for i in self._alive_list() if i != pid]
             tgt, r, ms = self._pick(pid, agents[pid],
                                 "\n\nVOTE: name the player to eliminate.\nReply JSON "
-                                '{"reasoning":"...","action":<seat>}.',
+                                '{"reasoning":"...","action":"@participant"}.',
                                 targets)
             votes[pid] = tgt; vote_ms[pid] = ms
         for pid in order:

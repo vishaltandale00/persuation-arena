@@ -30,6 +30,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from arena.identity import NO_ONE_REF
 from examples.wolfforge_v2_policy import (
     BASELINE_POLICY_VERSION,
     DEFAULT_MODEL,
@@ -470,7 +471,7 @@ def _fallback_action_type(action: dict | None) -> str | None:
         t = action.get("target")
         if t is None:
             return "decline"
-        if t == -1:
+        if t in (-1, NO_ONE_REF):
             return "no_one"
         return "target"
     return "other"

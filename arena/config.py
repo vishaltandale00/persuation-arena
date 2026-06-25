@@ -39,6 +39,16 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_optional_float(name: str) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def _env_reasoning_effort(name: str, default: str) -> str:
     value = os.environ.get(name, default).strip().lower()
     return value if value in REASONING_EFFORTS else default
@@ -47,6 +57,19 @@ def _env_reasoning_effort(name: str, default: str) -> str:
 def _env_structured_output(name: str, default: str) -> str:
     value = os.environ.get(name, default).strip().lower()
     return value if value in STRUCTURED_OUTPUT_MODES else default
+
+
+def _env_prior_message_turns(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    value = value.strip().lower()
+    if value in {"", "all", "infinite", "inf", "-1"}:
+        return -1
+    try:
+        return int(value)
+    except ValueError:
+        return default
 
 
 def get_api_key() -> str:
@@ -86,13 +109,15 @@ def set_api_key(key: str) -> None:
 @dataclass(frozen=True)
 class Caps:
     """Bounds that keep a game finite and cheap."""
-    discussion_rounds: int = _env_int("ARENA_DISCUSSION_ROUNDS", 5)
+    discussion_rounds: int = _env_int("ARENA_DISCUSSION_ROUNDS", 20)
     max_tokens_per_turn: int = _env_int("ARENA_MAX_TOKENS_PER_TURN", 4000)
     request_timeout_s: float = _env_float("ARENA_REQUEST_TIMEOUT_S", 60.0)
     retries: int = _env_int("ARENA_RETRIES", 1)
-    temperature: float = _env_float("ARENA_TEMPERATURE", 0.8)
+    temperature: float | None = _env_optional_float("ARENA_TEMPERATURE")
     reasoning_effort: str = _env_reasoning_effort("ARENA_REASONING_EFFORT", "medium")
-    prior_message_turns: int = _env_int("ARENA_PRIOR_MESSAGE_TURNS", 8)
+    # -1 means include the full previous turn history and let OpenRouter context compression
+    # fit overlong prompts to the selected model's context window.
+    prior_message_turns: int = _env_prior_message_turns("ARENA_PRIOR_MESSAGE_TURNS", -1)
     openrouter_structured_output: str = _env_structured_output(
         "ARENA_OPENROUTER_STRUCTURED_OUTPUT",
         "off",
@@ -108,12 +133,12 @@ def validate_caps(caps: Caps) -> Caps:
         raise ValueError("request_timeout_s must be positive")
     if caps.retries < 0:
         raise ValueError("retries must be nonnegative")
-    if caps.temperature < 0:
+    if caps.temperature is not None and caps.temperature < 0:
         raise ValueError("temperature must be nonnegative")
     if caps.reasoning_effort not in REASONING_EFFORTS:
         raise ValueError(f"reasoning_effort must be one of {sorted(REASONING_EFFORTS)}")
-    if caps.prior_message_turns < 0:
-        raise ValueError("prior_message_turns must be nonnegative")
+    if caps.prior_message_turns < -1:
+        raise ValueError("prior_message_turns must be -1 for all history, or nonnegative")
     return caps
 
 

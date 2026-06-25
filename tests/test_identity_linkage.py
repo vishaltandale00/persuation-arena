@@ -11,6 +11,7 @@ import threading
 import time
 
 from arena import store
+from arena.identity import NO_ONE_REF
 
 
 def _sqlite(tmp_path, monkeypatch, name="t.db"):
@@ -163,13 +164,13 @@ def _action_for(turn):
     if kind == "onuw.discussion.speak_or_pass":
         return {"pass": True}
     if kind == "onuw.vote":
-        return {"target": -1}
+        return {"target": NO_ONE_REF}
     if kind == "onuw.seer.inspect":
         return {"mode": "center", "indices": [0, 1]}
     if kind == "onuw.troublemaker.swap_two_or_decline":
         return {"a": None, "b": None}
     if kind in {"onuw.doppelganger.copy_player", "onuw.robber.swap_or_decline"}:
-        return {"target": players[0]["seat"] if players else None}
+        return {"target": players[0].get("ref", players[0].get("seat")) if players else None}
     if kind == "onuw.drunk.swap_center":
         return {"index": 0}
     raise AssertionError(kind)

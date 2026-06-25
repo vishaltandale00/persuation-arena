@@ -1,0 +1,64 @@
+# .github/workflows/migrate-neon.yml
+#
+# Auto-applies the prod Neon schema/migrations on deploy, so a new migration
+# (e.g. the game_players_rgs_uq unique index that `arena push` / api/runs/import
+# needs for its ON CONFLICT path) lands without anyone running it by hand.
+#
+# arena/store.py is the schema source of truth: init_schema() applies
+# PG_SCHEMA_STMTS (CREATE TABLE IF NOT EXISTS ...) then PG_MIGRATION_STMTS
+# (ALTER ... ADD COLUMN IF NOT EXISTS, dedup + CREATE UNIQUE INDEX IF NOT EXISTS).
+# Every statement is idempotent, so re-running on each deploy is safe — the dedup
+# DELETE only removes genuine duplicate (run_id,gid,seat) rows, of which correct
+# data has none.
+#
+# One-time setup (only the repo owner can do this):
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#     NEON_DATABASE_URL = <the prod Neon connection string>
+# Until that secret exists the job no-ops (it won't fail the build). After adding
+# it, run this workflow once via "Run workflow" (workflow_dispatch) to apply
+# immediately; thereafter it runs automatically whenever arena/store.py changes.
+name: Migrate Neon
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'arena/store.py'                        # the schema / migration source of truth
+      - '.github/workflows/migrate-neon.yml'    # changes to this pipeline itself
+  workflow_dispatch:                            # manual trigger (e.g. right after adding the secret)
+
+permissions:
+  contents: read
+
+# Never run two migrations against the same DB concurrently.
+concurrency:
+  group: migrate-neon-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install deps (uv)
+        run: |
+          python -m pip install --upgrade pip uv
+          uv sync
+
+      - name: Apply Neon schema/migrations (idempotent)
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "NEON_DATABASE_URL secret not set — skipping. Add it in repo Settings -> Secrets to enable auto-migrate."
+            exit 0
+          fi
+          uv run python -c "from arena import store; store.init_schema(); print('Neon schema up to date (PG_SCHEMA_STMTS + PG_MIGRATION_STMTS applied)')"

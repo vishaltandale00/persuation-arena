@@ -62,6 +62,7 @@ class Turn:
     game_instance_id: str
     game: str
     seat: int
+    participant: dict[str, Any] | None
     phase: str
     action_kind: str
     deadline_at: str
@@ -79,6 +80,7 @@ class Turn:
             game_instance_id=data["game_instance_id"],
             game=data["game"],
             seat=int(data["seat"]),
+            participant=data.get("participant"),
             phase=data["phase"],
             action_kind=data["action_kind"],
             deadline_at=data["deadline_at"],

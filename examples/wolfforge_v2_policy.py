@@ -24,15 +24,21 @@ import hashlib
 import json
 from typing import Any
 
-from examples._action_schema import canonicalize_action, clamp_action, shape_fingerprint, validate_action
+from arena.identity import NO_ONE_REF, public_ref
+from examples._action_schema import normalize_action, shape_fingerprint, validate_action
 from examples.seat_state import SeatState
 
 # Bump this whenever the policy text, state shape, or decision logic changes. It is recorded in
 # every telemetry row and in the eval manifest so a result set names the exact agent that produced
 # it. The prompt hash (below) is a finer-grained fingerprint of the literal prompt text.
-POLICY_VERSION = "wolfforge-v2.0"
+# v2.1: migrated the connected-agent action boundary from integer seats to participant @refs after
+# main hid internal seats behind public participant references.
+POLICY_VERSION = "wolfforge-v2.1"
 
-NO_KILL = -1  # ONUW "vote for no one" sentinel (see arena.games.base.NO_KILL)
+# Public "vote for no one" sentinel. The connected protocol uses the participant ref "@no-one"; the
+# engine still maps it to the internal -1 seat. We never emit a bare -1 in a public action.
+NO_KILL = NO_ONE_REF
+_LEGACY_NO_KILL = -1  # tolerated on input for backward-compatible fixtures/replays only
 
 # Default model + decoding identity. gpt-4o-mini keeps V2 directly comparable to the original
 # WolfForge ablation; a stronger model is selectable purely through env (see wolfforge_v2_agent.py).
@@ -51,9 +57,9 @@ _OUTPUT_CONTRACT = (
     '  "state_update": {\n'
     '    "belief_summary": "one compact sentence: who you think is what and why",\n'
     '    "public_commitments": ["claims you have now made out loud"],\n'
-    '    "coalition": [<seats you are coordinating with>],\n'
-    '    "primary_target": <seat you intend to vote out, or null>,\n'
-    '    "secondary_target": <backup seat, or null>\n'
+    '    "coalition": ["@handles you are coordinating with"],\n'
+    '    "primary_target": "@handle you intend to vote out, or null",\n'
+    '    "secondary_target": "@handle backup, or null"\n'
     "  }\n"
     "}\n"
     "Do not wrap it in markdown. Do not emit any text outside the JSON object."
@@ -95,7 +101,7 @@ ROLE_POLICY: dict[str, str] = {
         "team; the player you robbed still believes their old role. Track this chronology exactly."
     ),
     "Troublemaker": (
-        "Troublemaker swaps two OTHERS without looking, so you keep your own role but know two seats "
+        "Troublemaker swaps two OTHERS without looking, so you keep your own role but know two players "
         "had their cards exchanged. Use that known swap to expose or vouch, but you cannot name the "
         "resulting roles."
     ),
@@ -112,7 +118,7 @@ ROLE_POLICY: dict[str, str] = {
     "Minion": (
         "Minion (evil): you know the werewolves; they do not know you. You win if no werewolf is "
         "eliminated — and you may sacrifice yourself to draw the vote. Protect the wolves, bait a "
-        "village mis-vote, and never reveal which seats are the wolves."
+        "village mis-vote, and never reveal which players are the wolves."
     ),
     "Tanner": (
         "Tanner (no team): you win ONLY if YOU are voted out. Act suspicious enough to be eliminated "
@@ -273,9 +279,10 @@ class GameState:
             self.public_commitments = [str(x)[:300] for x in commitments][:12]
         coalition = update.get("coalition")
         if isinstance(coalition, list):
-            self.coalition = [int(x) for x in coalition if _is_int(x)][:8]
-        self.primary_target = _opt_int(update.get("primary_target"))
-        self.secondary_target = _opt_int(update.get("secondary_target"))
+            # Coalition members are public participant refs ("@handle"), kept as strings.
+            self.coalition = [_ref(x) for x in coalition if _ref(x)][:8]
+        self.primary_target = _opt_ref(update.get("primary_target"))
+        self.secondary_target = _opt_ref(update.get("secondary_target"))
 
     # ---- compact serialization for the model ---------------------------------------------------
     def compact(self) -> dict[str, Any]:
@@ -284,13 +291,15 @@ class GameState:
         conclusions carried across turns. NOT an uncontrolled transcript: it is the seat's filtered
         view, and it is stable for identical state (sorted keys when serialized)."""
         s = self.seat
+        my_name = s.roster.get(s.seat) if s.seat is not None else None
         return {
-            "seat": s.seat,
-            "your_name": s.roster.get(s.seat) if s.seat is not None else None,
+            "your_name": my_name,
+            "your_ref": public_ref(my_name) if my_name else None,
             "believed_current_role": s.believed_role,
             "dealt_role_may_have_changed": True,
             "n_players": s.n,
-            "roster": {str(k): v for k, v in s.roster.items()},
+            # Players are referenced publicly by "@handle"; the roster maps each to a display name.
+            "participants": [{"name": v, "ref": public_ref(v)} for _, v in sorted(s.roster.items())],
             "deck_public": list(s.deck),
             "center_count": s.center_count,
             "phase": s.phase,
@@ -311,47 +320,50 @@ def _event_id(event: Any) -> str | None:
     return getattr(event, "event_id", None)
 
 
-def _is_int(x: Any) -> bool:
-    try:
-        int(x)
-        return True
-    except (TypeError, ValueError):
-        return False
-
-
-def _opt_int(x: Any) -> int | None:
+def _ref(x: Any) -> str | None:
+    """Coerce a model-provided participant identifier to a public ref string. Accepts an existing
+    "@handle"/name string (kept verbatim, trimmed); returns None for empty/garbage."""
     if x is None:
         return None
-    try:
-        return int(x)
-    except (TypeError, ValueError):
+    s = str(x).strip()
+    return s or None
+
+
+def _opt_ref(x: Any) -> str | None:
+    if x is None:
         return None
+    s = str(x).strip()
+    return s or None
 
 
 # --------------------------------------------------------------------------------------------------
 # Prompt assembly (deterministic)
 # --------------------------------------------------------------------------------------------------
 
+# Players are identified by public participant refs ("@handle"), never seat numbers. The exact legal
+# refs for this turn are in the legal-action schema/choices below the instruction.
 ACTION_INSTRUCTIONS: dict[str, str] = {
     "onuw.discussion.speak_or_pass":
         'Speak to the whole table to advance YOUR team (claim a role, share or fake info, accuse, '
-        'defend, ask a falsifiable question). action = {"speak": "<text>"} or {"pass": true}.',
+        'defend, ask a falsifiable question). Name other players by their @handle. '
+        'action = {"speak": "<text>", "urgency": 1|2|3} (1=low, 3=high), or '
+        '{"pass": true, "stance": "wait"|"done"} ("done" = ready to end discussion and vote).',
     "onuw.vote":
-        'Vote for who should be eliminated. action = {"target": <seat>} or {"target": -1} for no '
-        'one. You cannot vote for yourself.',
+        'Vote for who should be eliminated. action = {"target": "@handle"} or '
+        '{"target": "@no-one"} for no one. You cannot vote for yourself.',
     "onuw.seer.inspect":
-        'NIGHT (Seer): action = {"mode":"player","target":<seat>} to see a player\'s card, OR '
+        'NIGHT (Seer): action = {"mode":"player","target":"@handle"} to see a player\'s card, OR '
         '{"mode":"center","indices":[a,b]} to see two center cards.',
     "onuw.robber.swap_or_decline":
-        'NIGHT (Robber): action = {"target":<seat>} to swap and learn your new role, or '
+        'NIGHT (Robber): action = {"target":"@handle"} to swap and learn your new role, or '
         '{"target": null} to decline.',
     "onuw.troublemaker.swap_two_or_decline":
-        'NIGHT (Troublemaker): action = {"a":<seat>,"b":<seat>} to swap two OTHERS (unseen), or '
+        'NIGHT (Troublemaker): action = {"a":"@handle","b":"@handle"} to swap two OTHERS (unseen), or '
         '{"a": null, "b": null} to decline.',
     "onuw.drunk.swap_center":
         'NIGHT (Drunk): action = {"index": 0|1|2} to blindly swap with that center card.',
     "onuw.doppelganger.copy_player":
-        'NIGHT (Doppelganger): action = {"target":<seat>} to copy that player\'s role.',
+        'NIGHT (Doppelganger): action = {"target":"@handle"} to copy that player\'s role.',
 }
 
 
@@ -406,9 +418,10 @@ def response_schema(action_kind: str, legal_action: dict | None) -> dict:
                 "properties": {
                     "belief_summary": {"type": "string"},
                     "public_commitments": {"type": "array", "items": {"type": "string"}},
-                    "coalition": {"type": "array", "items": {"type": "integer"}},
-                    "primary_target": {"type": ["integer", "null"]},
-                    "secondary_target": {"type": ["integer", "null"]},
+                    # Coalition and targets are public participant refs ("@handle").
+                    "coalition": {"type": "array", "items": {"type": "string"}},
+                    "primary_target": {"type": ["string", "null"]},
+                    "secondary_target": {"type": ["string", "null"]},
                 },
             },
         },
@@ -437,11 +450,16 @@ def extract_json(text: str) -> dict | None:
     return None
 
 
-def legal_players(legal_action: dict | None) -> list[int]:
+def legal_players(legal_action: dict | None) -> list:
+    """The legal target identifiers for this turn — participant refs ("@handle") from the served
+    choices. Falls back to integer "seat" so legacy/int-seat fixtures still work in tests."""
     if not legal_action:
         return []
     choices = legal_action.get("choices") or {}
-    return [int(p["seat"]) for p in (choices.get("players") or [])]
+    out = []
+    for p in (choices.get("players") or []):
+        out.append(p.get("ref", p.get("seat")))
+    return out
 
 
 # Keys that only appear in a real ONUW action object. Envelope recovery is gated on the presence of
@@ -450,11 +468,12 @@ _ACTION_KEYS = frozenset({"speak", "pass", "target", "mode", "indices", "a", "b"
 
 
 def coerce_action(action_kind: str, action: Any) -> Any:
-    """Light coercion so a bare string in discussion becomes a structured speak/pass."""
+    """Light coercion so a bare string in discussion becomes a structured speak/pass. A bare string
+    for a vote is treated as a target ref (the engine resolves "@handle"/name)."""
     if action_kind == "onuw.discussion.speak_or_pass" and isinstance(action, str):
         return {"pass": True} if action.strip().lower() in ("", "pass", "(pass)") else {"speak": action}
-    if action_kind == "onuw.vote" and _is_int(action):
-        return {"target": int(action)}
+    if action_kind == "onuw.vote" and isinstance(action, str):
+        return {"target": action.strip()}
     return action
 
 
@@ -467,7 +486,7 @@ def is_legal(action_kind: str, legal_action: dict | None, action: Any) -> bool:
         return (isinstance(action.get("speak"), str) and action["speak"].strip() != "") \
             or action.get("pass") is True
     if action_kind == "onuw.vote":
-        return action.get("target") == NO_KILL or action.get("target") in players
+        return action.get("target") in {NO_KILL, _LEGACY_NO_KILL} or action.get("target") in players
     if action_kind == "onuw.seer.inspect":
         if action.get("mode") == "center":
             idx = action.get("indices")
@@ -491,10 +510,10 @@ def is_legal(action_kind: str, legal_action: dict | None, action: Any) -> bool:
 def fallback_action(state: GameState, action_kind: str, legal_action: dict | None) -> dict:
     """A guaranteed-legal, deterministic action so a turn never forfeits on bad model output.
 
-    Documented ordering:
+    Documented ordering (all targets are participant refs, derived from the served choices):
       - discussion: pass (a legal no-op).
       - vote: this seat's accumulated primary_target if still legal, else secondary_target if legal,
-        else -1 (no one). Never self-vote (state targets exclude self; -1 is always safe).
+        else "@no-one". Never self-vote (state targets exclude self; "@no-one" is always safe).
       - seer: view center cards [0,1].
       - robber/troublemaker: decline (keeps this seat's known role; safest).
       - drunk: swap center index 0.
@@ -517,7 +536,7 @@ def fallback_action(state: GameState, action_kind: str, legal_action: dict | Non
     if action_kind == "onuw.drunk.swap_center":
         return {"index": 0}
     if action_kind == "onuw.doppelganger.copy_player":
-        return {"target": players[0] if players else 0}
+        return {"target": players[0] if players else NO_KILL}
     return {"pass": True}
 
 
@@ -559,14 +578,12 @@ def interpret(action_kind: str, legal_action: dict | None, raw_text: str) -> Dec
     long-but-valid discussion speech is clamped to the schema's maxLength — the over-long-speak 422
     seen in run wf_v2_canary_20260625_114536."""
     obj = extract_json(raw_text) or {}
-    action = clamp_action(action_kind, legal_action,
-                          canonicalize_action(action_kind, coerce_action(action_kind, obj.get("action"))))
+    action = normalize_action(action_kind, legal_action, coerce_action(action_kind, obj.get("action")))
     legal, reason = _exact_legal(action_kind, legal_action, action)
     if not legal and isinstance(obj, dict) and _ACTION_KEYS.intersection(obj):
         # Recover only when the top-level object actually carries an action-shaped key — never treat
         # a bare/partial object as a legal "decline" (which the engine's schema would then reject).
-        recovered = clamp_action(action_kind, legal_action,
-                                 canonicalize_action(action_kind, coerce_action(action_kind, obj)))
+        recovered = normalize_action(action_kind, legal_action, coerce_action(action_kind, obj))
         ok2, reason2 = _exact_legal(action_kind, legal_action, recovered)
         if ok2:
             action, legal, reason = recovered, True, None

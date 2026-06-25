@@ -4,7 +4,7 @@
 // POST /api/runs — queue a central job for a laptop worker, or (body.connected) create an open
 //   connected run agents can sign up for. The observer never POSTs here; this mirrors
 //   server.api_submit_run -> _queue_run / _create_connected_run for CLI/registry parity.
-import { q, send, readBody, utcnow, newId } from '../_db.js';
+import { q, send, readBody, utcnow, newId, validateUniquePublicNames } from '../_db.js';
 import { DEFAULT_DECK_PRESET, normalizeDeckPreset } from '../_read.js';
 
 const GAME_LABELS = {
@@ -32,6 +32,13 @@ function envFloat(name, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function envOptionalFloat(name) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return null;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 function payloadGet(payload, ...names) {
   for (const name of names) {
     if (payload[name] !== undefined && payload[name] !== null) return payload[name];
@@ -57,6 +64,21 @@ function nonnegativeFloat(value, name) {
   return n;
 }
 
+function priorMessageTurns(value) {
+  if (value === undefined) return envInt('ARENA_PRIOR_MESSAGE_TURNS', -1);
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === '' || normalized === 'all' || normalized === 'infinite' || normalized === 'inf') {
+      return -1;
+    }
+  }
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n < -1) {
+    throw new Error('prior_message_turns must be -1 for all history, or nonnegative');
+  }
+  return n;
+}
+
 function runConfigFromPayload(payload, rounds) {
   const effort = String(payloadGet(payload, 'reasoning_effort', 'reasoningEffort')
     ?? process.env.ARENA_REASONING_EFFORT ?? 'medium').trim().toLowerCase();
@@ -74,14 +96,12 @@ function runConfigFromPayload(payload, rounds) {
       ? envInt('ARENA_MAX_TOKENS_PER_TURN', 4000)
       : positiveInt(maxTokens, 'max_tokens_per_turn'),
     temperature: temperature === undefined
-      ? envFloat('ARENA_TEMPERATURE', 0.8)
+      ? envOptionalFloat('ARENA_TEMPERATURE')
       : nonnegativeFloat(temperature, 'temperature'),
     retries: retries === undefined
       ? envInt('ARENA_RETRIES', 1)
       : nonnegativeInt(retries, 'retries'),
-    prior_message_turns: priorTurns === undefined
-      ? envInt('ARENA_PRIOR_MESSAGE_TURNS', 8)
-      : nonnegativeInt(priorTurns, 'prior_message_turns'),
+    prior_message_turns: priorMessageTurns(priorTurns),
   };
 }
 
@@ -98,6 +118,13 @@ function annotateRunAgents(agents, runConfig) {
     discussion_rounds: runConfig.discussion_rounds,
     sessionful: a.sessionful ?? false,
   }));
+}
+
+function runConfigOverrides(payload) {
+  return {
+    temperature: payloadGet(payload, 'temperature') !== undefined,
+    prior_message_turns: payloadGet(payload, 'prior_message_turns', 'priorMessageTurns') !== undefined,
+  };
 }
 
 // Port of arena/server.py _job_owner.
@@ -142,7 +169,10 @@ async function queueRun(payload, owner, res) {
   }
   const seed = parseInt(payload.seed || Math.floor((Date.now()) % 1000000), 10);
   const runId = String(payload.run_id || `run_${seed}_${newId('').slice(0, 6)}`).trim();
-  const agents = annotateRunAgents(rosterFromPayload(payload), runConfig);
+  const rawAgents = rosterFromPayload(payload);
+  const identityErr = validateUniquePublicNames(rawAgents.map((a) => a.name));
+  if (identityErr) return send(res, 400, { error: identityErr });
+  const agents = annotateRunAgents(rawAgents, runConfig);
   const core = GAME_CORES[game];
   const nPlayers = agents.length; // the roster IS the table — no fixed player count
   if (!(core.min <= nPlayers && nPlayers <= core.max)) {
@@ -159,7 +189,7 @@ async function queueRun(payload, owner, res) {
   const now = utcnow();
   const created = now.slice(0, 16).replace('T', ' ');
   const agentsJson = JSON.stringify(agents);
-  const metadataJson = JSON.stringify({ run_config: runConfig });
+  const metadataJson = JSON.stringify({ run_config: runConfig, run_config_overrides: runConfigOverrides(payload) });
 
   // store.enqueue_job first upserts the visible run row (store.save_run, MONOTONIC on done/partial)...
   await q(
@@ -226,7 +256,7 @@ async function createConnectedRun(payload, res) {
 
   const now = utcnow();
   const created = now.slice(0, 16).replace('T', ' ');
-  const metadataJson = JSON.stringify({ run_config: runConfig });
+  const metadataJson = JSON.stringify({ run_config: runConfig, run_config_overrides: runConfigOverrides(payload) });
   // store.create_connected_run -> store.save_run with status 'open' and an empty roster.
   await q(
     `INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json)
