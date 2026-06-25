@@ -4,7 +4,7 @@
 // POST /api/runs — queue a central job for a laptop worker, or (body.connected) create an open
 //   connected run agents can sign up for. The observer never POSTs here; this mirrors
 //   server.api_submit_run -> _queue_run / _create_connected_run for CLI/registry parity.
-import { q, send, readBody, utcnow, newId } from '../_db.js';
+import { q, send, readBody, utcnow, newId, TERMINAL_RUN_STATUSES } from '../_db.js';
 import { DEFAULT_DECK_PRESET, normalizeDeckPreset } from '../_read.js';
 
 const GAME_LABELS = {
@@ -73,18 +73,18 @@ async function queueRun(payload, owner, res) {
   const created = now.slice(0, 16).replace('T', ' ');
   const agentsJson = JSON.stringify(agents);
 
-  // store.enqueue_job first upserts the visible run row (store.save_run, MONOTONIC on done/partial)...
+  // store.enqueue_job first upserts the visible run row (store.save_run, MONOTONIC on terminal runs)...
   await q(
     `INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset)
      VALUES ($1,$2,$3,'queued',$4,$5,$6,$7,$8,$9,$10,$11)
      ON CONFLICT (id) DO UPDATE SET
        game=excluded.game, label=excluded.label,
-       status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END,
+       status=CASE WHEN runs.status = ANY($12::text[]) THEN runs.status ELSE excluded.status END,
        n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base,
        created=excluded.created, agents_json=excluded.agents_json,
        submitter=excluded.submitter, created_utc=excluded.created_utc,
        deck_preset=excluded.deck_preset`,
-    [runId, game, GAME_LABELS[game], games, nPlayers, seed, created, agentsJson, owner, now, deckPreset],
+    [runId, game, GAME_LABELS[game], games, nPlayers, seed, created, agentsJson, owner, now, deckPreset, TERMINAL_RUN_STATUSES],
   );
 
   // ...then upserts the job row (ON CONFLICT (run_id) resets the lease so a re-queue re-runs).
@@ -137,12 +137,12 @@ async function createConnectedRun(payload, res) {
      VALUES ($1,$2,$3,'open',$4,$5,$6,$7,$8,'[]',$9,$10,$11)
      ON CONFLICT (id) DO UPDATE SET
        game=excluded.game, label=excluded.label,
-       status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END,
+       status=CASE WHEN runs.status = ANY($12::text[]) THEN runs.status ELSE excluded.status END,
        n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base,
        rounds=excluded.rounds, created=excluded.created, agents_json=excluded.agents_json,
        submitter=excluded.submitter, created_utc=excluded.created_utc,
        deck_preset=excluded.deck_preset`,
-    [runId, game, GAME_LABELS[game], games, players, seed, rounds, created, submitter, now, deckPreset],
+    [runId, game, GAME_LABELS[game], games, players, seed, rounds, created, submitter, now, deckPreset, TERMINAL_RUN_STATUSES],
   );
 
   return send(res, 200, {

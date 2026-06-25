@@ -52,6 +52,7 @@
   .rt-row:last-child{border-bottom:0} .rt-row:hover{background:var(--hover)} .rt-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   .stat-dot{width:8px;height:8px;border-radius:50%}
   .stat-dot.done{background:var(--ink-2)} .stat-dot.run{background:var(--good)} .stat-dot.queue{background:var(--line-2)}
+  .stat-dot.partial,.stat-dot.stopped{background:#b7791f} .stat-dot.cancelled,.stat-dot.failed{background:var(--evil)}
   .rt-id{font-family:var(--mono);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .rt-game{font-size:13px;min-width:0;line-height:1.25}
   .rt-game .title{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -61,6 +62,8 @@
   .split .g{color:var(--good)} .split .e{color:var(--evil)} .split .s{color:var(--faint)}
   .wintag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:5px}
   .wintag.pending{background:var(--hover);color:var(--faint)}
+  .wintag.partial,.wintag.stopped{background:#fff4db;color:#8a5a00}
+  .wintag.cancelled,.wintag.failed{background:var(--evil-soft);color:var(--evil)}
   .rt-when{font-family:var(--mono);font-size:11px;color:var(--faint);justify-self:end}
 
   /* run overview */
@@ -521,16 +524,21 @@ async function show(s){
 /* ===== INDEX ===== */
 function renderIndex(){
   const all=RUN_ORDER.map(id=>RUNS[id]);
-  const done=all.filter(r=>r.status==="done").length, running=all.filter(r=>r.status==="run").length, queued=all.filter(r=>r.status==="queue").length;
+  const done=all.filter(r=>r.status==="done").length,
+        running=all.filter(r=>r.status==="run").length,
+        queued=all.filter(r=>r.status==="queue").length,
+        stopped=all.filter(r=>r.status==="stopped").length,
+        partial=all.filter(r=>r.status==="partial").length,
+        cancelled=all.filter(r=>r.status==="cancelled").length;
   const totGames=all.reduce((a,r)=>a+r.nGames,0);
   const rc=document.getElementById("runscount"); if(rc) rc.textContent=all.length+" runs · "+totGames+" games";
   document.getElementById("statstrip").innerHTML=
-    [["Runs",all.length],["Games configured",totGames],["Running",running],["Queued",queued]]
+    [["Runs",all.length],["Completed",done],["Running",running],["Queued",queued],["Stopped",stopped],["Partial",partial],["Cancelled",cancelled]]
       .map(s=>'<div class="stat"><div class="n">'+s[1]+'</div><div class="k lbl">'+s[0]+'</div></div>').join("");
   document.getElementById("runrows").innerHTML=all.map(r=>{
     let result;
     if(r.status==="done") result='<span class="split"><span class="g">'+r.teamSplit.good+'</span><span class="s">–</span><span class="e">'+r.teamSplit.evil+'</span> <span class="s">'+(r.game==="onuw"?"vil/wolf":"good/evil")+'</span></span>';
-    else result='<span class="wintag pending">'+(r.status==="run"?"in progress":"queued")+'</span>';
+    else result='<span class="wintag '+statusTagClass(r.status)+'">'+statusLabel(r.status)+'</span>';
     return '<button class="rt-row" data-run="'+r.id+'"><span class="stat-dot '+r.status+'"></span>'+
       '<span class="rt-id" title="'+escAttr(r.id)+'">'+esc(r.id)+'</span>'+
       '<span class="rt-game" title="'+escAttr(r.label)+'"><span class="title">'+esc(r.label)+'</span><span class="sub">'+(r.game==="onuw"?"ONUW":"AVALON")+' · '+r.players+' players</span></span>'+
@@ -636,7 +644,20 @@ function bindCollapse(){
 
 /* ===== RUN OVERVIEW ===== */
 let runPoll=null;
-function normStatus(s){ return s==="running"?"run":(s==="queued"?"queue":s); }
+function normStatus(s){
+  return s==="running"?"run":
+         s==="queued"?"queue":
+         s==="stopped"?"stopped":
+         s==="canceled"?"cancelled":
+         ["open","waiting","ready_required","ready"].includes(s)?"queue":
+         s==="active"?"run":(s||"unknown");
+}
+function statusLabel(s, titleCase=false){
+  const labels={done:"completed",run:"in progress",queue:"queued",stopped:"stopped",partial:"partial",cancelled:"cancelled",failed:"failed"};
+  const text=labels[s]||s||"unknown";
+  return titleCase ? text.charAt(0).toUpperCase()+text.slice(1) : text;
+}
+function statusTagClass(s){ return s==="run"||s==="queue"?"pending":s; }
 async function openRun(id){
   if(runPoll){ clearInterval(runPoll); runPoll=null; }
   try{ curRun=await jget("/runs/"+id); }catch(e){ console.error(e); return; }
@@ -659,15 +680,16 @@ async function pollRun(id){
 function renderRunOverview(){
   const prog=curRun.games.length+" / "+curRun.nGames;
   const running=curRun.status==="run";
+  const statusText=statusLabel(curRun.status,true);
   document.getElementById("ovid").textContent=curRun.id;
   document.getElementById("ovtitle").textContent=curRun.label;
-  document.getElementById("ovsub").textContent=(running?(prog+" games"):(curRun.nGames+" games"))+" · "+curRun.players+" agents · "+(curRun.status==="done"?"completed":running?"running":"queued");
+  document.getElementById("ovsub").textContent=(running?(prog+" games"):(curRun.nGames+" games"))+" · "+curRun.players+" agents · "+statusText.toLowerCase();
   document.getElementById("ovagents").innerHTML=curRun.agents.map(agentRow).join("");
   document.getElementById("ovcfg").innerHTML=
     cfgItem("Game",curRun.label)+cfgItem("Players",curRun.players)+cfgItem("Games to play",curRun.nGames)+
     (curRun.game==="onuw"?cfgItem("Deck",DECK_LABELS[curRun.deckPreset]||curRun.deckPreset||"Arena pressure"):"")+
     (curRun.deck&&curRun.deck.length?cfgItem("Roles",curRun.deck.join(", ")):"")+
-    cfgItem("Status",curRun.status==="done"?"Completed":running?("Running · "+prog):"Queued")+
+    cfgItem("Status",running?("Running · "+prog):statusText)+
     cfgItem("Seed base",curRun.seedBase)+cfgItem("Created",curRun.created);
   const res=document.getElementById("ovresults");
   const sc=curRun.scores||{}, hasScores=Object.keys(sc).length>0;
@@ -691,9 +713,9 @@ function renderRunOverview(){
           '<div class="fcell evil"><div class="flabel">'+esc(lbl[1])+'</div><div class="fpct">'+Math.round(e.rate*100)+'%</div><div class="fn">n='+e.n+'</div></div></div></div>';
       }).join("")+'</div>';
   } else {
-    res.innerHTML='<div class="lbl">'+(running?("Running — "+prog+" games complete. Results appear as games finish."):"Not started yet.")+'</div>';
+    res.innerHTML='<div class="lbl">'+(running?("Running — "+prog+" games complete. Results appear as games finish."):"Run is "+statusText.toLowerCase()+".")+'</div>';
   }
-  document.getElementById("gameslbl").textContent=running?(prog+" games · running…"):(curRun.nGames+" games in this run");
+  document.getElementById("gameslbl").textContent=running?(prog+" games · running…"):(curRun.games.length?prog+" games recorded":curRun.nGames+" games in this run");
   const gl=document.getElementById("ovgames");
   let rows=curRun.games.map(g=>
     '<button class="grow2" data-g="'+g.gid+'"><span class="stat-dot done"></span>'+
@@ -702,7 +724,7 @@ function renderRunOverview(){
     '<span class="wtag '+g.win+'">'+(g.win==="void"?"no contest":(curRun.game==="onuw"?(g.win==="good"?"village":"werewolf"):(g.win==="good"?"good":"evil")))+'</span>'+
     '<span class="replay'+(g.full?"":" no")+'">'+(g.full?"full replay":"summary")+'</span></button>').join("");
   if(running) rows+='<div class="grow2" style="cursor:default;color:var(--faint)"><span class="stat-dot run"></span><span class="gid">…</span><span></span><span class="gline">'+(curRun.nGames-curRun.games.length)+' more game(s) playing</span><span></span><span></span></div>';
-  if(!curRun.games.length && !running) rows='<div style="padding:16px"><span class="lbl">No games yet — run is '+curRun.status+'.</span></div>';
+  if(!curRun.games.length && !running) rows='<div style="padding:16px"><span class="lbl">No games yet — run is '+statusText.toLowerCase()+'.</span></div>';
   gl.innerHTML=rows;
   document.querySelectorAll(".grow2[data-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.g));
   renderConnectedDebug();

@@ -330,31 +330,62 @@ def init_schema() -> None:
             _backfill_connected_game_player_identities(c)
 
 
+TERMINAL_RUN_STATUSES = {"done", "partial", "stopped", "cancelled"}
+ACTIVE_RUN_STATUSES = {"queued", "running", "open", "waiting", "ready_required", "ready", "active"}
+
+
+def _terminal_run_placeholders(ph: str) -> str:
+    return ",".join([ph] * len(TERMINAL_RUN_STATUSES))
+
+
 def save_run(meta: dict):
-    """Upsert a run. MONOTONIC: never regress a finished ('done'/'partial') run back to 'running'."""
+    """Upsert a run. MONOTONIC: never regress a terminal run back to an active state."""
     ph = _ph()
+    terminal_clause = _terminal_run_placeholders(ph)
+    terminal_vals = tuple(sorted(TERMINAL_RUN_STATUSES))
     with conn() as c:
         c.execute(
             f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset) "
             f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
             f"ON CONFLICT (id) DO UPDATE SET "
             f"  game=excluded.game, label=excluded.label, "
-            f"  status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END, "
+            f"  status=CASE WHEN runs.status IN ({terminal_clause}) THEN runs.status ELSE excluded.status END, "
             f"  n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base, "
             f"  created=excluded.created, agents_json=excluded.agents_json, "
             f"  submitter=excluded.submitter, created_utc=excluded.created_utc, "
             f"  deck_preset=excluded.deck_preset",
             (meta["id"], meta["game"], meta["label"], meta["status"], meta["n_games"],
              meta["players"], meta["seed_base"], meta["created"], json.dumps(meta["agents"]),
-             meta.get("submitter"), meta.get("created_utc"), meta.get("deck_preset")),
+             meta.get("submitter"), meta.get("created_utc"), meta.get("deck_preset"), *terminal_vals),
         )
 
 
 def update_run_status(run_id: str, status: str):
-    """Set a run's status. MONOTONIC: never un-do a 'done' run (so a late re-publish can't reopen it)."""
+    """Set a run's status.
+
+    MONOTONIC: active-state writes cannot reopen terminal rows. A partial run can still upgrade to
+    done if a resume fills the missing games; explicitly stopped/cancelled runs remain terminal.
+    """
     ph = _ph()
     with conn() as c:
-        c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'", (status, run_id))
+        if status in ACTIVE_RUN_STATUSES:
+            terminal_clause = _terminal_run_placeholders(ph)
+            c.execute(
+                f"UPDATE runs SET status={ph} WHERE id={ph} AND status NOT IN ({terminal_clause})",
+                (status, run_id, *sorted(TERMINAL_RUN_STATUSES)),
+            )
+        elif status == "done":
+            c.execute(
+                f"UPDATE runs SET status={ph} WHERE id={ph} AND status NOT IN ('done','stopped','cancelled')",
+                (status, run_id),
+            )
+        elif status == "partial":
+            c.execute(
+                f"UPDATE runs SET status={ph} WHERE id={ph} AND status NOT IN ('done','stopped','cancelled')",
+                (status, run_id),
+            )
+        else:
+            c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'", (status, run_id))
 
 
 def save_game(run_id: str, gid: int, transcript: dict, agents: list[dict]):
@@ -435,6 +466,11 @@ def claim_job(owner: str, worker_id: str, lease_seconds: int = 300) -> dict | No
                   SELECT id FROM jobs
                   WHERE owner=%s
                     AND (status='queued' OR (status='running' AND lease_expires_utc < %s))
+                    AND NOT EXISTS (
+                      SELECT 1 FROM runs
+                      WHERE runs.id=jobs.run_id
+                        AND runs.status IN ('done','partial','stopped','cancelled')
+                    )
                   ORDER BY created_utc
                   FOR UPDATE SKIP LOCKED
                   LIMIT 1
@@ -452,6 +488,10 @@ def claim_job(owner: str, worker_id: str, lease_seconds: int = 300) -> dict | No
             found = c.execute(
                 f"SELECT id FROM jobs WHERE owner={ph} "
                 f"AND (status='queued' OR (status='running' AND lease_expires_utc < {ph})) "
+                f"AND NOT EXISTS ("
+                f"  SELECT 1 FROM runs WHERE runs.id=jobs.run_id "
+                f"    AND runs.status IN ('done','partial','stopped','cancelled')"
+                f") "
                 f"ORDER BY created_utc LIMIT 1",
                 (owner, now),
             ).fetchone()
@@ -464,8 +504,11 @@ def claim_job(owner: str, worker_id: str, lease_seconds: int = 300) -> dict | No
             )
             row = c.execute(f"SELECT * FROM jobs WHERE id={ph}", (found["id"],)).fetchone()
         if row:
-            c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'",
-                      ("running", row["run_id"]))
+            terminal_clause = _terminal_run_placeholders(ph)
+            c.execute(
+                f"UPDATE runs SET status={ph} WHERE id={ph} AND status NOT IN ({terminal_clause})",
+                ("running", row["run_id"], *sorted(TERMINAL_RUN_STATUSES)),
+            )
         return _job(row)
 
 
@@ -481,10 +524,10 @@ def heartbeat_job(job_id: str, worker_id: str, lease_seconds: int = 300) -> bool
 
 
 def finish_job(job_id: str, worker_id: str, status: str, error: str | None = None) -> bool:
-    if status not in {"done", "partial", "failed"}:
+    if status not in {"done", "partial", "stopped", "failed"}:
         raise ValueError(f"invalid job status: {status}")
     now, ph = _utcnow(), _ph()
-    run_status = "done" if status == "done" else "partial"
+    run_status = status if status in {"done", "partial", "stopped"} else "stopped"
     with conn() as c:
         job = c.execute(f"SELECT run_id FROM jobs WHERE id={ph} AND worker_id={ph}",
                         (job_id, worker_id)).fetchone()
@@ -495,7 +538,11 @@ def finish_job(job_id: str, worker_id: str, status: str, error: str | None = Non
             f"heartbeat_utc={ph}, last_error={ph} WHERE id={ph} AND worker_id={ph}",
             (status, now, now, error, job_id, worker_id),
         )
-        c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'",
+        if run_status in {"done", "partial"}:
+            update_clause = "status NOT IN ('done','stopped','cancelled')"
+        else:
+            update_clause = "status NOT IN ('done','cancelled')"
+        c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND {update_clause}",
                   (run_status, job["run_id"]))
         return cur.rowcount > 0
 
@@ -1029,7 +1076,11 @@ def mark_signup_ready(signup_id: str, agent_id: str) -> tuple[dict | None, str |
             c.execute(f"UPDATE run_signups SET status={ph}, updated_utc={ph} "
                       f"WHERE run_id={ph} AND status IN ('ready','ready_required')",
                       ("active", now, run_id))
-            c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("running", run_id))
+            terminal_clause = _terminal_run_placeholders(ph)
+            c.execute(
+                f"UPDATE runs SET status={ph} WHERE id={ph} AND status NOT IN ({terminal_clause})",
+                ("running", run_id, *sorted(TERMINAL_RUN_STATUSES)),
+            )
             append_event_tx(c, run_id, "run_status", {"status": "active"}, phase="run")
         return _rowdict(c.execute(f"SELECT * FROM run_signups WHERE id={ph}", (signup_id,)).fetchone()), None
 
@@ -1062,8 +1113,11 @@ def activate_run_if_ready(run_id: str) -> int:
                 f"WHERE run_id={ph} AND status IN ('ready','ready_required')",
                 ("active", now, run_id))
             if (cur.rowcount or 0) > 0:
-                c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'",
-                          ("running", run_id))
+                terminal_clause = _terminal_run_placeholders(ph)
+                c.execute(
+                    f"UPDATE runs SET status={ph} WHERE id={ph} AND status NOT IN ({terminal_clause})",
+                    ("running", run_id, *sorted(TERMINAL_RUN_STATUSES)),
+                )
                 append_event_tx(c, run_id, "run_status", {"status": "active"}, phase="run")
         return sum(1 for s in _active_signups(c, run_id)
                    if s.get("seat") is not None and s["status"] == "active")

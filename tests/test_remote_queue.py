@@ -98,6 +98,29 @@ def test_heartbeat_and_finish_are_worker_fenced(tmp_path, monkeypatch):
     assert store.get_run("r1")["status"] == "done"
 
 
+def test_finish_job_can_mark_run_stopped(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "arena.db")
+
+    store.enqueue_job(_job())
+    store.claim_job("alice", "w1", lease_seconds=60)
+
+    assert store.finish_job("j1", "w1", "stopped", "manual stop") is True
+    assert store.get_job("j1")["status"] == "stopped"
+    assert store.get_job("j1")["last_error"] == "manual stop"
+    assert store.get_run("r1")["status"] == "stopped"
+
+
+def test_stopped_run_job_is_not_reclaimed(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "arena.db")
+
+    store.enqueue_job(_job())
+    store.update_run_status("r1", "stopped")
+
+    assert store.claim_job("alice", "w1", lease_seconds=60) is None
+
+
 def test_api_submit_claim_ingest_complete(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("INGEST_TOKENS", raising=False)

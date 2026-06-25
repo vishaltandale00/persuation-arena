@@ -111,6 +111,20 @@ def test_partial_can_upgrade_to_done(backend):
     assert store.get_run("r1")["status"] == "done"
 
 
+def test_stopped_run_does_not_reopen(backend):
+    store.save_run(_run_meta(status="running"))
+    store.update_run_status("r1", "stopped")
+    assert store.get_run("r1")["status"] == "stopped"
+    store.save_run(_run_meta(status="queued"))         # late/duplicate re-publish
+    assert store.get_run("r1")["status"] == "stopped"
+    store.update_run_status("r1", "running")           # stale worker/lobby write
+    assert store.get_run("r1")["status"] == "stopped"
+    store.update_run_status("r1", "partial")           # stale interrupted completion
+    assert store.get_run("r1")["status"] == "stopped"
+    store.update_run_status("r1", "done")              # late completion after stop
+    assert store.get_run("r1")["status"] == "stopped"
+
+
 def test_list_runs_ordered_by_created_utc(backend):
     store.save_run(_run_meta(rid="old", created_utc="2026-06-23T09:00:00Z"))
     store.save_run(_run_meta(rid="new", created_utc="2026-06-23T10:00:00Z"))

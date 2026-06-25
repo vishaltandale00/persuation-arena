@@ -14,6 +14,7 @@ export async function q(text, params = []) {
 
 export const PROTOCOL_VERSION = 'arena-agent-v1';
 export const OPEN_RUN_STATUSES = ['open', 'waiting', 'ready_required'];
+export const TERMINAL_RUN_STATUSES = ['done', 'partial', 'stopped', 'cancelled'];
 
 // Timestamps: match Python's _utcnow (ISO, microsecond precision, trailing Z). JS gives millis, so we
 // pad to 6 digits — string-comparable and same shape as the Python writer/reader.
@@ -147,7 +148,11 @@ export async function advanceLobby(runId) {
     [runId, now]
   );
   if (promoted.length > 0) {
-    await q(`UPDATE runs SET status = 'running' WHERE id = $1 AND status != 'done'`, [runId]);
+    await q(
+      `UPDATE runs SET status = 'running'
+       WHERE id = $1 AND status <> ALL($2::text[])`,
+      [runId, TERMINAL_RUN_STATUSES],
+    );
   }
 }
 
