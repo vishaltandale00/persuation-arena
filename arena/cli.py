@@ -75,6 +75,10 @@ def _run_caps_from_job(job: dict):
 
 def _run(args):
     from .batch import run_batch
+    # `arena run` is the LOCAL batch runner — it must NEVER write to a remote DB. Drop DATABASE_URL
+    # (which .env / the environment may set) so the store always uses local SQLite. The only path to
+    # the prod leaderboard is `arena push`, which talks to the Vercel JS API (never the DB directly).
+    os.environ.pop("DATABASE_URL", None)
     rid = args.run_id or f"run_{args.seed}"
     caps = _run_caps_from_args(args)
     run_batch(game=args.game, n_games=args.games, seed_base=args.seed, run_id=rid,
