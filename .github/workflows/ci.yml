@@ -64,3 +64,44 @@ jobs:
           for f in tests/*.test.mjs; do
             node "$f"
           done
+
+  # NON-BLOCKING lint job. It is intentionally NOT a required check and never
+  # gates merges (continue-on-error: true) — findings are advisory while the
+  # codebase is brought up to a clean baseline. Config lives in pyproject.toml
+  # ([tool.ruff]) for Python and eslint.config.js / .prettierrc.json for JS.
+  # To make it enforcing later: drop continue-on-error and mark it required.
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install ruff
+        run: python -m pip install --upgrade pip ruff==0.15.20
+
+      - name: Ruff lint (Python)
+        continue-on-error: true
+        run: ruff check .
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: ESLint (api/web)
+        continue-on-error: true
+        run: npx eslint api web
+
+      - name: Prettier check (api/web)
+        continue-on-error: true
+        run: npx prettier --check "api/**/*.js" "web/**/*.js"
