@@ -434,6 +434,15 @@ def save_run(meta: dict):
     ph = _ph()
     metadata_json = json.dumps(meta.get("metadata") or {}) if "metadata" in meta else None
     with conn() as c:
+        # A NORMAL upsert must never overwrite an existing sharded parent/child (a reused or
+        # predictable id like '{parent}_shard_0'): the COALESCE below keeps run_kind, but the other
+        # SET columns would still mutate a live shard's label/status/deck/metadata. Reject it outright.
+        prior = c.execute(f"SELECT run_kind FROM runs WHERE id={ph}", (meta["id"],)).fetchone()
+        if (prior and (prior["run_kind"] in ("parent", "child"))
+                and (meta.get("run_kind") or "normal") == "normal"):
+            raise ValueError(
+                f"run id {meta['id']!r} already belongs to a sharded {prior['run_kind']}; "
+                f"refusing to overwrite it as a normal run")
         c.execute(
             f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json,run_kind,parent_run_id,shard_index,num_shards,join_token) "
             f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "

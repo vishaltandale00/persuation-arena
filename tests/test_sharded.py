@@ -164,15 +164,17 @@ def test_normal_upsert_does_not_detach_existing_parent(tmp_path, monkeypatch):
     store.save_run(_base_run("p_collide", run_kind="parent", num_shards=2))
     assert store.get_run("p_collide")["run_kind"] == "parent"
 
-    # A normal create (run_kind defaults 'normal', no shard fields) re-saves the SAME id.
-    store.create_connected_run({
-        "id": "p_collide", "game": "onuw", "label": "ONUW", "status": "open",
-        "n_games": 4, "players": 3, "seed_base": 7,
-    })
-
+    # A normal create reusing the parent id must be REJECTED (codex final: COALESCE-preserving
+    # run_kind alone was insufficient — label/status/deck/metadata would still mutate the live shard).
+    import pytest
+    with pytest.raises(ValueError, match="(?i)sharded|overwrite"):
+        store.create_connected_run({
+            "id": "p_collide", "game": "onuw", "label": "HIJACK", "status": "open",
+            "n_games": 4, "players": 3, "seed_base": 7,
+        })
     row = store.get_run("p_collide")
     assert row["run_kind"] == "parent", f"parent detached -> {row['run_kind']}"
-    assert row["num_shards"] == 2, f"num_shards clobbered -> {row['num_shards']}"
+    assert row["num_shards"] == 2 and row["label"] != "HIJACK"  # untouched
 
 
 def test_normal_upsert_does_not_detach_existing_child(tmp_path, monkeypatch):
@@ -186,16 +188,16 @@ def test_normal_upsert_does_not_detach_existing_child(tmp_path, monkeypatch):
         shard_index=1, num_shards=2))
     assert store.get_run("ch_collide")["run_kind"] == "child"
 
-    store.create_connected_run({
-        "id": "ch_collide", "game": "onuw", "label": "ONUW", "status": "open",
-        "n_games": 4, "players": 3, "seed_base": 7,
-    })
-
+    import pytest
+    with pytest.raises(ValueError, match="(?i)sharded|overwrite"):
+        store.create_connected_run({
+            "id": "ch_collide", "game": "onuw", "label": "HIJACK", "status": "open",
+            "n_games": 4, "players": 3, "seed_base": 7,
+        })
     row = store.get_run("ch_collide")
     assert row["run_kind"] == "child", f"child detached -> {row['run_kind']}"
     assert row["parent_run_id"] == "ch_parent", f"parent_run_id cleared -> {row['parent_run_id']}"
-    assert row["shard_index"] == 1, f"shard_index cleared -> {row['shard_index']}"
-    assert row["num_shards"] == 2, f"num_shards cleared -> {row['num_shards']}"
+    assert row["shard_index"] == 1 and row["num_shards"] == 2 and row["label"] != "HIJACK"
 
 
 def test_normal_run_resave_stays_normal_with_null_shards(tmp_path, monkeypatch):
@@ -1610,3 +1612,21 @@ def test_create_sharded_run_retry_preserves_child_created_utc(tmp_path, monkeypa
     for cid, ts in first.items():
         assert store.get_run(cid)["created_utc"] == ts, f"{cid} created_utc must be immutable on retry"
     assert store.get_run("tsx_shard_0")["n_games"] == n_games_0
+
+
+def test_normal_create_colliding_with_shard_id_is_rejected(tmp_path, monkeypatch):
+    """Codex (final): a NORMAL create targeting an existing parent/child id must be REJECTED, not
+    silently overwrite the shard (run_kind was COALESCE-preserved, but label/status/deck/metadata
+    would still be mutated, and a former child would surface as a 'successful' normal run)."""
+    import pytest
+    _sqlite_store(tmp_path, monkeypatch)
+    create_sharded_run(_base_run("col", n_games=5, players=5, seed_base=7), 2)
+    for bad in ("col", "col_shard_0"):
+        prior_kind = store.get_run(bad)["run_kind"]
+        with pytest.raises(ValueError, match="(?i)sharded|overwrite"):
+            store.create_connected_run({
+                "id": bad, "game": "onuw", "label": "HIJACK", "status": "open",
+                "n_games": 1, "players": 5, "seed_base": 99})
+        row = store.get_run(bad)
+        assert row["run_kind"] == prior_kind          # unchanged
+        assert row["label"] != "HIJACK"               # config not mutated

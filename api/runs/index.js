@@ -144,6 +144,16 @@ function deckPresetFromPayload(game, payload) {
 // that connected agents sign up for (no job row). After the row is written we best-effort POST the
 // Modal spawn endpoint (ARENA_SPAWN_URL / ARENA_SPAWN_TOKEN) to launch the per-run coordinator.
 async function createConnectedRun(payload, res) {
+  // Sharded creation is not wired on this Vercel surface yet — the read/signup paths render and gate
+  // parent/child rows, but creating a sharded run (parent + K children + K Modal spawns under the
+  // diagonal spawn model) is host-launcher-only for now (arena.sharded.create_sharded_run). Reject
+  // shards>1 rather than silently create a single normal run (codex). [follow-up: wire JS creation]
+  const shards = parseInt(payload.shards ?? payload.num_shards ?? 1, 10) || 1;
+  if (shards > 1) {
+    return send(res, 400, {
+      error: 'sharded runs (shards>1) are not supported via the API yet; use the host-run launcher',
+    });
+  }
   const game = payload.game || 'onuw';
   if (!(game in GAME_LABELS)) return send(res, 400, { error: `unknown game: ${game}` });
   const core = GAME_CORES[game];
