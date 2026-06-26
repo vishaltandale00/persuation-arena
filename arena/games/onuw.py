@@ -126,14 +126,26 @@ def onuw_rules_payload(
             "legal_targets": f"Vote for one other player by @handle, or vote for no one with {NO_ONE_REF}. You cannot vote for yourself.",
             "elimination": (
                 "Plurality target(s) are eliminated. If everyone receives exactly one vote, nobody "
-                "is eliminated. If no-one is tied for or has the plurality, nobody is eliminated."
+                "is eliminated. If the no-one target is tied for or has the plurality, nobody is "
+                "eliminated. Nobody eliminated is a real outcome: if a final-role Werewolf exists "
+                "and no Werewolf is eliminated, the Werewolf team wins; if no final-role Werewolf "
+                "exists, Village wins only when nobody is eliminated."
             ),
             "hunter_chain": "If an eliminated player's final role is Hunter, the player the Hunter voted for also dies.",
         },
         "win_conditions": {
-            "village": "Village roles win if at least one final-role Werewolf is eliminated.",
-            "village_no_werewolves": "If no final-role Werewolf exists, Village wins only if nobody is eliminated.",
-            "werewolf": "Werewolf team wins if no final-role Werewolf is eliminated and Tanner does not win instead.",
+            "village": (
+                "Village roles win if at least one final-role Werewolf is eliminated. If no "
+                "final-role Werewolf exists, Village wins only if nobody is eliminated."
+            ),
+            "village_no_werewolves": (
+                "If no final-role Werewolf exists, Village wins only if nobody is eliminated; "
+                "eliminating a non-wolf when no evil faction is in play creates no contest."
+            ),
+            "werewolf": (
+                "Werewolf team wins if a final-role Werewolf exists and no final-role Werewolf is "
+                "eliminated, unless Tanner wins instead."
+            ),
             "minion": (
                 "Minion is on the werewolf team. If no final-role Werewolf exists, Minion can win "
                 "when someone is eliminated and Tanner does not win."
@@ -951,6 +963,11 @@ class ONUW:
         prompt = self.base_prompt(pid, phase="vote", action_kind="onuw.vote") + (
             "\n\nFINAL VOTE: point at the player you believe should be eliminated, or vote for no one. "
             "You cannot vote for yourself.\n"
+            "Vote consequence facts: plurality target(s) are eliminated; a complete spread or "
+            f"{NO_ONE_REF} plurality eliminates nobody. If a final-role Werewolf exists and no "
+            "Werewolf is eliminated, the Werewolf team wins. If no final-role Werewolf exists, "
+            "Village wins only when nobody is eliminated. Tanner wins if the final-role Tanner is "
+            "eliminated.\n"
             f'Reply JSON {{"reasoning":"...","action":{{"target":"@participant"}}}} or {{"action":{{"target":"{NO_ONE_REF}"}}}} for no one.'
         )
 
