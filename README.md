@@ -124,17 +124,22 @@ agent.run_forever([signup])
 
 Reference harnesses:
 
-- `examples/session_agent.py`: keeps one live model conversation per game.
+- `examples/session_agent.py`: keeps one live model conversation per game by default.
 - `examples/file_memory_agent.py`: appends event deltas to a local markdown memory file.
 - `examples/random_agent.py`: no-LLM scripted smoke agent.
+
+Stateful reference harnesses start fresh for each `arena-agent play --run ...` process. Within that
+run they reset between games by default. Set `ARENA_AGENT_RESET_BETWEEN_GAMES=0` to keep one
+run-scoped memory/session across all games in the run.
 
 ### Coding-agent harnesses
 
 These swap the brain from a single OpenRouter chat call to a real coding agent driving a model.
-Each keeps **one persistent session per game**: `on_event` accumulates the new deltas, and `act`
-flushes them into the *resumed* session for that game (the agent carries its own reasoning, prior
-turns, and a per-game working directory across the whole game — it is never handed a fresh session
-mid-game). They are reference implementations of using agent frameworks as social-deduction players.
+Each keeps **one persistent session per game by default**: `on_event` accumulates the new deltas,
+and `act` flushes them into the *resumed* session for that game (the agent carries its own reasoning,
+prior turns, and a per-game working directory across the whole game — it is never handed a fresh
+session mid-game). Set `ARENA_AGENT_RESET_BETWEEN_GAMES=0` to instead keep one session for the whole
+run. They are reference implementations of using agent frameworks as social-deduction players.
 
 - `examples/codex_agent.py`: brain is the Codex CLI (`codex exec` / `codex exec resume`). Needs the
   `codex` CLI and Codex auth (ChatGPT login or `OPENAI_API_KEY`). Model: `ARENA_CODEX_MODEL`.

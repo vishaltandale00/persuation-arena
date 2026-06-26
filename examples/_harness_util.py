@@ -23,6 +23,7 @@ from arena.identity import NO_ONE_REF, participant
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
+RESET_BETWEEN_GAMES_ENV = "ARENA_AGENT_RESET_BETWEEN_GAMES"
 REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 DEFAULT_MAX_TOKENS = int(os.environ.get("ARENA_AGENT_MAX_TOKENS", os.environ.get("ARENA_MAX_TOKENS_PER_TURN", "4000")))
 DEFAULT_TEMPERATURE = float(os.environ.get("ARENA_AGENT_TEMPERATURE", os.environ.get("ARENA_TEMPERATURE", "0.8")))
@@ -59,6 +60,54 @@ ACTION_INSTRUCTIONS = {
 }
 
 _client: OpenAI | None = None
+
+
+def reset_between_games_from_env(default: bool = True) -> bool:
+    """Return the memory-scope toggle shared by the reference stateful harnesses.
+
+    Default true means one memory/session per game. Set ARENA_AGENT_RESET_BETWEEN_GAMES=0 to keep
+    one memory/session for the whole run. A new run still gets a separate state key when run_id is
+    available (directly on the SDK turn/event, or recovered from the game id prefix).
+    """
+    raw = os.environ.get(RESET_BETWEEN_GAMES_ENV)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"0", "false", "no", "off", "run", "per-run", "per_run"}:
+        return False
+    if value in {"1", "true", "yes", "on", "game", "per-game", "per_game"}:
+        return True
+    return default
+
+
+def _run_id_from_game_id(game_instance_id: str | None) -> str | None:
+    """Recover the run id from a game id of the form '<run_id>_game_<NNN>' (the arena's shape)."""
+    if not game_instance_id:
+        return None
+    if "_game_" in game_instance_id:
+        return game_instance_id.rsplit("_game_", 1)[0]
+    return None
+
+
+def state_key(obj, reset_between_games: bool = True) -> str | None:
+    """Key harness-owned memory by game or run.
+
+    `obj` is an SDK Event or Turn. Game scope resets between games (one key per game, still
+    namespaced by run when known). Run scope carries memory across games in the same run while
+    keeping different runs separate. If run_id is unavailable, the game id is the safe fallback.
+    """
+    gid = getattr(obj, "game_instance_id", None)
+    run_id = getattr(obj, "run_id", None) or _run_id_from_game_id(gid)
+    if reset_between_games:
+        if gid is None:
+            return None
+        return f"{run_id}:{gid}" if run_id else gid
+    return run_id or gid
+
+
+def state_path_name(key: str) -> str:
+    """Make a state key safe as one local path segment."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("_") or "state"
 
 
 def _message_field(message: Any, field: str) -> Any:
