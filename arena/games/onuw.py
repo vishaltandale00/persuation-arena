@@ -644,7 +644,7 @@ class ONUW(Game):
 
         def parse(a, raw):
             t = a.get("target")
-            if t is None:
+            if t is None or t == "":
                 return None
             t = seat_for_participant_ref(t, self.names, targets)
             if t not in targets:
@@ -678,7 +678,7 @@ class ONUW(Game):
         others = [i for i in range(self.n) if i != pid]
 
         def parse(a, raw):
-            if a.get("a") is None or a.get("b") is None:
+            if a.get("a") in {None, ""} or a.get("b") in {None, ""}:
                 return None
             x = seat_for_participant_ref(a["a"], self.names, others)
             y = seat_for_participant_ref(a["b"], self.names, others)
@@ -848,7 +848,8 @@ class ONUW(Game):
             "to say now, provide the message and an urgency from 1 to 3. Use 3 only for immediate "
             "corrections, direct rebuttals, or critical claims; use 1 for low-priority contributions. "
             "You may pass with stance \"wait\" if you specifically want more discussion before voting, "
-            "or stance \"done\" if you are ready to end discussion and vote.\n"
+            "or stance \"done\" if you are ready to end discussion and vote. If you are ready to vote, "
+            "do not make a final statement; pass with stance \"done\".\n"
             'Reply JSON {"declared_reasoning":"...","action":{"speak":"<what you say>","urgency":1|2|3}} '
             'or {"declared_reasoning":"...","action":{"pass":true,"stance":"wait"|"done"}}.'
         )
@@ -856,11 +857,12 @@ class ONUW(Game):
         def parse(a, raw):
             if isinstance(a, dict):
                 if a.get("pass") is True:
-                    stance = str(a.get("stance", "done")).strip().lower()
+                    stance_raw = a.get("stance", "done")
+                    stance = "done" if stance_raw is None else str(stance_raw).strip().lower()
                     if stance not in {"wait", "done"}:
                         raise ValueError("pass stance must be wait or done")
                     return {"pass": True, "stance": stance}
-                if "speak" in a:
+                if "speak" in a and a.get("speak") is not None:
                     s = str(a["speak"]).strip()
                     urgency = int(a.get("urgency", 1))
                     if urgency < 1 or urgency > 3:

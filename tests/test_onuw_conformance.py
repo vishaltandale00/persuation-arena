@@ -220,6 +220,20 @@ def test_responsive_discussion_ends_when_everyone_passes():
     assert any("Everyone is done" in e.get("text", "") for e in phase["events"])
 
 
+def test_discussion_bid_prompt_keeps_wire_schema_compatible():
+    core = ONUW(NAMES, seed=11, discussion_rounds=20)
+    core.deal()
+    agent = RecordingAgent()
+
+    core._speech_bid(0, agent)
+
+    prompt = agent.observations[0]
+    legal_schema = agent.turn_meta[0]["legal_action"]["schema"]
+    assert "oneOf" in legal_schema
+    assert {"pass": True, "stance": "done"} == agent.turn_meta[0]["default_wire_action"]
+    assert "do not make a final statement; pass with stance \"done\"" in prompt
+
+
 def test_responsive_discussion_wait_passes_do_not_immediately_end():
     core = ONUW(NAMES, seed=11, discussion_rounds=20)
     core.deal()

@@ -322,6 +322,67 @@ def test_agent_records_ok_on_valid_response(monkeypatch):
     assert a.calls[0]["usage"] == {"prompt_tokens": 1, "completion_tokens": 2}
 
 
+def test_agent_repairs_json_missing_closing_braces(monkeypatch):
+    from arena import openrouter
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: _client_returning(
+                            '{"declared_reasoning":"r","action":{"speak":"hello","urgency":2'
+                        ))
+    a = openrouter.OpenRouterAgent("X", "m")
+    resp = a.act(
+        "obs",
+        lambda action, raw: {"speak": action["speak"], "urgency": int(action["urgency"])},
+        default_action={"pass": True},
+    )
+
+    assert resp.ok is True
+    assert resp.action == {"speak": "hello", "urgency": 2}
+    assert a.calls[0]["ok"] is True
+
+
+def test_agent_retries_without_provider_reasoning_when_content_is_empty(monkeypatch):
+    from arena import openrouter
+
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return SimpleNamespace(
+                choices=[SimpleNamespace(
+                    finish_reason="length",
+                    message=SimpleNamespace(
+                        content="",
+                        reasoning="spent everything thinking",
+                        reasoning_details=[{"type": "reasoning.text", "text": "spent everything thinking"}],
+                    ),
+                )],
+                usage={},
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":{"pass":true}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "anthropic/claude-opus")
+    resp = a.act("obs", lambda action, raw: action, default_action={"pass": True})
+
+    assert resp.ok is True
+    assert resp.action == {"pass": True}
+    assert calls[0]["extra_body"]["reasoning"] == {
+        "effort": openrouter.SETTINGS.caps.reasoning_effort,
+        "exclude": False,
+    }
+    assert calls[1]["extra_body"]["reasoning"] == {"effort": "none", "exclude": True}
+    assert a.calls[0]["suppress_reasoning_retry"] is True
+
+
 def test_agent_requests_provider_reasoning(monkeypatch):
     from arena import openrouter
 
@@ -449,6 +510,117 @@ def test_agent_requests_json_schema_structured_output_when_enabled(monkeypatch):
     }
 
 
+def test_agent_flattens_composed_action_schema_for_json_schema(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":{"pass":true}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "anthropic/claude-opus")
+    resp = a.act(
+        "obs",
+        lambda action, raw: action,
+        default_action={"pass": True},
+        action_kind="onuw.discussion.speak_or_pass",
+        legal_action={"schema": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["speak", "urgency"],
+                    "properties": {
+                        "speak": {"type": "string"},
+                        "urgency": {"type": "integer", "enum": [1, 2, 3]},
+                    },
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "required": ["pass"],
+                    "properties": {
+                        "pass": {"enum": [True]},
+                        "stance": {"enum": ["wait", "done"]},
+                    },
+                    "additionalProperties": False,
+                },
+            ],
+        }},
+    )
+
+    assert resp.ok is True and resp.action == {"pass": True}
+    assert captured["response_format"]["type"] == "json_schema"
+    safe_action_schema = captured["response_format"]["json_schema"]["schema"]["properties"]["action"]
+    assert "oneOf" not in safe_action_schema
+    assert safe_action_schema == {
+        "type": "object",
+        "required": ["speak", "urgency", "pass", "stance"],
+        "properties": {
+            "speak": {"type": "string"},
+            "urgency": {"type": "integer", "enum": [0, 1, 2, 3]},
+            "pass": {"type": "boolean", "enum": [False, True]},
+            "stance": {"type": "string", "enum": ["", "wait", "done"]},
+        },
+        "additionalProperties": False,
+    }
+    assert a.calls[0]["structured_output"] == {
+        "configured": "json_schema",
+        "requested": "json_schema",
+        "used": "json_schema",
+        "fallback": False,
+    }
+
+
+def test_agent_rewrites_nullable_fields_for_provider_schema(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":{"target":""}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "google/gemini-pro")
+    resp = a.act(
+        "obs",
+        lambda action, raw: action,
+        default_action={"target": ""},
+        action_kind="onuw.robber.swap_or_decline",
+        legal_action={"schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": ["string", "null"], "enum": ["@a", "@b", None]}},
+            "additionalProperties": False,
+        }},
+    )
+
+    assert resp.ok is True
+    action_schema = captured["response_format"]["json_schema"]["schema"]["properties"]["action"]
+    assert action_schema["properties"]["target"] == {
+        "type": "string",
+        "enum": ["@a", "@b", ""],
+    }
+
+
 def test_agent_defaults_to_json_schema_structured_output(monkeypatch):
     from arena import openrouter
 
@@ -534,6 +706,87 @@ def test_agent_falls_back_when_structured_output_is_rejected(monkeypatch):
         "used": None,
         "fallback": True,
     }
+
+
+def test_agent_falls_back_when_provider_rejects_schema_format(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    response_formats = []
+
+    def create(**kwargs):
+        response_formats.append(kwargs.get("response_format"))
+        if kwargs.get("response_format") is not None:
+            raise ValueError("output_config.format.schema: Schema type 'oneOf' is not supported")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"legacy","action":{"target":1}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "anthropic/claude-opus")
+    resp = a.act(
+        "obs",
+        lambda action, raw: int(action["target"]),
+        default_action=0,
+        action_kind="onuw.vote",
+        legal_action={"schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "integer", "enum": [1, 2]}},
+            "additionalProperties": False,
+        }},
+    )
+
+    assert resp.ok is True and resp.action == 1
+    assert response_formats[0]["type"] == "json_schema"
+    assert response_formats[1] is None
+    assert "structured output rejected" in a.calls[0]["validation_error"]
+
+
+def test_agent_falls_back_when_google_rejects_required_schema(monkeypatch):
+    from arena import openrouter
+
+    _set_structured_output(monkeypatch, openrouter, "json_schema")
+    response_formats = []
+
+    def create(**kwargs):
+        response_formats.append(kwargs.get("response_format"))
+        if kwargs.get("response_format") is not None:
+            raise ValueError("schema at properties.action requires unspecified property 'speak'")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"legacy","action":{"pass":true}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "google/gemini-pro")
+    resp = a.act(
+        "obs",
+        lambda action, raw: action,
+        default_action={"pass": True},
+        action_kind="onuw.discussion.speak_or_pass",
+        legal_action={"schema": {
+            "type": "object",
+            "required": ["pass"],
+            "properties": {"pass": {"type": "boolean", "enum": [False, True]}},
+            "additionalProperties": False,
+        }},
+    )
+
+    assert resp.ok is True
+    assert resp.action == {"pass": True}
+    assert response_formats[0]["type"] == "json_schema"
+    assert response_formats[1] is None
+    assert "structured output rejected" in a.calls[0]["validation_error"]
 
 
 def test_agent_uses_json_object_when_schema_is_unavailable(monkeypatch):
