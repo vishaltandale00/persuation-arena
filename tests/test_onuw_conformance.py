@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+from arena.identity import NO_ONE_REF
 from arena.games.base import team_of
 from arena.games.onuw import DEFAULT_DECK, ONUW
 from tests.scripted import ScriptedDefault
@@ -156,9 +157,28 @@ def test_runtime_prompt_includes_comprehensive_onuw_rules_payload():
     assert payload["discussion_rules"]["visibility"].startswith("Discussion is public")
     assert "simultaneous" in payload["vote_rules"]["timing"]
     assert "@no-one" in payload["vote_rules"]["legal_targets"]
+    elimination = payload["vote_rules"]["elimination"]
+    assert "tied for or has the plurality" in elimination
+    assert "unless Tanner wins instead" in elimination
+    assert "final death set" in payload["win_conditions"]["village_no_werewolves"]
+    assert "Hunter-chain deaths" in payload["win_conditions"]["village_no_werewolves"]
     for key in ("tanner", "hunter", "minion", "werewolf", "village"):
         assert payload["win_conditions"][key]
     assert payload["current_step"] == {"phase": "night", "action_kind": "onuw.robber.swap_or_decline"}
+
+
+def test_vote_prompt_states_no_one_tie_and_tanner_exception():
+    core = ONUW(NAMES, seed=12)
+    core.deal()
+    agent = RecordingAgent()
+
+    core._vote(0, agent, frozen_public=[], wait=True)
+
+    prompt = agent.observations[-1]
+    assert f"{NO_ONE_REF} tied for or holding plurality eliminates nobody" in prompt
+    assert "Werewolf team wins unless Tanner wins instead" in prompt
+    assert "Tanner wins if the final-role Tanner is eliminated" in prompt
+    assert '"declared_reasoning"' in prompt
 
 
 def test_rules_payload_does_not_leak_other_dealt_roles_or_center_identities():
