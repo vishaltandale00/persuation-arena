@@ -106,6 +106,10 @@ async function runHandler(body, occupiedSeats = [], opts = {}) {
       advanceLobby: async () => {},
       getRun: async (id) => ({ id, run_kind: 'normal', status: 'open', players: 5, coordinator_url: null }),
       OPEN_RUN_STATUSES: ['open', 'waiting', 'ready_required'],
+      // Pre-rendered SQL IN(...) bodies from arena/statuses.json (see _db.js sqlInList): the handler
+      // interpolates these into its queries, and the makeQ matchers below match the resulting text.
+      ACTIVE_SIGNUP_IN: "'waiting','ready_required','ready','active'",
+      TERMINAL_SIGNUP_IN: "'completed','rejected','expired','cancelled'",
       PROTOCOL_VERSION: 'arena-agent-v1',
       newId: (p) => `${p}fixed`,
       utcnow: () => '2026-01-01T00:00:00.000000Z',

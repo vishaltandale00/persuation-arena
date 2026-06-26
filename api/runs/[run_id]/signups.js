@@ -3,7 +3,7 @@
 // can re-point poll/reply at the per-run Modal container once it's active.
 import {
   q, send, readBody, agentFromToken, signupResponse, advanceLobby, getRun,
-  OPEN_RUN_STATUSES, PROTOCOL_VERSION, newId, utcnow, utcAfter,
+  OPEN_RUN_STATUSES, ACTIVE_SIGNUP_IN, TERMINAL_SIGNUP_IN, PROTOCOL_VERSION, newId, utcnow, utcAfter,
   publicRef, validateUniquePublicNames,
 } from '../../_db.js';
 import { signupGateError } from '../../_shards.js';
@@ -73,7 +73,7 @@ export default async function handler(req, res) {
   if (hasSeat) {
     const seatTaken = await q(
       `SELECT 1 FROM run_signups WHERE run_id=$1 AND agent_id<>$2 AND roster_index=$3
-       AND status IN ('waiting','ready_required','ready','active')`,
+       AND status IN (${ACTIVE_SIGNUP_IN})`,
       [runId, agent.id, rosterIndex],
     );
     if (seatTaken.length) return send(res, 400, { error: 'invalid_seat' });
@@ -81,12 +81,12 @@ export default async function handler(req, res) {
 
   let s = (await q(
     `SELECT * FROM run_signups WHERE run_id=$1 AND agent_id=$2
-     AND status NOT IN ('completed','rejected','expired','cancelled')`, [runId, agent.id]))[0];
+     AND status NOT IN (${TERMINAL_SIGNUP_IN})`, [runId, agent.id]))[0];
 
   if (!s) {
     const activeRows = await q(
       `SELECT a.display_name FROM run_signups s JOIN agents a ON a.id = s.agent_id
-       WHERE s.run_id=$1 AND s.status IN ('waiting','ready_required','ready','active')`,
+       WHERE s.run_id=$1 AND s.status IN (${ACTIVE_SIGNUP_IN})`,
       [runId],
     );
     if (activeRows.length >= Number(run.players)) return send(res, 409, { error: 'run_full' });
@@ -112,7 +112,7 @@ export default async function handler(req, res) {
          SELECT a.display_name,
                 btrim(lower(regexp_replace(a.display_name, '[^A-Za-z0-9]+', '-', 'g')), '-') AS public_handle
          FROM run_lock, run_signups s JOIN agents a ON a.id = s.agent_id
-         WHERE s.run_id=$2 AND s.status IN ('waiting','ready_required','ready','active')
+         WHERE s.run_id=$2 AND s.status IN (${ACTIVE_SIGNUP_IN})
        )
        INSERT INTO run_signups (id,run_id,agent_id,status,seat,created_utc,updated_utc,
          waiting_expires_utc,ready_deadline_utc,last_poll_utc,last_event_id,max_concurrent_turns,
@@ -146,7 +146,7 @@ export default async function handler(req, res) {
     if (!inserted[0]) {
       const afterRows = await q(
         `SELECT a.display_name FROM run_signups s JOIN agents a ON a.id = s.agent_id
-         WHERE s.run_id=$1 AND s.status IN ('waiting','ready_required','ready','active')`,
+         WHERE s.run_id=$1 AND s.status IN (${ACTIVE_SIGNUP_IN})`,
         [runId],
       );
       if (afterRows.length >= Number(run.players)) return send(res, 409, { error: 'run_full' });

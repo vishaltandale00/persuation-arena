@@ -10,7 +10,7 @@ The current build supports:
 - Local batch runs with model agents through OpenRouter.
 - A browser observer for run history, transcripts, scores, deck presets, and hosted run creation.
 - SQLite for local development and Postgres/Neon for hosted or shared runs.
-- Remote worker mode, where model keys stay on laptops while a hosted server queues work.
+- Publishing finished local runs to the hosted leaderboard over HTTP (`arena push`).
 - Connected-agent mode, where external harnesses register, sign up for runs, receive event deltas,
   maintain their own memory, and submit actions through the SDK.
 - Optional Modal per-run coordinator containers for connected runs.
@@ -50,14 +50,14 @@ Open `http://localhost:8000/observer.html` after starting the server.
 ```text
 arena/
   batch.py                 local batch runner
-  cli.py                   run, score, serve, worker commands
+  cli.py                   run, score, runs, agents, serve, push commands
   connected.py             connected-agent coordinator loop
   coordinator_service.py   Modal-agnostic serve-and-coordinate helpers
   modal_app.py             optional Modal per-run coordinator
   openrouter.py            OpenRouter-backed in-process model agent
   score.py                 win rates and Wilson confidence intervals
   server.py                FastAPI API and observer backend
-  store.py                 SQLite/Postgres persistence and queue
+  store.py                 SQLite/Postgres persistence
   games/
     onuw.py                One Night Ultimate Werewolf
     avalon.py              The Resistance: Avalon
@@ -80,6 +80,10 @@ the harness type:
 agents:
   - {name: Ada, model: openai/gpt-4o-mini, harness: base}
 ```
+
+Point the loader at a different roster with `ARENA_AGENTS_FILE` (defaults to `agents.yaml`). The
+WolfForge harness-comparison rosters live under `experiments/wolfforge/`, e.g.
+`ARENA_AGENTS_FILE=experiments/wolfforge/agents.wolfforge.yaml`.
 
 Useful commands:
 
@@ -185,29 +189,17 @@ uv run python tools/connected_sample.py \
   --server http://127.0.0.1:8000
 ```
 
-## Hosted Worker Mode
+## Hosted Runs
 
-Hosted mode lets a central server store runs/jobs in Postgres while workers execute games locally.
-Model keys stay on the worker machines.
+Two paths put games on the hosted Postgres/Neon leaderboard; the old central worker/queue model
+(a `jobs` table polled by remote workers) has been retired.
 
-Server environment:
-
-```bash
-DATABASE_URL=postgresql://...
-INGEST_TOKENS=alice=long-random-token
-```
-
-Worker:
-
-```bash
-uv run python -m arena.cli worker \
-  --server https://your-arena.example \
-  --owner alice \
-  --token long-random-token
-```
-
-The owner on the submitted run must match the worker owner. If no `INGEST_TOKENS` are configured,
-the server runs in local-trust mode.
+- **Static/local runs** play entirely on your laptop against OpenRouter and land in the local SQLite
+  store, then publish to prod over HTTP with `arena push` (see *Uploading Local Runs* below). Model
+  keys stay on your machine; `push` carries no database creds, only a bearer token.
+- **Connected runs** are served by a short-lived per-run coordinator (locally in-process, or one
+  Modal container per run). The central API creates the run and triggers the coordinator; connected
+  agents discover its tunnel URL and submit actions over the SDK.
 
 ## Optional Modal Coordinator
 
@@ -319,9 +311,31 @@ without rebuilding.
 
 ## Tests
 
+CI runs two gates; reproduce both locally before pushing.
+
+**1. Python suite** (the CI command — `--with pytest` resolves the dep without a manual install):
+
 ```bash
 uv run --with pytest python -m pytest tests/ -q
-uv run --with pytest python -m pytest tests/test_store_pg.py -q
+```
+
+**2. Node parity/endpoint tests** (CI runs every `tests/*.test.mjs`; `DATABASE_URL` is a dummy —
+`api/_db.js` constructs the client at import but never opens a connection here):
+
+```bash
+DATABASE_URL='postgres://u:p@localhost/db' node tests/rating_parity.test.mjs
+DATABASE_URL='postgres://u:p@localhost/db' node tests/leaderboard_parity.test.mjs
+DATABASE_URL='postgres://u:p@localhost/db' node tests/round_half_even.test.mjs
+DATABASE_URL='postgres://u:p@localhost/db' node tests/import_endpoint.test.mjs
+```
+
+`rating_parity` asserts the JS Elo recompute (`api/_rating.js`) byte-reproduces the Python source of
+truth (`arena/rating.py`) against `tests/fixtures/rating_golden.json`, so the two implementations can
+never silently drift. **If you intentionally change the rating algorithm in `arena/rating.py`,
+regenerate the golden fixture** before running the parity test:
+
+```bash
+PYTHONPATH=. uv run python tests/fixtures/gen_rating_golden.py tests/fixtures/rating_golden.json
 ```
 
 Postgres tests use `ARENA_TEST_DATABASE_URL` and skip when the test database is unavailable:
@@ -332,8 +346,8 @@ ARENA_TEST_DATABASE_URL=postgresql://postgres:arena@localhost:5433/arena \
 ```
 
 Current coverage includes ONUW role conformance, Avalon quests and assassination, hidden-information
-invariants, scoring, SQLite/Postgres store behavior, remote queue behavior, connected-agent APIs, and
-event-sourced seat-state reconstruction.
+invariants, scoring, SQLite/Postgres store behavior, connected-agent APIs, Python/JS rating parity,
+and event-sourced seat-state reconstruction.
 
 ## Known Limitations
 
