@@ -3,6 +3,7 @@
 // object verbatim. `transcript_json` is a TEXT column holding JSON, so it must be JSON.parse'd
 // before returning. 404 {error:"game not found"} when the row is missing.
 import { q, send } from '../../../_db.js';
+import { runKind, sourceRunIds } from '../../../_shards.js';
 
 function gameInstanceId(runId, gid) {
   return `${runId}_game_${String(gid).padStart(3, '0')}`;
@@ -92,17 +93,33 @@ export default async function handler(req, res) {
   const runId = req.query.run_id;
   const gid = parseInt(req.query.gid, 10); // gid INTEGER in Neon
 
-  const rows = await q(
-    'SELECT transcript_json FROM games WHERE run_id = $1 AND gid = $2',
-    [runId, gid],
-  );
-  const row = rows[0];
-  if (!row) return send(res, 404, { error: 'game not found' });
+  // store.get_run: load the run row to know its kind. 404 if the run itself is missing.
+  const run = (await q('SELECT id, run_kind FROM runs WHERE id = $1', [runId]))[0];
+  if (!run) return send(res, 404, { error: 'run not found' });
 
-  const transcript = JSON.parse(row.transcript_json);
-  const events = await q(
-    'SELECT * FROM run_events WHERE run_id = $1 ORDER BY seq ASC LIMIT 1000',
-    [runId],
-  );
-  return send(res, 200, enrichTranscriptTurnReasoning(transcript, events, runId, gid));
+  // SPEC D7: a sharded parent's game lives on whichever child holds that GLOBAL gid (gids are
+  // disjoint across shards, D8); resolve it there. A normal/child run resolves against itself.
+  let sourceIds = [runId];
+  if (runKind(run) === 'parent') {
+    const childIds = (await q(
+      'SELECT id FROM runs WHERE parent_run_id = $1 ORDER BY shard_index', [runId],
+    )).map((c) => c.id);
+    sourceIds = sourceRunIds(run, childIds);
+  }
+
+  for (const srcId of sourceIds) {
+    const rows = await q(
+      'SELECT transcript_json FROM games WHERE run_id = $1 AND gid = $2',
+      [srcId, gid],
+    );
+    const row = rows[0];
+    if (!row) continue;
+    const transcript = JSON.parse(row.transcript_json);
+    const events = await q(
+      'SELECT * FROM run_events WHERE run_id = $1 ORDER BY seq ASC LIMIT 1000',
+      [srcId],
+    );
+    return send(res, 200, enrichTranscriptTurnReasoning(transcript, events, srcId, gid));
+  }
+  return send(res, 404, { error: 'game not found' });
 }

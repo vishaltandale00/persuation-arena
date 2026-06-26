@@ -5,11 +5,20 @@
 import { neon } from '@neondatabase/serverless';
 import crypto from 'node:crypto';
 
-const sql = neon(process.env.DATABASE_URL);
+// Lazily construct the Neon client on first use. neon() throws when DATABASE_URL is unset, so
+// constructing it at import time would break any module that imports _db.js purely for its pure
+// helpers (e.g. unit tests of the read/shard logic) when no DB is configured. The client is created
+// once on the first query and reused — identical behavior for the serverless handlers, which always
+// have DATABASE_URL set.
+let _sql = null;
+function sqlClient() {
+  if (!_sql) _sql = neon(process.env.DATABASE_URL);
+  return _sql;
+}
 
 /** Parameterized query ($1,$2,...) -> array of row objects. */
 export async function q(text, params = []) {
-  return await sql.query(text, params);
+  return await sqlClient().query(text, params);
 }
 
 /**
@@ -17,12 +26,12 @@ export async function q(text, params = []) {
  * (Awaiting sql.query directly — as q() does — sends it immediately and defeats atomicity.)
  */
 export function stmt(text, params = []) {
-  return sql.query(text, params);
+  return sqlClient().query(text, params);
 }
 
 /** Run an array of stmt()-built queries as ONE non-interactive HTTP transaction. */
 export async function tx(queries) {
-  return await sql.transaction(queries);
+  return await sqlClient().transaction(queries);
 }
 
 export const PROTOCOL_VERSION = 'arena-agent-v1';
@@ -156,10 +165,16 @@ export async function advanceLobby(runId) {
   const now = utcnow();
   const readyDeadline = utcAfter(60);
 
-  // 1. seat assignment when full (atomic; idempotent — same order => same seats)
+  // 1. seat assignment when full (atomic; idempotent — same order => same seats).
+  // Deterministic explicit seats (SPEC D5/V-7): when EVERY seated signup carries a roster_index the
+  // orchestrator chose the seats, so seat by that index; otherwise fall back to arrival order
+  // (ROW_NUMBER over created_utc,id), byte-identical to the pre-sharding behavior (INV-2). Mirrors
+  // store._maybe_ready_required.
   await q(
     `WITH ranked AS (
-       SELECT id, (ROW_NUMBER() OVER (ORDER BY created_utc, id) - 1) AS seat
+       SELECT id,
+              CASE WHEN bool_and(roster_index IS NOT NULL) OVER () THEN roster_index
+                   ELSE (ROW_NUMBER() OVER (ORDER BY created_utc, id) - 1) END AS seat
        FROM run_signups
        WHERE run_id = $1 AND status IN ('waiting','ready_required','ready','active')
      )

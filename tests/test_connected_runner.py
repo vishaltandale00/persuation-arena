@@ -96,6 +96,78 @@ def test_connected_agent_creates_turn_and_waits_for_reply(tmp_path, monkeypatch)
     assert agent.calls[-1]["ok"] is True
 
 
+# --- REQ-7 / V-7: deterministic explicit seats (additive; normal arrival-order untouched) -------
+
+
+def _signup_with_seat(run_id: str, agent_name: str, seat: int | None):
+    """Register a fresh agent and sign it up for run_id, optionally with an explicit seat."""
+    agent = store.register_agent(agent_name, f"hash_{agent_name}", "arena-agent-v1", "test")
+    signup, err = store.create_signup(run_id, agent["id"], seat=seat)
+    assert err is None, err
+    return agent["id"], signup["id"]
+
+
+def test_explicit_seat_honored(tmp_path, monkeypatch):
+    """REQ-7 / V-7: create_signup(..., seat=i) -> after the run fills, that signup ends at seat i,
+    REGARDLESS of arrival order. Sign up in a deliberately scrambled order vs the requested seats."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.create_connected_run({
+        "id": "run_seats", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 1, "players": 5, "seed_base": 1,
+    })
+    # arrival order (created_utc): names a,b,c,d,e ; requested seats scramble that order
+    requested = [("a", 4), ("b", 2), ("c", 0), ("d", 3), ("e", 1)]
+    signup_by_name = {}
+    for name, seat in requested:
+        _, signup_id = _signup_with_seat("run_seats", name, seat)
+        signup_by_name[name] = signup_id
+
+    rows = {s["display_name"]: s for s in store.list_run_signups("run_seats")}
+    for name, seat in requested:
+        assert rows[name]["seat"] == seat, f"{name} expected seat {seat}, got {rows[name]['seat']}"
+
+
+def test_identity_to_seat_identical_across_children(tmp_path, monkeypatch):
+    """REQ-7 / V-7: two child runs given the SAME roster indices yield the SAME identity->seat map
+    (this is what lets sharded children replay identical seats — supports INV-1/V-4)."""
+    _sqlite_store(tmp_path, monkeypatch)
+    roster = [("Alice", 2), ("Bob", 0), ("Cara", 1)]  # display_name -> requested seat
+
+    def seat_map_for(run_id: str) -> dict[str, int]:
+        store.create_connected_run({
+            "id": run_id, "game": "onuw", "label": "ONUW", "status": "open",
+            "n_games": 1, "players": 3, "seed_base": 1,
+        })
+        # sign up in a different physical order per child to prove arrival order is NOT what matters
+        order = roster if run_id.endswith("0") else list(reversed(roster))
+        for name, seat in order:
+            agent = store.get_agent_by_token_hash(f"hash_{name}") or store.register_agent(
+                name, f"hash_{name}", "arena-agent-v1", "test")
+            store.create_signup(run_id, agent["id"], seat=seat)
+        return {s["display_name"]: s["seat"] for s in store.list_run_signups(run_id)}
+
+    map0 = seat_map_for("child_0")
+    map1 = seat_map_for("child_1")
+    assert map0 == map1 == {"Alice": 2, "Bob": 0, "Cara": 1}
+
+
+def test_arrival_order_unchanged(tmp_path, monkeypatch):
+    """INV-2 / V-7: with NO explicit seat, seats are assigned by created_utc arrival order exactly as
+    today — the agent signing up first gets seat 0, etc."""
+    _sqlite_store(tmp_path, monkeypatch)
+    store.create_connected_run({
+        "id": "run_arrival", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 1, "players": 4, "seed_base": 1,
+    })
+    arrival = ["first", "second", "third", "fourth"]
+    for name in arrival:
+        _signup_with_seat("run_arrival", name, None)
+
+    rows = {s["display_name"]: s for s in store.list_run_signups("run_arrival")}
+    for i, name in enumerate(arrival):
+        assert rows[name]["seat"] == i, f"{name} expected arrival seat {i}, got {rows[name]['seat']}"
+
+
 def test_onuw_vote_prepares_all_connected_votes_before_waiting():
     names = {i: f"P{i}" for i in range(5)}
     core = ONUW(names, seed=1)

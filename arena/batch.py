@@ -63,14 +63,29 @@ def _run_config_meta(caps: Caps, discussion_rounds: int) -> dict:
 DealScheduleEntry = tuple[int, int, int, list[str] | None]
 
 
-def fresh_deal_schedule(n_games: int, n_players: int, seed_base: int) -> list[tuple[int, int, int]]:
+def fresh_deal_schedule(
+    n_games: int,
+    n_players: int,
+    seed_base: int,
+    *,
+    shard_index: int | None = None,
+    num_shards: int | None = None,
+) -> list[tuple[int, int, int]]:
     """Return [(gid, seed, rot)] for a run.
 
     Seeds increment per game so each game gets an independent deal. Rot cycles 0..n_players-1 so
     each agent still visits each seat regularly, without replaying the same hidden-role state.
+
+    Sharding (SPEC REQ-1): when both ``shard_index`` and ``num_shards`` are given, return only the
+    stride slice of the GLOBAL schedule — entries whose 0-indexed position ``g`` (i.e. ``gid-1``)
+    satisfies ``g % num_shards == shard_index``. The global ``gid``/``seed``/``rot`` are preserved
+    (no renumbering). When either is ``None``, behave exactly as before (INV-2).
     """
+    sliced = shard_index is not None and num_shards is not None
     sched = []
     for g in range(n_games):
+        if sliced and g % num_shards != shard_index:
+            continue
         sched.append((g + 1, seed_base + g, g % n_players))
     return sched
 
