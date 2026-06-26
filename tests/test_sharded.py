@@ -1587,3 +1587,26 @@ def test_signup_endpoint_rejects_out_of_range_seat(tmp_path, monkeypatch):
             "protocol_version": "arena-agent-v1", "seat": 0,
         }, headers=headers)
         assert ok.status_code == 200, ok.text
+
+
+def test_create_sharded_run_retry_preserves_child_created_utc(tmp_path, monkeypatch):
+    """Codex (integrated review): a same-config retry that omits created_utc must NOT regenerate the
+    children's created_utc. create_connected_run defaults created_utc to _utcnow() when absent, and
+    save_run used to overwrite it on conflict — but rating replays in (created_utc, run_id, gid)
+    order, so changing a child's created_utc under already-saved games reorders rating replay.
+    Creation-immutable fields must be preserved on re-save."""
+    _sqlite_store(tmp_path, monkeypatch)
+    cfg = _base_run("tsx", n_games=5, players=5, seed_base=7)
+    cfg.pop("created_utc", None)
+    cfg.pop("created", None)
+
+    create_sharded_run(cfg, 2)
+    first = {cid: store.get_run(cid)["created_utc"] for cid in ("tsx_shard_0", "tsx_shard_1")}
+    assert all(first.values()), first
+    n_games_0 = store.get_run("tsx_shard_0")["n_games"]
+
+    # retry (same config, still no created_utc) must NOT mutate created_utc or the schedule
+    create_sharded_run(cfg, 2)
+    for cid, ts in first.items():
+        assert store.get_run(cid)["created_utc"] == ts, f"{cid} created_utc must be immutable on retry"
+    assert store.get_run("tsx_shard_0")["n_games"] == n_games_0

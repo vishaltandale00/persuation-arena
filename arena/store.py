@@ -440,9 +440,14 @@ def save_run(meta: dict):
             f"ON CONFLICT (id) DO UPDATE SET "
             f"  game=excluded.game, label=excluded.label, "
             f"  status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END, "
-            f"  n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base, "
-            f"  created=excluded.created, agents_json=excluded.agents_json, "
-            f"  submitter=excluded.submitter, created_utc=excluded.created_utc, "
+            # Creation-immutable fields: preserve existing values on a re-save/collision so an
+            # idempotent retry or a predictable-id collision can't mutate a run's schedule or
+            # regenerate created_utc under already-saved games (rating replays in created_utc order).
+            f"  n_games=COALESCE(runs.n_games, excluded.n_games), players=COALESCE(runs.players, excluded.players), "
+            f"  seed_base=COALESCE(runs.seed_base, excluded.seed_base), "
+            f"  created=COALESCE(runs.created, excluded.created), "
+            f"  agents_json=COALESCE(runs.agents_json, excluded.agents_json), "
+            f"  submitter=excluded.submitter, created_utc=COALESCE(runs.created_utc, excluded.created_utc), "
             f"  deck_preset=excluded.deck_preset, "
             f"  metadata_json=COALESCE(excluded.metadata_json, runs.metadata_json), "
             # Preserve existing shard identity: a NORMAL upsert (run_kind 'normal', null shard cols)
