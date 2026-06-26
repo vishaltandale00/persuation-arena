@@ -47,18 +47,20 @@ jobs:
         run: npm ci
 
       - name: Python tests
-        # pytest is not a declared dependency (matches the README's documented command),
-        # so add it ad-hoc for this run rather than relying on `uv sync`.
-        run: uv run --with pytest python -m pytest tests/ -q
+        run: uv run python -m pytest tests/ -q
 
-      - name: JS tests (rating parity + import endpoint)
+      - name: JS syntax check (api/web)
+        run: |
+          git ls-files 'api/*.js' 'api/**/*.js' 'web/*.js' 'web/**/*.js' \
+            | sort -u \
+            | xargs -n1 node --check
+
+      - name: JS tests
         # Dummy DATABASE_URL: _db.js's neon() constructs at import but never opens a
-        # connection in these tests (parity uses the golden fixture; the import test
-        # only exercises pure helpers + the no-bearer auth path).
+        # connection in these tests.
         env:
           DATABASE_URL: postgres://u:p@localhost/db
         run: |
-          node tests/round_half_even.test.mjs
-          node tests/rating_parity.test.mjs
-          node tests/leaderboard_parity.test.mjs
-          node tests/import_endpoint.test.mjs
+          for f in tests/*.test.mjs; do
+            node "$f"
+          done
