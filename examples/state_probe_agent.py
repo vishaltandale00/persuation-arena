@@ -19,6 +19,7 @@ import json
 import os
 import time
 
+from arena.identity import NO_ONE_REF
 from examples._harness_util import render_event, reset_between_games_from_env, state_key
 
 
@@ -67,9 +68,11 @@ class StateProbeAgent:
         players = [p.get("ref", p.get("seat"))
                    for p in (turn.legal_action.get("choices", {}).get("players") or [])]
         if kind == "onuw.discussion.speak_or_pass":
-            return {"action": {"speak": f"probe {reasoning}"}, "reasoning": reasoning}
+            # Real ONUW discussion schema is oneOf [{speak,urgency} | {pass}]; urgency is REQUIRED.
+            return {"action": {"speak": f"probe {reasoning}", "urgency": 1}, "reasoning": reasoning}
         if kind == "onuw.vote":
-            return {"action": {"target": -1}, "reasoning": reasoning}
+            # Vote targets are @handle strings; abstention is the NO_ONE_REF string, not -1.
+            return {"action": {"target": NO_ONE_REF}, "reasoning": reasoning}
         if kind == "onuw.seer.inspect":
             return {"action": {"mode": "center", "indices": [0, 1]}, "reasoning": reasoning}
         if kind == "onuw.troublemaker.swap_two_or_decline":

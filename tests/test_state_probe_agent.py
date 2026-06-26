@@ -152,3 +152,71 @@ def test_run_scoped_mode_carries_state_across_games_and_separates_runs(monkeypat
     assert "turns_seen=1" in out_b1["reasoning"]
 
     assert probe.turns == {RUN_A: 2, RUN_B: 1}
+
+
+# --- Real-run schema validity (codex PR#27 P2): the probe must emit actions the connected ONUW
+#     schema ACCEPTS, else `arena-agent play` rejects/forfeits every turn to the deadline. -------
+
+def _probe_replies_drive_a_real_connected_batch(tmp_path, monkeypatch, n_games=2):
+    """Run a real connected ONUW batch where every reply comes from StateProbeAgent.act, and return
+    (run, invalid_action_kinds). Mirrors test_connected_runner's store-backed responder, but routes
+    actions through the probe so the production `_validate_action` (store.reply_to_turn) judges them."""
+    import threading
+    import time
+    from types import SimpleNamespace
+    from arena import store
+    from arena.connected import run_connected_batch
+    from examples.state_probe_agent import StateProbeAgent
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(store, "DB_PATH", tmp_path / "probe_real.db")
+    store.init_schema()
+    store.create_connected_run({
+        "id": "probe_run", "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": n_games, "players": 5, "seed_base": 11,
+    })
+    agent_by_signup = {}
+    for i in range(5):
+        a = store.register_agent(f"probe-{i}", f"hash_probe_{i}", "arena-agent-v1", "test")
+        s, err = store.create_signup("probe_run", a["id"])
+        assert err is None
+        agent_by_signup[s["id"]] = a["id"]
+    for sid, aid in agent_by_signup.items():
+        store.mark_signup_ready(sid, aid)
+
+    probe = StateProbeAgent(reset_between_games=True)
+    invalid: list[str] = []
+    stop = threading.Event()
+
+    def responder():
+        while not stop.is_set():
+            for sid, aid in agent_by_signup.items():
+                t = store.pending_turn_for_signup(sid)
+                if not t:
+                    continue
+                ns = SimpleNamespace(action_kind=t["action_kind"], legal_action=t["legal_action"],
+                                     game_instance_id=t.get("game_instance_id"), run_id=t.get("run_id"))
+                out = probe.act(ns)
+                _reply, err = store.reply_to_turn(t["id"], aid, out["action"], out.get("reasoning"), 1)
+                if err == "invalid_action":
+                    invalid.append(t["action_kind"])
+            if {s["status"] for s in store.list_run_signups("probe_run")} == {"completed"}:
+                return
+            time.sleep(0.01)
+
+    th = threading.Thread(target=responder)
+    th.start()
+    try:
+        run_connected_batch("probe_run", discussion_rounds=1)
+    finally:
+        stop.set()
+    th.join(timeout=5)
+    return store.get_run("probe_run"), invalid
+
+
+def test_probe_actions_accepted_by_real_connected_schema(tmp_path, monkeypatch):
+    """codex PR#27 P2: every action the probe emits in a real connected ONUW game must be accepted
+    by the production schema validator (no 'invalid_action'), and the run completes without forfeits."""
+    run, invalid = _probe_replies_drive_a_real_connected_batch(tmp_path, monkeypatch)
+    assert invalid == [], f"probe emitted schema-invalid actions for: {sorted(set(invalid))}"
+    assert run["status"] == "done", f"run did not complete cleanly: {run['status']}"
