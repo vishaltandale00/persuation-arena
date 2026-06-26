@@ -245,7 +245,15 @@ def run_connected_batch(run_id: str, workers: int = 1, discussion_rounds: int | 
     failures: list[int] = []
     store.update_run_status(run_id, "running")
 
-    for gid, seed, rot in fresh_deal_schedule(n_games, n_players, int(run["seed_base"])):
+    # Sharding (SPEC §3, D8): a child run carries shard coordinates; n_games is the GLOBAL N and we
+    # play only this shard's disjoint stride slice, with global gid/seed/rot preserved. A normal run
+    # has both cols NULL and gets the full, byte-identical schedule (INV-2).
+    shard_index = run["shard_index"] if run["shard_index"] is not None else None
+    num_shards = run["num_shards"] if run["num_shards"] is not None else None
+    for gid, seed, rot in fresh_deal_schedule(
+        n_games, n_players, int(run["seed_base"]),
+        shard_index=shard_index, num_shards=num_shards,
+    ):
         game_instance_id = f"{run_id}_game_{gid:03d}"
         rotated = [seats[(i + rot) % n_players] for i in range(n_players)]
         seat_map = {

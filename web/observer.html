@@ -185,8 +185,13 @@
   .think-ms{font-family:var(--mono);font-size:11px;color:var(--faint);margin-left:auto;white-space:nowrap}
   .turn .h{justify-content:flex-start}
   .turn .say{font-size:13.5px;color:var(--ink)} .turn.pass .say{color:var(--faint);font-style:italic}
+  .turn.model-failed .av{border-color:#e1aaa6;color:var(--evil);background:var(--evil-soft)}
+  .turn-alert{margin:5px 0 7px;border:1px solid #e1aaa6;border-left:3px solid var(--evil);border-radius:7px;background:var(--evil-soft);color:var(--evil);padding:7px 9px;font-size:12px;line-height:1.4}
+  .turn-alert .ak{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;display:block;margin-bottom:2px}
+  .turn-alert .msg{color:var(--ink);overflow-wrap:anywhere}
   .mention{display:inline-flex;align-items:center;max-width:180px;vertical-align:baseline;font-family:var(--mono);font-size:12px;line-height:1.4;padding:0 5px;border:1px solid var(--line-2);border-radius:5px;background:var(--sel);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .turn-reason{margin-top:8px;border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:7px;background:var(--bg);overflow:hidden}
+  .turn-reason.err{border-left-color:var(--evil)}
   .turn-reason summary{cursor:pointer;font-family:var(--mono);font-size:11px;color:var(--ink-2);padding:7px 9px;list-style:none}
   .turn-reason summary::-webkit-details-marker{display:none}
   .turn-reason summary:before{content:"▸";display:inline-block;width:12px;color:var(--faint)}
@@ -200,6 +205,17 @@
   .sysline{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:center;padding:7px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:13px 0}
   .resline{font-family:var(--mono);font-size:12px;text-align:center;padding:10px;border-radius:8px;border:1px solid var(--line-2);margin:6px 0 13px}
   .resline.good{background:var(--good-soft);color:var(--good);border-color:#cfe6df} .resline.evil{background:var(--evil-soft);color:var(--evil);border-color:#ecccca} .resline.void{background:var(--sel);color:var(--faint);border-color:var(--line-2)}
+  .game-summary{border-bottom:1px solid var(--line);background:var(--panel);padding:13px 18px}
+  .game-summary-inner{max-width:1100px;margin:0 auto}
+  .game-summary-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
+  .game-summary-title{font-size:13px;font-weight:600}
+  .game-summary-meta{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
+  .game-summary-text{font-size:13.5px;line-height:1.5;color:var(--ink);max-width:920px}
+  .game-summary-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+  .game-summary-list{margin:0;padding-left:17px;color:var(--ink-2);font-size:12.5px}
+  .game-summary-list li{margin:3px 0}
+  .game-summary-empty{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--ink-2);font-size:13px}
+  .game-summary-error{color:var(--evil);font-size:12.5px;margin-top:7px}
   .phasebar{display:flex;align-items:center;gap:10px;margin:18px 0 12px} .phasebar .ln{height:1px;background:var(--line-2);flex:1}
   .phasebar .t{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-2)}
   .phasebar.cur .t{color:var(--accent)} .phasebar.cur .ln{background:var(--accent)}
@@ -218,6 +234,11 @@
   .trow{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)} .trow:last-child{border-bottom:0} .trow .who{font-size:13px}
   .ledger{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
   .ledger li{font-size:12px;color:var(--ink-2);display:flex;gap:8px} .ledger .n{font-family:var(--mono);font-size:11px;color:var(--faint);flex:none}
+  .failures{display:flex;flex-direction:column;gap:8px}
+  .failure{border:1px solid #e1aaa6;border-left:3px solid var(--evil);border-radius:7px;background:var(--evil-soft);padding:8px 9px}
+  .failure .fhead{display:flex;gap:7px;align-items:center;font-size:12px;color:var(--evil);font-weight:600}
+  .failure .fmeta{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:2px}
+  .failure .fmsg{font-size:12px;line-height:1.4;color:var(--ink);margin-top:5px;overflow-wrap:anywhere}
   .tally{display:flex;flex-direction:column;gap:6px} .tally .tr{display:flex;align-items:center;gap:8px}
   .tally .nm{font-size:12px;width:64px;flex:none} .tally .bar{height:7px;border-radius:3px;background:var(--accent)} .tally .c{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
   .quests{display:flex;gap:6px} .q{flex:1;text-align:center;border:1px solid var(--line-2);border-radius:6px;padding:7px 2px}
@@ -555,7 +576,7 @@
               <div class="control"><label>Prior turns</label>
                 <input type="text" id="nf-prior" placeholder="all"></div>
             </div>
-            <div class="run-mode" id="nf-mode">Local server runs immediately; hosted deployments queue for a worker.</div>
+            <div class="run-mode" id="nf-mode">The local server runs this comparison immediately, in-process.</div>
           </div>
         </section>
         </div>
@@ -627,9 +648,12 @@ function renderMentions(text,m){
 
 /* ===== RUNS — each has its own agent roster (same agents only within the run) ===== */
 const API="/api";  // same-origin Vercel serverless functions under /api
+// Diagonal: localhost serves the Python app (static in-process runs); prod (Vercel) is connected-only.
+const IS_LOCAL=["localhost","127.0.0.1","[::1]","::1"].includes(location.hostname)||location.hostname.endsWith(".local");
 let RUNS={}, RUN_ORDER=[];
 let curDebug=null;
 const TRANSCRIPTS={};
+const SUMMARY_LOADING=new Set();
 async function jget(u){ const r=await fetch(API+u); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
 async function jpost(u,body){
   const r=await fetch(API+u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
@@ -1114,11 +1138,57 @@ function renderSummaryOnly(){
 }
 function renderGameDetail(){
   document.getElementById("gamebody").innerHTML=
-    '<div class="phaserail" id="phaserail"></div><div class="strip" id="strip"></div>'+
+    '<div id="gamesummary"></div><div class="phaserail" id="phaserail"></div><div class="strip" id="strip"></div>'+
     '<div class="bottom"><section class="convo" id="convo"><div class="convo-inner" id="convoinner"></div></section><section class="state" id="state"></section></div>';
+  renderGameSummary();
   renderConvoFull();          // the whole conversation, shown at once (review, not a live reveal)
   updateLens(false);          // the right-side "lens": state panel + strip + reasoning at the current phase
   document.getElementById("convo").scrollTop=0;  // start at the top so you read from the beginning
+  ensureGameSummary();
+}
+function summaryKey(){ return curRun.id+"/"+curGame.gid; }
+function summaryList(title,items){
+  if(!items||!items.length) return "";
+  return '<div><div class="lbl" style="margin-bottom:4px">'+title+'</div><ul class="game-summary-list">'+
+    items.map(x=>'<li>'+esc(x)+'</li>').join("")+'</ul></div>';
+}
+function renderGameSummary(error){
+  const el=document.getElementById("gamesummary"); if(!el||!hasT()) return;
+  const s=T().summary;
+  const key=summaryKey();
+  let inner;
+  if(s&&s.text){
+    const meta=[s.model,s.reasoning_effort?("reasoning "+s.reasoning_effort):"",s.generated_at?new Date(s.generated_at).toLocaleString():""].filter(Boolean).join(" · ");
+    inner='<div class="game-summary-head"><div class="game-summary-title">Game summary</div><div class="game-summary-meta">'+esc(meta)+'</div></div>'+
+      (s.result?'<div class="lbl" style="margin-bottom:4px">'+esc(s.result)+'</div>':"")+
+      '<div class="game-summary-text">'+esc(s.text)+'</div>'+
+      '<div class="game-summary-grid">'+summaryList("Highlights",s.highlights)+summaryList("Turning points",s.turning_points)+'</div>';
+  } else {
+    const loading=SUMMARY_LOADING.has(key);
+    inner='<div class="game-summary-empty"><span>'+(loading?"Generating GPT-5.5 medium summary…":"No generated summary yet.")+'</span>'+
+      '<button class="btn" id="summary-generate" '+(loading?"disabled":"")+'>Generate summary</button></div>'+
+      (error?'<div class="game-summary-error">'+esc(error)+'</div>':"");
+  }
+  el.innerHTML='<section class="game-summary"><div class="game-summary-inner">'+inner+'</div></section>';
+  const btn=document.getElementById("summary-generate");
+  if(btn) btn.onclick=()=>ensureGameSummary(true);
+}
+async function ensureGameSummary(force){
+  if(!hasT()) return;
+  const key=summaryKey();
+  if(!force && T().summary && T().summary.text) return;
+  if(SUMMARY_LOADING.has(key)) return;
+  SUMMARY_LOADING.add(key);
+  renderGameSummary();
+  try{
+    const d=await jpost("/runs/"+curRun.id+"/games/"+curGame.gid+"/summary",{});
+    if(d&&d.summary) T().summary=d.summary;
+    SUMMARY_LOADING.delete(key);
+    renderGameSummary();
+  }catch(e){
+    SUMMARY_LOADING.delete(key);
+    renderGameSummary(e.message||"Summary generation failed.");
+  }
 }
 // Moves the lens (state panel, player strip, phase highlight) to the current phase without
 // rebuilding the conversation. Optionally scrolls the conversation to that phase.
@@ -1144,6 +1214,7 @@ function deadSet(){ if(!hasT())return []; let d=[]; const cur=curPhase(); T().ph
 function stateGeneric(m){
   const cur=curPhase(); const p=m.phases[cur];
   let h=synthBlock(p);
+  h+=phaseFailuresHtml(m,p);
   h+=block("Cards in play",'<div class="cards">'+m.cardsInPlay.map(c=>'<span class="card '+teamCls(c[1])+'">'+c[0]+'</span>').join("")+'</div>');
   h+=block("Roster (true roles)",m.players.map((pl,pid)=>'<div class="trow"><span class="who">'+nm(pid)+'</span><span class="roletag '+teamCls(pl.team)+'">'+pl.end+'</span></div>').join(""));
   const last=m.phases[m.phases.length-1];
@@ -1183,6 +1254,25 @@ function reasoningText(v){
   if(v==null || v==="") return "";
   return typeof v==="string" ? v : JSON.stringify(v,null,2);
 }
+function redactErrorText(v){
+  return reasoningText(v)
+    .replace(/https:\/\/openrouter\.ai\/workspaces\/[^\s'"}]+/g,"[OpenRouter key settings URL]")
+    .replace(/'user_id':\s*'[^']+'/g,"'user_id': '[redacted]'")
+    .replace(/"user_id":\s*"[^"]+"/g,'"user_id": "[redacted]"');
+}
+function modelFailure(e){
+  return !!(e && (e.model_call_ok===false || e.defaulted || e.validation_error));
+}
+function modelFailureMessage(e){
+  const msg=redactErrorText(e.validation_error || e.raw_model_output || "No valid model response; default action used.");
+  return msg || "No valid model response; default action used.";
+}
+function modelFailureAlertHtml(e){
+  if(!modelFailure(e)) return "";
+  const label=e.defaulted?"Model call failed · default action used":"Model call failed";
+  const meta=e.action_kind?(" · "+e.action_kind):"";
+  return '<div class="turn-alert"><span class="ak">'+esc(label+meta)+'</span><span class="msg">'+esc(modelFailureMessage(e))+'</span></div>';
+}
 function hiddenModelTurnsHtml(turns){
   if(!Array.isArray(turns)||!turns.length) return "";
   const items=turns.map((t,i)=>{
@@ -1190,10 +1280,13 @@ function hiddenModelTurnsHtml(turns){
     const reason=reasoningText(t.reasoning);
     const provider=reasoningText(t.provider_reasoning || t.provider_reasoning_details);
     const raw=reasoningText(t.raw);
+    const validation=redactErrorText(t.validation_error);
     let inner="";
+    if(t.ok===false) inner+='<div class="turn-alert"><span class="ak">Model call failed · hidden turn</span><span class="msg">'+esc(validation||raw||"No valid model response.")+'</span></div>';
     if(action) inner+='<div><div class="rk">Action</div><pre class="rtxt">'+esc(action)+'</pre></div>';
     if(reason) inner+='<div><div class="rk">Declared reasoning</div><div class="rtxt">'+esc(reason)+'</div></div>';
     if(provider) inner+='<div><div class="rk">Provider reasoning</div><div class="rtxt">'+esc(provider)+'</div></div>';
+    if(validation) inner+='<div><div class="rk">Validation error</div><pre class="rtxt">'+esc(validation)+'</pre></div>';
     if(raw) inner+='<details><summary>Raw model output</summary><pre class="rtxt">'+esc(raw)+'</pre></details>';
     return '<details><summary>Hidden model turn '+(i+1)+'</summary>'+inner+'</details>';
   }).join("");
@@ -1203,15 +1296,18 @@ function turnReasoningHtml(e){
   const declared=reasoningText(e.declared_reasoning);
   const provider=reasoningText(e.provider_reasoning || e.provider_reasoning_details);
   const raw=reasoningText(e.raw_model_output);
+  const validation=redactErrorText(e.validation_error);
   const hidden=hiddenModelTurnsHtml(e.hidden_model_turns_before);
-  if(!declared && !provider && !raw && !hidden) return "";
+  if(!declared && !provider && !raw && !validation && !hidden && !modelFailure(e)) return "";
   let body="";
+  if(modelFailure(e)) body+=modelFailureAlertHtml(e);
   if(declared) body+='<div><div class="rk">Declared reasoning</div><div class="rtxt">'+esc(declared)+'</div></div>';
   if(provider) body+='<div><div class="rk">Provider reasoning</div><div class="rtxt">'+esc(provider)+'</div></div>';
+  if(validation) body+='<div><div class="rk">Validation error</div><pre class="rtxt">'+esc(validation)+'</pre></div>';
   if(raw) body+='<details><summary>Raw model output</summary><pre class="rtxt">'+esc(raw)+'</pre></details>';
   if(hidden) body+=hidden;
-  const summary=provider&&declared?"Reasoning · declared + provider":(provider?"Reasoning · provider":(declared?"Reasoning · declared":"Reasoning · hidden"));
-  return '<details class="turn-reason"><summary>'+summary+'</summary><div class="rbody">'+body+'</div></details>';
+  const summary=modelFailure(e)?"Model call failure":(provider&&declared?"Reasoning · declared + provider":(provider?"Reasoning · provider":(declared?"Reasoning · declared":"Reasoning · hidden")));
+  return '<details class="turn-reason '+(modelFailure(e)?"err":"")+'"><summary>'+summary+'</summary><div class="rbody">'+body+'</div></details>';
 }
 function convoItem(m,e){
   const el=document.createElement("div");
@@ -1221,16 +1317,29 @@ function convoItem(m,e){
   const pl=m.players[e.pid];
   const tms=e.ms?'<span class="think-ms" title="time the agent took to decide">⏱ '+fmtMs(e.ms)+'</span>':'';
   const head='<div class="h"><span class="nm">'+esc(nm(e.pid))+'</span><span class="role">'+esc(pl.end)+'</span>'+tms+'</div>';
+  const failure=modelFailureAlertHtml(e);
   const reasoning=turnReasoningHtml(e);
   if(e.t==="pass"){
     const passText=e.stance==="wait"?"— waits for more discussion —":(e.stance==="done"?"— ready to vote —":"— holds, says nothing —");
-    el.className="turn pass"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">'+passText+'</div>'+reasoning+'</div>'; return el;
+    el.className="turn pass"+(modelFailure(e)?" model-failed":""); el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+failure+'<div class="say">'+passText+'</div>'+reasoning+'</div>'; return el;
   }
-  if(e.t==="act"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="actline">'+renderMentions(e.text,m)+'</div>'+reasoning+'</div>'; return el; }
-  if(e.t==="vote"){ el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="voteline"><span class="arr">votes</span> <span class="t">'+esc(voteName(e.tgt))+'</span> <span class="role">· '+renderMentions(e.text,m)+'</span></div>'+reasoning+'</div>'; return el; }
-  el.className="turn"; el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+'<div class="say">'+renderMentions(e.text,m)+'</div>'+reasoning+'</div>'; return el;
+  if(e.t==="act"){ el.className="turn"+(modelFailure(e)?" model-failed":""); el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+failure+'<div class="actline">'+renderMentions(e.text,m)+'</div>'+reasoning+'</div>'; return el; }
+  if(e.t==="vote"){ el.className="turn"+(modelFailure(e)?" model-failed":""); el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+failure+'<div class="voteline"><span class="arr">votes</span> <span class="t">'+esc(voteName(e.tgt))+'</span> <span class="role">· '+renderMentions(e.text,m)+'</span></div>'+reasoning+'</div>'; return el; }
+  el.className="turn"+(modelFailure(e)?" model-failed":""); el.innerHTML='<div class="av">'+tag(e.pid)+'</div><div class="b">'+head+failure+'<div class="say">'+renderMentions(e.text,m)+'</div>'+reasoning+'</div>'; return el;
 }
 function block(title,inner){ return '<div class="sblock"><h4>'+title+'</h4>'+inner+'</div>'; }
+function phaseFailuresHtml(m,p){
+  const failures=(p.events||[]).filter(modelFailure);
+  if(!failures.length) return "";
+  return block("Model call failures",'<div class="failures">'+failures.map(e=>{
+    const name=e.pid!=null?nm(e.pid):"system";
+    const target=e.t==="vote"?(" · defaulted vote shown: "+voteName(e.tgt)):"";
+    const eventModel=e.model || (e.pid!=null ? modelOf(e.pid) : "");
+    const meta=[e.action_kind||e.t||"turn",eventModel,e.ms?fmtMs(e.ms):""].filter(Boolean).join(" · ");
+    return '<div class="failure"><div class="fhead"><span>'+esc(name)+'</span><span>defaulted</span></div>'+
+      '<div class="fmeta">'+esc(meta+target)+'</div><div class="fmsg">'+esc(modelFailureMessage(e))+'</div></div>';
+  }).join("")+'</div>');
+}
 function renderState(){
   const st=document.getElementById("state"); const m=T();
   if(selected!==null){ st.innerHTML=dossier(m,selected); st.scrollTop=0; const b=document.getElementById("dback"); if(b)b.onclick=()=>{selected=null;renderStrip();renderState();}; return; }
@@ -1242,6 +1351,7 @@ function synthBlock(p){ return block("Phase summary",
   '<div class="row"><span class="k">flag</span><span>'+p.synth.note+'</span></div></div>'); }
 function stateONUW(m){
   const cur=curPhase(); const p=m.phases[cur]; let h=synthBlock(p);
+  h+=phaseFailuresHtml(m,p);
   h+=block("Cards in play (8)",'<div class="cards">'+m.cardsInPlay.map(c=>'<span class="card '+teamCls(c[1])+'">'+c[0]+'</span>').join("")+'</div>');
   const startingCenter=onuwStartingCenter(m);
   const startingRows=m.players.map((pl,pid)=>'<div class="trow"><span class="who">'+nm(pid)+'</span><span class="roletag '+teamCls(roleTeam(m,pl.dealt))+'">'+pl.dealt+'</span></div>').join("");
@@ -1263,6 +1373,7 @@ function stateONUW(m){
 }
 function stateAvalon(m){
   const cur=curPhase(); const p=m.phases[cur]; const board=p.board; let h=synthBlock(p);
+  h+=phaseFailuresHtml(m,p);
   const qsrc=(board&&board.quests)?board.quests:m.phases[Math.min(cur,2)].board.quests;
   h+=block("Quest track",'<div class="quests">'+qsrc.map((q,i)=>{ const st=q.st==="success"?"success":(q.st==="fail"?"fail":""); const lab=q.st==="success"?"pass":(q.st==="fail"?"fail":"·");
     return '<div class="q '+st+'"><div class="qn">Q'+(i+1)+'</div><div class="sz">'+q.sz+'</div><div class="st">'+lab+'</div></div>'; }).join("")+'</div>');
@@ -1298,7 +1409,7 @@ function setPlayUI(on){ const i=document.getElementById("playicon"),t=document.g
 
 /* STATIC RUN — fixed model roster, persisted transcripts/reasoning/results */
 let MODEL_CATALOG=[], modelCatalogLoaded=false;
-let nfMode="static";
+let nfMode=IS_LOCAL?"static":"connected";  // diagonal: localhost=static, prod=connected
 let nfRows=[
   {name:"GPT-5.5",model:"openai/gpt-5.5"},
   {name:"Grok 4.20",model:"x-ai/grok-4.20"},
@@ -1334,6 +1445,7 @@ function renderNewRun(){
   document.getElementById("nf-deal-field").style.display=g==="onuw"?"":"none";
   const cg=document.getElementById("cf-game").value;
   document.getElementById("cf-deck-field").style.display=cg==="onuw"?"":"none";
+  document.getElementById("nf-mode-tabs").style.display="none";  // diagonal: one mode per environment
   document.getElementById("nf-static").classList.toggle("on",nfMode==="static");
   document.getElementById("nf-connected").classList.toggle("on",nfMode==="connected");
   document.querySelectorAll("#nf-mode-tabs button").forEach(b=>b.classList.toggle("on",b.dataset.mode===nfMode));
@@ -1409,12 +1521,8 @@ function runPayload(){
   return payload;
 }
 async function launchStaticRun(payload){
-  try{
-    return await jpost("/run",payload);
-  }catch(e){
-    if(e.status===404||e.status===405) return await jpost("/runs",payload);
-    throw e;
-  }
+  // localhost only: the Python server runs this comparison in-process. Prod (Vercel) has no /api/run.
+  return await jpost("/run",payload);
 }
 function connectedPayload(){
   const game=document.getElementById("cf-game").value;
@@ -1466,8 +1574,7 @@ document.getElementById("nf-launch").onclick=async ()=>{
     const payload=nfMode==="static"?runPayload():connectedPayload();
     const d=nfMode==="static"?await launchStaticRun(payload):await jpost("/runs",payload);
     if(nfMode==="static"){
-      const queued=d.status==="queued";
-      toast((queued?"Run queued: ":"Run started: ")+d.run_id+" — "+payload.agents.length+" models, "+payload.games+" games · "+payload.rounds+" discussion messages.");
+      toast("Run started: "+d.run_id+" — "+payload.agents.length+" models, "+payload.games+" games · "+payload.rounds+" discussion messages.");
     }else{
       toast("Lobby opened: "+d.run_id+" — "+payload.players+" seats, "+payload.games+" games · "+payload.rounds+" discussion messages.");
     }

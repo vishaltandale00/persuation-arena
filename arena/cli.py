@@ -5,7 +5,6 @@
   python -m arena.cli score --run run_9000                 # print the leaderboard
   python -m arena.cli runs                                  # list runs
   python -m arena.cli agents                                # show the roster
-  python -m arena.cli worker --server https://... --owner alice
   python -m arena.cli serve --port 8000                     # start the observer server
 """
 from __future__ import annotations
@@ -13,8 +12,6 @@ from __future__ import annotations
 import argparse
 import os
 import socket
-import threading
-import time
 
 from .config import REASONING_EFFORTS, SETTINGS, caps_with_overrides
 
@@ -51,39 +48,16 @@ def _run_caps_from_args(args):
     )
 
 
-def _run_caps_from_job(job: dict):
-    fields = {}
-    for agent in job.get("agents") or []:
-        for key in ("reasoning_effort", "max_tokens_per_turn", "temperature", "retries",
-                    "prior_message_turns"):
-            if key in agent and agent[key] is not None and key not in fields:
-                fields[key] = agent[key]
-        if "max_tokens" in agent and "max_tokens_per_turn" not in fields:
-            fields["max_tokens_per_turn"] = agent["max_tokens"]
-        if len(fields) >= 5:
-            break
-    if "max_tokens_per_turn" in fields:
-        fields["max_tokens_per_turn"] = int(fields["max_tokens_per_turn"])
-    if "temperature" in fields:
-        fields["temperature"] = float(fields["temperature"])
-    if "retries" in fields:
-        fields["retries"] = int(fields["retries"])
-    if "prior_message_turns" in fields:
-        fields["prior_message_turns"] = int(fields["prior_message_turns"])
-    return caps_with_overrides(**fields, discussion_rounds=int(job["rounds"]))
-
-
 def _use_local_store() -> None:
-    """Pin the LOCAL CLI commands (run/score/runs) to the local SQLite store by dropping
-    DATABASE_URL (which .env / the environment may set). These never touch the remote DB — the
-    only path to the prod leaderboard is `arena push`, which uses the Vercel JS API. Remote-by-design
-    commands (worker / serve / connected) are intentionally NOT routed through this."""
+    """Force the local SQLite store by dropping DATABASE_URL (config.load_dotenv injects .env's at
+    import). Applied CENTRALLY by _dispatch() to every subcommand except _REMOTE_STORE_FUNCS, so a
+    stray DATABASE_URL can never make a local command read/write prod Neon. The only path to the prod
+    leaderboard is `arena push`, which reads the local store and uploads over the Vercel HTTP API."""
     os.environ.pop("DATABASE_URL", None)
 
 
 def _run(args):
     from .batch import run_batch
-    _use_local_store()
     rid = args.run_id or f"run_{args.seed}"
     caps = _run_caps_from_args(args)
     run_batch(game=args.game, n_games=args.games, seed_base=args.seed, run_id=rid,
@@ -96,7 +70,6 @@ def _run(args):
 def _score(args):
     from .score import score_run
     from . import store
-    _use_local_store()
     run = store.get_run(args.run)
     if run is None:
         print("run not found")
@@ -128,7 +101,6 @@ def _score(args):
 
 def _runs(args):
     from . import store
-    _use_local_store()
     for r in store.list_runs():
         print(f"{r['id']:12} {r['game']:7} {r['status']:8} {r['n_games']:>3} games  "
               f"split {r['team_split']}  {r['created']}")
@@ -160,98 +132,6 @@ def _worker_get(server: str, path: str, token: str | None = None) -> dict:
     r = httpx.get(server + path, headers=_headers(token), timeout=30)
     r.raise_for_status()
     return r.json()
-
-
-def _run_claimed_job(args, job: dict, worker_id: str, token: str | None) -> None:
-    from .batch import run_batch
-    from .config import AgentSpec
-    from . import store
-
-    server = args.server.rstrip("/")
-    lease = args.lease
-    stop = threading.Event()
-
-    def heartbeat_loop():
-        interval = max(5, lease // 3)
-        while not stop.wait(interval):
-            try:
-                _worker_post(server, "/api/jobs/heartbeat", token, {
-                    "owner": job["owner"], "job_id": job["id"], "worker_id": worker_id,
-                    "lease_seconds": lease,
-                })
-            except Exception as e:
-                print(f"[worker {worker_id}] heartbeat failed: {type(e).__name__}: {e}", flush=True)
-
-    beat = threading.Thread(target=heartbeat_loop, daemon=True)
-    beat.start()
-
-    try:
-        try:
-            current = _worker_get(server, f"/api/runs/{job['run_id']}")
-            existing = {int(g["gid"]) for g in current.get("games", [])}
-        except Exception:
-            existing = set()
-
-        roster = [AgentSpec(name=a["name"], model=a["model"], harness=a.get("harness", "base"))
-                  for a in job["agents"]]
-        caps = _run_caps_from_job(job)
-
-        def publish(gid: int, transcript: dict, agents: list[dict]) -> None:
-            _worker_post(server, "/api/ingest", token, {
-                "owner": job["owner"], "job_id": job["id"], "run_id": job["run_id"],
-                "gid": gid, "transcript": transcript, "agents": agents,
-            })
-
-        print(f"[worker {worker_id}] claimed {job['id']} run={job['run_id']} "
-              f"owner={job['owner']} existing={sorted(existing)}", flush=True)
-        run_batch(game=job["game"], n_games=int(job["n_games"]), seed_base=int(job["seed_base"]),
-                  run_id=job["run_id"], roster=roster, workers=args.workers,
-                  discussion_rounds=int(job["rounds"]), deck_preset=job.get("deck_preset"),
-                  skip_gids=existing, caps=caps,
-                  on_game_saved=publish)
-        local = store.get_run(job["run_id"])
-        status = (local or {}).get("status", "done")
-        if status not in {"done", "partial"}:
-            status = "done"
-        _worker_post(server, "/api/jobs/complete", token, {
-            "owner": job["owner"], "job_id": job["id"], "worker_id": worker_id,
-            "status": status,
-        })
-        print(f"[worker {worker_id}] completed {job['id']} status={status}", flush=True)
-    except Exception as e:
-        _worker_post(server, "/api/jobs/complete", token, {
-            "owner": job["owner"], "job_id": job["id"], "worker_id": worker_id,
-            "status": "failed", "error": f"{type(e).__name__}: {e}",
-        })
-        raise
-    finally:
-        stop.set()
-
-
-def _worker(args):
-    # The worker must run games locally and publish via HTTP. If DATABASE_URL is present
-    # from a Vercel/Neon env pull, do not let store.py write directly to the central DB.
-    os.environ.pop("DATABASE_URL", None)
-    args.server = (args.server or os.environ.get("ARENA_SERVER_URL") or "http://127.0.0.1:8000").rstrip("/")
-    args.owner = args.owner or os.environ.get("ARENA_WORKER_OWNER") or os.getlogin()
-    token = args.token or os.environ.get("ARENA_WORKER_TOKEN") or os.environ.get("INGEST_TOKEN")
-    worker_id = args.worker_id or f"{socket.gethostname()}-{os.getpid()}"
-
-    print(f"[worker {worker_id}] polling {args.server} as owner={args.owner}", flush=True)
-    while True:
-        claim = _worker_post(args.server, "/api/jobs/claim", token, {
-            "owner": args.owner, "worker_id": worker_id, "lease_seconds": args.lease,
-        })
-        job = claim.get("job")
-        if not job:
-            if args.once:
-                print(f"[worker {worker_id}] no job available", flush=True)
-                return
-            time.sleep(args.poll)
-            continue
-        _run_claimed_job(args, job, worker_id, token)
-        if args.once:
-            return
 
 
 # --- push: upload a finished LOCAL run to the prod Neon/Vercel leaderboard -------------------
@@ -309,8 +189,7 @@ def push_token_or_register(server: str, display_name: str | None = None) -> str:
 
 def gid_diff(local_gids, remote_run_json: dict | None, force: bool = False) -> list[int]:
     """The gids to upload: local gids not already on the board (or all local gids when --force).
-    remote_run_json is the GET /api/runs/{id} body (key 'games':[{gid,...}]); None/404 -> upload all.
-    Mirrors the worker's resume diff (cli.py _run_claimed_job)."""
+    remote_run_json is the GET /api/runs/{id} body (key 'games':[{gid,...}]); None/404 -> upload all."""
     local = sorted({int(g) for g in local_gids})
     if force:
         return local
@@ -392,9 +271,8 @@ def _push(args):
         print("ERROR: pass --run RUN_ID (or --all to push every done/partial local run)")
         raise SystemExit(2)
 
-    # POP DATABASE_URL so the READ phase (store.get_run / get_game / distinct_gids) hits the LOCAL
-    # SQLite, not a prod Neon URL the env may carry. The client never connects to prod's DB.
-    os.environ.pop("DATABASE_URL", None)
+    # The READ phase (store.get_run / get_game / distinct_gids) hits the LOCAL SQLite — _dispatch()
+    # already dropped DATABASE_URL since push isn't in _REMOTE_STORE_FUNCS. Uploads go over HTTP.
     args.server = (args.server or os.environ.get("ARENA_SERVER_URL") or PROD_SERVER_URL).rstrip("/")
     token = push_token_or_register(args.server, getattr(args, "as_name", None))
 
@@ -425,7 +303,20 @@ def _push(args):
     return summaries
 
 
-def main():
+_REMOTE_STORE_FUNCS = {_serve}  # the ONLY subcommands allowed to use the remote (Neon) store
+
+
+def _dispatch(args) -> None:
+    """Fail-SAFE store routing: force local SQLite for every subcommand EXCEPT _REMOTE_STORE_FUNCS,
+    BEFORE it runs. config.load_dotenv injects .env's DATABASE_URL at import, so without this a
+    'local' command (run/score/runs/agents/push) could silently read or write prod Neon. New
+    subcommands are local-by-default — add to _REMOTE_STORE_FUNCS to opt into the remote store."""
+    if args.func not in _REMOTE_STORE_FUNCS:
+        _use_local_store()
+    args.func(args)
+
+
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="arena")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -467,17 +358,6 @@ def main():
     sv.add_argument("--port", type=int, default=8000)
     sv.set_defaults(func=_serve)
 
-    w = sub.add_parser("worker", help="claim queued central runs and execute them locally")
-    w.add_argument("--server", default=None, help="central site URL, e.g. https://arena.vercel.app")
-    w.add_argument("--owner", default=None, help="owner name; must match submitted runs and token owner")
-    w.add_argument("--token", default=None, help="bearer token from INGEST_TOKENS for this owner")
-    w.add_argument("--worker-id", default=None)
-    w.add_argument("--poll", type=int, default=5, help="seconds between empty-queue polls")
-    w.add_argument("--lease", type=int, default=300, help="lease seconds refreshed by heartbeat")
-    w.add_argument("--workers", type=int, default=8, help="local game concurrency")
-    w.add_argument("--once", action="store_true", help="claim at most one job and exit")
-    w.set_defaults(func=_worker)
-
     pu = sub.add_parser("push", help="upload a finished local run to the prod leaderboard")
     pu.add_argument("--run", default=None, help="local run id to push")
     pu.add_argument("--all", action="store_true",
@@ -493,8 +373,12 @@ def main():
                     help="central site URL (default $ARENA_SERVER_URL else the prod Vercel host)")
     pu.set_defaults(func=_push)
 
-    args = p.parse_args()
-    args.func(args)
+    return p
+
+
+def main():
+    args = build_parser().parse_args()
+    _dispatch(args)
 
 
 if __name__ == "__main__":

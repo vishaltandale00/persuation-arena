@@ -23,5 +23,11 @@ harness-agents = [
     "claude-agent-sdk>=0.2.108",
 ]
 
+[dependency-groups]
+dev = [
+  "pytest",
+  "ruff==0.15.20",
+]
+
 [tool.setuptools.packages.find]
 include = ["arena*", "persuasion_arena_agent*", "api*", "app*"]

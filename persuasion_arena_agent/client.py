@@ -115,12 +115,22 @@ class ArenaHttpClient:
         return r.json().get("runs", [])
 
     def signup_run(self, creds: AgentCredentials, run_id: str,
-                   max_concurrent_turns: int = 1) -> Signup:
+                   max_concurrent_turns: int = 1, join_token: str | None = None,
+                   seat: int | None = None) -> Signup:
+        body = {"protocol_version": "arena-agent-v1", "max_concurrent_turns": max_concurrent_turns}
+        # Only sent for shard child runs (INV-4); omitted for normal runs so the request body is
+        # byte-identical to before (INV-2).
+        if join_token is not None:
+            body["join_token"] = join_token
+        # An OPTIONAL explicit seat (roster index) lets a shard host request the orchestrator's
+        # deterministic seat (SPEC D5/V-7). Omitted for normal runs (arrival-order seating, INV-2).
+        if seat is not None:
+            body["seat"] = int(seat)
         r = self._request(
             "POST",
             f"/api/runs/{run_id}/signups",
             headers=creds.auth_header(),
-            json={"protocol_version": "arena-agent-v1", "max_concurrent_turns": max_concurrent_turns},
+            json=body,
         )
         return Signup.from_dict(r.json())
 
@@ -148,11 +158,14 @@ class ArenaHttpClient:
         return PollResponse.from_dict(r.json())
 
     def reply_turn(self, creds: AgentCredentials, turn_id: str, action: Any,
-                   reasoning: str | None = None, client_ms: int | None = None) -> dict:
+                   declared_reasoning: str | None = None, client_ms: int | None = None,
+                   *, reasoning: str | None = None) -> dict:
+        if declared_reasoning is None:
+            declared_reasoning = reasoning
         r = self._request(
             "POST",
             f"/api/turns/{turn_id}/reply",
             headers=creds.auth_header(),
-            json={"action": action, "reasoning": reasoning, "client_ms": client_ms},
+            json={"action": action, "declared_reasoning": declared_reasoning, "client_ms": client_ms},
         )
         return r.json()

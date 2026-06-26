@@ -42,7 +42,9 @@ SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
   players INTEGER, seed_base INTEGER, created TEXT, agents_json TEXT,
-  submitter TEXT, created_utc TEXT, deck_preset TEXT, metadata_json TEXT
+  submitter TEXT, created_utc TEXT, deck_preset TEXT, metadata_json TEXT,
+  run_kind TEXT DEFAULT 'normal', parent_run_id TEXT, shard_index INTEGER, num_shards INTEGER,
+  join_token TEXT
 );
 CREATE TABLE IF NOT EXISTS games (
   run_id TEXT, gid INTEGER, seed INTEGER, winner_team TEXT, line TEXT,
@@ -54,13 +56,6 @@ CREATE TABLE IF NOT EXISTS game_players (
   calls INTEGER DEFAULT 0, forfeits INTEGER DEFAULT 0,
   agent_id TEXT, signup_id TEXT
 );
-CREATE TABLE IF NOT EXISTS jobs (
-  id TEXT PRIMARY KEY, run_id TEXT UNIQUE, owner TEXT, status TEXT,
-  game TEXT, n_games INTEGER, seed_base INTEGER, rounds INTEGER, players INTEGER,
-  agents_json TEXT, created_utc TEXT, updated_utc TEXT,
-  lease_expires_utc TEXT, heartbeat_utc TEXT, worker_id TEXT, last_error TEXT,
-  deck_preset TEXT
-);
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY, display_name TEXT, token_hash TEXT UNIQUE,
   protocol_version TEXT, sdk_version TEXT, created_utc TEXT, last_seen_utc TEXT, status TEXT,
@@ -70,8 +65,14 @@ CREATE TABLE IF NOT EXISTS run_signups (
   id TEXT PRIMARY KEY, run_id TEXT, agent_id TEXT, status TEXT, seat INTEGER,
   created_utc TEXT, updated_utc TEXT, waiting_expires_utc TEXT, ready_deadline_utc TEXT,
   last_poll_utc TEXT, last_event_id TEXT, max_concurrent_turns INTEGER DEFAULT 1,
+  roster_index INTEGER,
   UNIQUE (run_id, agent_id)
 );
+-- NOTE: the uq_run_signups_run_roster partial unique index is intentionally NOT created here.
+-- roster_index is an ALTER-added column (see _MIGRATIONS), so on an EXISTING pre-upgrade DB this
+-- executescript runs BEFORE _migrate adds the column and the index DDL would fail with
+-- "no such column: roster_index", blocking startup/migration (FINDING P1). The index is created in
+-- _migrate AFTER the roster_index ALTER instead.
 CREATE TABLE IF NOT EXISTS run_events (
   id TEXT PRIMARY KEY, run_id TEXT, game_instance_id TEXT, seq INTEGER,
   visibility TEXT, target_signup_id TEXT, phase TEXT, type TEXT, payload_json TEXT, created_utc TEXT
@@ -108,7 +109,9 @@ PG_SCHEMA_STMTS = [
          id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
          players INTEGER, seed_base BIGINT, created TEXT, agents_json TEXT,
          submitter TEXT, created_utc TEXT, deck_preset TEXT, coordinator_url TEXT,
-         metadata_json TEXT
+         coordinator_lease_utc TEXT, metadata_json TEXT,
+         run_kind TEXT DEFAULT 'normal', parent_run_id TEXT, shard_index INTEGER, num_shards INTEGER,
+         join_token TEXT
        )""",
     """CREATE TABLE IF NOT EXISTS games (
          run_id TEXT, gid INTEGER, seed BIGINT, winner_team TEXT, line TEXT,
@@ -120,13 +123,6 @@ PG_SCHEMA_STMTS = [
          calls INTEGER DEFAULT 0, forfeits INTEGER DEFAULT 0,
          agent_id TEXT, signup_id TEXT
        )""",
-    """CREATE TABLE IF NOT EXISTS jobs (
-         id TEXT PRIMARY KEY, run_id TEXT UNIQUE, owner TEXT, status TEXT,
-         game TEXT, n_games INTEGER, seed_base BIGINT, rounds INTEGER, players INTEGER,
-         agents_json TEXT, created_utc TEXT, updated_utc TEXT,
-         lease_expires_utc TEXT, heartbeat_utc TEXT, worker_id TEXT, last_error TEXT,
-         deck_preset TEXT
-       )""",
     """CREATE TABLE IF NOT EXISTS agents (
          id TEXT PRIMARY KEY, display_name TEXT, token_hash TEXT UNIQUE,
          protocol_version TEXT, sdk_version TEXT, created_utc TEXT, last_seen_utc TEXT, status TEXT,
@@ -136,8 +132,13 @@ PG_SCHEMA_STMTS = [
          id TEXT PRIMARY KEY, run_id TEXT, agent_id TEXT, status TEXT, seat INTEGER,
          created_utc TEXT, updated_utc TEXT, waiting_expires_utc TEXT, ready_deadline_utc TEXT,
          last_poll_utc TEXT, last_event_id TEXT, max_concurrent_turns INTEGER DEFAULT 1,
+         roster_index INTEGER,
          UNIQUE (run_id, agent_id)
        )""",
+    # NOTE: uq_run_signups_run_roster is intentionally NOT created here. roster_index is added by
+    # PG_MIGRATION_STMTS, and init_schema runs PG_SCHEMA_STMTS BEFORE PG_MIGRATION_STMTS — on an
+    # EXISTING pre-upgrade DB the column would not yet exist and the index DDL would fail, blocking
+    # migration (FINDING P1). The index is created in PG_MIGRATION_STMTS after the ADD COLUMN.
     """CREATE TABLE IF NOT EXISTS run_events (
          id TEXT PRIMARY KEY, run_id TEXT, game_instance_id TEXT, seq INTEGER,
          visibility TEXT, target_signup_id TEXT, phase TEXT, type TEXT, payload_json TEXT, created_utc TEXT
@@ -175,20 +176,39 @@ _MIGRATIONS = {
     "game_players": [("calls", "INTEGER DEFAULT 0"), ("forfeits", "INTEGER DEFAULT 0"),
                      ("agent_id", "TEXT"), ("signup_id", "TEXT")],
     "runs": [("submitter", "TEXT"), ("created_utc", "TEXT"), ("deck_preset", "TEXT"),
-             ("coordinator_url", "TEXT"), ("metadata_json", "TEXT")],
-    "jobs": [("deck_preset", "TEXT")],
+             ("coordinator_url", "TEXT"), ("coordinator_lease_utc", "TEXT"), ("metadata_json", "TEXT"),
+             ("run_kind", "TEXT DEFAULT 'normal'"), ("parent_run_id", "TEXT"),
+             ("shard_index", "INTEGER"), ("num_shards", "INTEGER"), ("join_token", "TEXT")],
     "agents": [("declared_model", "TEXT"), ("declared_harness", "TEXT")],
+    "run_signups": [("roster_index", "INTEGER")],
 }
 
 PG_MIGRATION_STMTS = [
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS coordinator_url TEXT",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS coordinator_lease_utc TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS metadata_json TEXT",
-    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_kind TEXT DEFAULT 'normal'",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS shard_index INTEGER",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS num_shards INTEGER",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS join_token TEXT",
+    "DROP TABLE IF EXISTS jobs",   # retired worker/queue model (see the diagonal refactor)
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS agent_id TEXT",
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS signup_id TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_model TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_harness TEXT",
+    "ALTER TABLE run_signups ADD COLUMN IF NOT EXISTS roster_index INTEGER",
+    # FINDINGS #2/#3 + P1/P2: race-free explicit-seat uniqueness. Created HERE, AFTER the roster_index
+    # ADD COLUMN above, so an EXISTING pre-upgrade DB migrates cleanly (FINDING P1: the column must
+    # exist before the index DDL). PARTIAL on roster_index IS NOT NULL keeps NULL (normal/no-seat)
+    # signups unconstrained (INV-2). The active-status predicate (FINDING P2) means only LIVE holders
+    # occupy a seat, so an expired/cancelled signup releases its seat for a replacement instead of
+    # wedging the shard with permanent 'invalid_seat'. Mirrors the active set in create_signup.
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_run_signups_run_roster "
+    "ON run_signups (run_id, roster_index) "
+    "WHERE roster_index IS NOT NULL "
+    "AND status IN ('waiting','ready_required','ready','active')",
     # Dedup duplicate (run_id,gid,seat) rows, then add the unique index the JS import path needs for
     # ON CONFLICT (run_id,gid,seat) DO NOTHING. Use CREATE UNIQUE INDEX IF NOT EXISTS (idempotent on
     # re-run) rather than ALTER TABLE ADD CONSTRAINT (no IF NOT EXISTS in PG; re-run would throw).
@@ -196,6 +216,13 @@ PG_MIGRATION_STMTS = [
     "WHERE a.ctid < b.ctid AND a.run_id=b.run_id AND a.gid=b.gid AND a.seat=b.seat",
     "CREATE UNIQUE INDEX IF NOT EXISTS game_players_rgs_uq "
     "ON game_players (run_id,gid,seat)",
+    # One row per (run_id,seq) on run_events: seq must be a monotonic DISTINCT cursor, else a polling
+    # agent skips its turn prompt -> forfeit. Dedup (keep the lowest ctid per (run_id,seq)) THEN add
+    # the unique index; append_event_tx allocates seq with retry-on-conflict against it.
+    "DELETE FROM run_events a USING run_events b "
+    "WHERE a.ctid < b.ctid AND a.run_id=b.run_id AND a.seq=b.seq",
+    "CREATE UNIQUE INDEX IF NOT EXISTS run_events_run_seq_uq "
+    "ON run_events (run_id,seq)",
 ]
 
 
@@ -214,6 +241,39 @@ def active_backend_label() -> str:
 
 def _ph() -> str:
     return "%s" if _is_pg() else "?"
+
+
+def _seat_unique_violation() -> type[BaseException] | tuple[type[BaseException], ...]:
+    """Exception type(s) raised when an INSERT violates a unique constraint on the active backend.
+
+    Used to catch the uq_run_signups_run_roster partial-unique-index violation and turn a racing
+    duplicate-seat INSERT into a clean 'invalid_seat' (FINDINGS #2/#3). Postgres raises
+    psycopg.errors.UniqueViolation (a subclass of IntegrityError); SQLite raises
+    sqlite3.IntegrityError.
+    """
+    if _is_pg():
+        import psycopg
+        return psycopg.errors.IntegrityError
+    return sqlite3.IntegrityError
+
+
+def _is_seat_index_violation(exc: BaseException) -> bool:
+    """True iff `exc` is the explicit-seat (uq_run_signups_run_roster) unique violation, as opposed
+    to the table's UNIQUE(run_id, agent_id) constraint — both surface as IntegrityError. Distinguish
+    by the violated index/constraint named in the message: SQLite -> 'roster_index'; Postgres ->
+    'uq_run_signups_run_roster'. So a racing duplicate SEAT becomes 'invalid_seat' while a racing
+    duplicate (run_id, agent_id) signup reloads the existing signup instead of a misleading seat
+    error (codex round-9)."""
+    msg = str(exc).lower()
+    return "roster_index" in msg or "uq_run_signups_run_roster" in msg
+
+
+def _is_run_seq_violation(exc: BaseException) -> bool:
+    """True iff `exc` is the run_events (run_id, seq) unique-index violation (vs the id primary key).
+    PG names the index 'run_events_run_seq_uq'; SQLite says 'UNIQUE constraint failed: run_events.run_id,
+    run_events.seq'. Lets append_event_tx retry a racing seq collision instead of failing the append."""
+    msg = str(exc).lower()
+    return "run_events_run_seq_uq" in msg or ("run_events" in msg and "seq" in msg)
 
 
 def _utcnow() -> str:
@@ -244,14 +304,6 @@ def _apply_pg_session_settings(c, statement_timeout: int) -> None:
         c.execute(f"SET statement_timeout = {int(statement_timeout)}")
 
 
-def _job(row) -> dict | None:
-    if not row:
-        return None
-    d = dict(row)
-    d["agents"] = json.loads(d.pop("agents_json"))
-    return d
-
-
 def _metadata_from_row(row) -> dict:
     try:
         return json.loads((dict(row).get("metadata_json") if row else None) or "{}")
@@ -265,6 +317,19 @@ def _migrate(c: sqlite3.Connection) -> None:
         for name, decl in cols:
             if name not in have:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    # FINDINGS #2/#3 + P1/P2: race-free explicit-seat uniqueness. Created HERE (NOT in SQLITE_SCHEMA's
+    # executescript) so it runs AFTER the roster_index ADD COLUMN above — on an EXISTING pre-upgrade DB
+    # the column must exist before the index DDL or it fails with "no such column" (FINDING P1).
+    # PARTIAL on roster_index IS NOT NULL keeps NULL (normal/no-seat) signups unconstrained (INV-2).
+    # The active-status predicate (FINDING P2) means only LIVE holders occupy a seat, so an
+    # expired/cancelled signup releases its seat for a replacement instead of wedging the shard with a
+    # permanent 'invalid_seat'. Mirrors the active set in create_signup. IF NOT EXISTS = idempotent.
+    c.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_run_signups_run_roster "
+        "ON run_signups (run_id, roster_index) "
+        "WHERE roster_index IS NOT NULL "
+        "AND status IN ('waiting','ready_required','ready','active')"
+    )
     # Enforce one row per (run_id,gid,seat) so re-pushing a game is idempotent (the JS import path
     # relies on ON CONFLICT (run_id,gid,seat)). Once the index exists it guarantees no duplicates, so
     # do the (DML-issuing) dedup ONLY on first creation — running a DELETE on every conn() would leave
@@ -280,6 +345,19 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS game_players_rgs_uq "
             "ON game_players (run_id,gid,seat)"
+        )
+    # One row per (run_id,seq) on run_events (mirrors PG_MIGRATION_STMTS). Dedup once on first creation.
+    have_seq_idx = c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='run_events_run_seq_uq'"
+    ).fetchone()
+    if not have_seq_idx:
+        c.execute(
+            "DELETE FROM run_events WHERE rowid NOT IN ("
+            "  SELECT MIN(rowid) FROM run_events GROUP BY run_id,seq)"
+        )
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS run_events_run_seq_uq "
+            "ON run_events (run_id,seq)"
         )
 
 
@@ -379,21 +457,45 @@ def save_run(meta: dict):
     ph = _ph()
     metadata_json = json.dumps(meta.get("metadata") or {}) if "metadata" in meta else None
     with conn() as c:
+        # A NORMAL upsert must never overwrite an existing sharded parent/child (a reused or
+        # predictable id like '{parent}_shard_0'): the COALESCE below keeps run_kind, but the other
+        # SET columns would still mutate a live shard's label/status/deck/metadata. Reject it outright.
+        prior = c.execute(f"SELECT run_kind FROM runs WHERE id={ph}", (meta["id"],)).fetchone()
+        if (prior and (prior["run_kind"] in ("parent", "child"))
+                and (meta.get("run_kind") or "normal") == "normal"):
+            raise ValueError(
+                f"run id {meta['id']!r} already belongs to a sharded {prior['run_kind']}; "
+                f"refusing to overwrite it as a normal run")
         c.execute(
-            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
+            f"INSERT INTO runs (id,game,label,status,n_games,players,seed_base,created,agents_json,submitter,created_utc,deck_preset,metadata_json,run_kind,parent_run_id,shard_index,num_shards,join_token) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
             f"ON CONFLICT (id) DO UPDATE SET "
             f"  game=excluded.game, label=excluded.label, "
             f"  status=CASE WHEN runs.status IN ('done','partial') THEN runs.status ELSE excluded.status END, "
-            f"  n_games=excluded.n_games, players=excluded.players, seed_base=excluded.seed_base, "
-            f"  created=excluded.created, agents_json=excluded.agents_json, "
-            f"  submitter=excluded.submitter, created_utc=excluded.created_utc, "
+            # Creation-immutable fields: preserve existing values on a re-save/collision so an
+            # idempotent retry or a predictable-id collision can't mutate a run's schedule or
+            # regenerate created_utc under already-saved games (rating replays in created_utc order).
+            f"  n_games=COALESCE(runs.n_games, excluded.n_games), players=COALESCE(runs.players, excluded.players), "
+            f"  seed_base=COALESCE(runs.seed_base, excluded.seed_base), "
+            f"  created=COALESCE(runs.created, excluded.created), "
+            f"  agents_json=COALESCE(runs.agents_json, excluded.agents_json), "
+            f"  submitter=excluded.submitter, created_utc=COALESCE(runs.created_utc, excluded.created_utc), "
             f"  deck_preset=excluded.deck_preset, "
-            f"  metadata_json=COALESCE(excluded.metadata_json, runs.metadata_json)",
+            f"  metadata_json=COALESCE(excluded.metadata_json, runs.metadata_json), "
+            # Preserve existing shard identity: a NORMAL upsert (run_kind 'normal', null shard cols)
+            # whose id collides with an existing parent/child must NOT detach the shard (FINDING P2).
+            # An incoming sharded row (run_kind != 'normal') still wins, so create_sharded_run works.
+            f"  run_kind=COALESCE(NULLIF(excluded.run_kind,'normal'), runs.run_kind, 'normal'), "
+            f"  parent_run_id=COALESCE(excluded.parent_run_id, runs.parent_run_id), "
+            f"  shard_index=COALESCE(excluded.shard_index, runs.shard_index), "
+            f"  num_shards=COALESCE(excluded.num_shards, runs.num_shards), "
+            f"  join_token=COALESCE(excluded.join_token, runs.join_token)",
             (meta["id"], meta["game"], meta["label"], meta["status"], meta["n_games"],
              meta["players"], meta["seed_base"], meta["created"], json.dumps(meta["agents"]),
              meta.get("submitter"), meta.get("created_utc"), meta.get("deck_preset"),
-             metadata_json),
+             metadata_json,
+             meta.get("run_kind") or "normal", meta.get("parent_run_id"),
+             meta.get("shard_index"), meta.get("num_shards"), meta.get("join_token")),
         )
 
 
@@ -408,16 +510,14 @@ def mark_orphaned_local_runs_partial() -> int:
     """Recover in-process local runs left as running by a server shutdown/crash.
 
     Static local runs execute in a background thread owned by the server process. If that process
-    exits before the thread finishes, no worker can resume it. Connected runs and queued worker jobs
-    have external coordination state, so leave those alone.
+    exits before the thread finishes, nothing can resume it. Connected runs have external
+    coordination state (a signup roster), so leave those alone.
     """
-    ph = _ph()
     with conn() as c:
         cur = c.execute(
-            f"UPDATE runs SET status='partial' "
-            f"WHERE status='running' "
-            f"AND NOT EXISTS (SELECT 1 FROM run_signups s WHERE s.run_id = runs.id) "
-            f"AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.run_id = runs.id)",
+            "UPDATE runs SET status='partial' "
+            "WHERE status='running' "
+            "AND NOT EXISTS (SELECT 1 FROM run_signups s WHERE s.run_id = runs.id)"
         )
         return cur.rowcount or 0
 
@@ -451,119 +551,6 @@ def save_game(run_id: str, gid: int, transcript: dict, agents: list[dict]):
                  agent.get("agent_id"), agent.get("signup_id")),
             )
         return True
-
-
-def enqueue_job(job: dict) -> dict:
-    """Create a central queued job and its visible run row."""
-    now = job.get("created_utc") or _utcnow()
-    agents = job["agents"]
-    save_run({
-        "id": job["run_id"], "game": job["game"], "label": job["label"], "status": "queued",
-        "n_games": job["n_games"], "players": job["players"], "seed_base": job["seed_base"],
-        "created": job.get("created") or now[:16].replace("T", " "), "created_utc": now,
-        "submitter": job["owner"], "agents": agents, "deck_preset": job.get("deck_preset"),
-        "metadata": job.get("metadata") or {},
-    })
-    ph = _ph()
-    with conn() as c:
-        c.execute(
-            f"INSERT INTO jobs (id,run_id,owner,status,game,n_games,seed_base,rounds,players,"
-            f"agents_json,created_utc,updated_utc,lease_expires_utc,heartbeat_utc,worker_id,last_error,deck_preset) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}) "
-            f"ON CONFLICT (run_id) DO UPDATE SET "
-            f"  owner=excluded.owner, status=excluded.status, game=excluded.game, "
-            f"  n_games=excluded.n_games, seed_base=excluded.seed_base, rounds=excluded.rounds, "
-            f"  players=excluded.players, agents_json=excluded.agents_json, updated_utc=excluded.updated_utc, "
-            f"  deck_preset=excluded.deck_preset, "
-            f"  lease_expires_utc=NULL, heartbeat_utc=NULL, worker_id=NULL, last_error=NULL",
-            (job["id"], job["run_id"], job["owner"], "queued", job["game"], job["n_games"],
-             job["seed_base"], job["rounds"], job["players"], json.dumps(agents), now, now,
-             None, None, None, None, job.get("deck_preset")),
-        )
-    return get_job(job["id"])
-
-
-def get_job(job_id: str) -> dict | None:
-    ph = _ph()
-    with conn() as c:
-        row = c.execute(f"SELECT * FROM jobs WHERE id={ph}", (job_id,)).fetchone()
-        return _job(row)
-
-
-def claim_job(owner: str, worker_id: str, lease_seconds: int = 300) -> dict | None:
-    """Atomically claim the next queued or expired job for this owner."""
-    now, lease_until, ph = _utcnow(), _utc_after(lease_seconds), _ph()
-    with conn() as c:
-        if _is_pg():
-            row = c.execute(
-                """
-                WITH next_job AS (
-                  SELECT id FROM jobs
-                  WHERE owner=%s
-                    AND (status='queued' OR (status='running' AND lease_expires_utc < %s))
-                  ORDER BY created_utc
-                  FOR UPDATE SKIP LOCKED
-                  LIMIT 1
-                )
-                UPDATE jobs
-                SET status='running', worker_id=%s, lease_expires_utc=%s,
-                    heartbeat_utc=%s, updated_utc=%s
-                WHERE id=(SELECT id FROM next_job)
-                RETURNING *
-                """,
-                (owner, now, worker_id, lease_until, now, now),
-            ).fetchone()
-        else:
-            c.execute("BEGIN IMMEDIATE")
-            found = c.execute(
-                f"SELECT id FROM jobs WHERE owner={ph} "
-                f"AND (status='queued' OR (status='running' AND lease_expires_utc < {ph})) "
-                f"ORDER BY created_utc LIMIT 1",
-                (owner, now),
-            ).fetchone()
-            if not found:
-                return None
-            c.execute(
-                f"UPDATE jobs SET status='running', worker_id={ph}, lease_expires_utc={ph}, "
-                f"heartbeat_utc={ph}, updated_utc={ph} WHERE id={ph}",
-                (worker_id, lease_until, now, now, found["id"]),
-            )
-            row = c.execute(f"SELECT * FROM jobs WHERE id={ph}", (found["id"],)).fetchone()
-        if row:
-            c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'",
-                      ("running", row["run_id"]))
-        return _job(row)
-
-
-def heartbeat_job(job_id: str, worker_id: str, lease_seconds: int = 300) -> bool:
-    now, lease_until, ph = _utcnow(), _utc_after(lease_seconds), _ph()
-    with conn() as c:
-        cur = c.execute(
-            f"UPDATE jobs SET lease_expires_utc={ph}, heartbeat_utc={ph}, updated_utc={ph} "
-            f"WHERE id={ph} AND worker_id={ph} AND status='running'",
-            (lease_until, now, now, job_id, worker_id),
-        )
-        return cur.rowcount > 0
-
-
-def finish_job(job_id: str, worker_id: str, status: str, error: str | None = None) -> bool:
-    if status not in {"done", "partial", "failed"}:
-        raise ValueError(f"invalid job status: {status}")
-    now, ph = _utcnow(), _ph()
-    run_status = "done" if status == "done" else "partial"
-    with conn() as c:
-        job = c.execute(f"SELECT run_id FROM jobs WHERE id={ph} AND worker_id={ph}",
-                        (job_id, worker_id)).fetchone()
-        if not job:
-            return False
-        cur = c.execute(
-            f"UPDATE jobs SET status={ph}, updated_utc={ph}, lease_expires_utc=NULL, "
-            f"heartbeat_utc={ph}, last_error={ph} WHERE id={ph} AND worker_id={ph}",
-            (status, now, now, error, job_id, worker_id),
-        )
-        c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status != 'done'",
-                  (run_status, job["run_id"]))
-        return cur.rowcount > 0
 
 
 def list_runs() -> list[dict]:
@@ -616,6 +603,17 @@ def get_game(run_id: str, gid: int) -> dict | None:
         return json.loads(r["transcript_json"]) if r else None
 
 
+def update_game_transcript(run_id: str, gid: int, transcript: dict) -> bool:
+    """Replace a stored transcript JSON blob without touching scoring columns or player rows."""
+    ph = _ph()
+    with conn() as c:
+        cur = c.execute(
+            f"UPDATE games SET transcript_json={ph} WHERE run_id={ph} AND gid={ph}",
+            (json.dumps(transcript), run_id, gid),
+        )
+        return (cur.rowcount or 0) > 0
+
+
 def player_rows(run_id: str) -> list[dict]:
     ph = _ph()
     with conn() as c:
@@ -623,6 +621,16 @@ def player_rows(run_id: str) -> list[dict]:
             f"SELECT gid, seat, agent, agent_id, signup_id, model, team, won, dealt_role, end_role, calls, forfeits "
             f"FROM game_players WHERE run_id={ph}", (run_id,)).fetchall()
         return [dict(r) for r in rows]
+
+
+def child_run_ids(parent_id: str) -> list[str]:
+    """The shard child run ids for a parent, in shard order. Empty for a non-parent id."""
+    ph = _ph()
+    with conn() as c:
+        rows = c.execute(
+            f"SELECT id FROM runs WHERE parent_run_id={ph} ORDER BY shard_index", (parent_id,)
+        ).fetchall()
+        return [r["id"] for r in rows]
 
 
 # --- rating engine I/O (consumed by arena/rating.py) ------------------------------------------
@@ -884,6 +892,11 @@ def create_connected_run(meta: dict) -> dict:
         "agents": meta.get("agents", []),
         "deck_preset": meta.get("deck_preset"),
         "metadata": meta.get("metadata") or {},
+        "run_kind": meta.get("run_kind") or "normal",
+        "parent_run_id": meta.get("parent_run_id"),
+        "shard_index": meta.get("shard_index"),
+        "num_shards": meta.get("num_shards"),
+        "join_token": meta.get("join_token"),
     })
     return get_run(run_id)
 
@@ -899,6 +912,9 @@ def list_open_runs(game: str | None = None) -> list[dict]:
         for row in rows:
             r = dict(row)
             if r["status"] not in OPEN_RUN_STATUSES:
+                continue
+            # INV-4: shard parents/children are never publicly discoverable or joinable.
+            if (r.get("run_kind") or "normal") != "normal":
                 continue
             signed = c.execute(
                 f"SELECT COUNT(*) n FROM run_signups WHERE run_id={ph} "
@@ -975,8 +991,18 @@ def _active_signups(c, run_id: str) -> list[dict]:
 
 def _refresh_run_roster(c, run_id: str, signups: list[dict]) -> None:
     ph = _ph()
+    # Persist the roster ordered by ASSIGNED SEAT so runs.agents[seat] is the agent seated there
+    # (FINDING #1 / SPEC D5/REQ-7). `signups` arrives in arrival order (created_utc,id); once seats
+    # are assigned (_maybe_ready_required), an explicit roster_index can differ from arrival order,
+    # so detail/push/import paths that index by seat would otherwise mis-attribute agents. When no
+    # seat is assigned yet (still waiting) we keep arrival order. INV-2: for normal runs seats are
+    # assigned in arrival order, so this sort is a no-op (byte-identical roster).
+    ordered = sorted(
+        enumerate(signups),
+        key=lambda iz: (iz[1].get("seat") is None, iz[1].get("seat", iz[0]), iz[0]),
+    )
     agents = [{"name": s["display_name"], "model": "connected-agent", "harness": "connected",
-               "agent_id": s["agent_id"], "signup_id": s["id"]} for s in signups]
+               "agent_id": s["agent_id"], "signup_id": s["id"]} for _, s in ordered]
     c.execute(f"UPDATE runs SET agents_json={ph} WHERE id={ph}", (json.dumps(agents), run_id))
 
 
@@ -992,28 +1018,80 @@ def _maybe_ready_required(c, run_id: str, ready_deadline_seconds: int = 60) -> N
         c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("waiting", run_id))
         return
     deadline = _utc_after(ready_deadline_seconds)
-    for seat, signup in enumerate(signups[:int(run["players"])]):
+    seated = signups[:int(run["players"])]
+    # Deterministic explicit seats (SPEC D5/REQ-7): if EVERY seated signup carries a roster_index,
+    # the orchestrator chose the seats — assign by that index. Otherwise fall back to arrival order
+    # (enumerate over created_utc,id), byte-identical to the pre-sharding behavior (INV-2).
+    if seated and all(s.get("roster_index") is not None for s in seated):
+        seat_of = {s["id"]: int(s["roster_index"]) for s in seated}
+    else:
+        seat_of = {s["id"]: seat for seat, s in enumerate(seated)}
+    for signup in seated:
         if signup["status"] == "waiting":
             c.execute(
                 f"UPDATE run_signups SET status={ph}, seat={ph}, ready_deadline_utc={ph}, updated_utc={ph} "
                 f"WHERE id={ph}",
-                ("ready_required", seat, deadline, _utcnow(), signup["id"]),
+                ("ready_required", seat_of[signup["id"]], deadline, _utcnow(), signup["id"]),
             )
     c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("ready_required", run_id))
     _refresh_run_roster(c, run_id, _active_signups(c, run_id)[:int(run["players"])])
 
 
 def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
-                  waiting_seconds: int = 600) -> tuple[dict | None, str | None]:
+                  waiting_seconds: int = 600, seat: int | None = None,
+                  join_token: str | None = None) -> tuple[dict | None, str | None]:
     """Create or return this agent's active signup for a run.
 
-    Returns (signup, error_reason). error_reason is one of run_not_found, run_full, run_not_open.
+    Returns (signup, error_reason). error_reason is one of run_not_found, run_full, run_not_open,
+    run_not_joinable.
+
+    `seat` is an OPTIONAL explicit seat index (the orchestrator's deterministic-seat request, SPEC
+    D5/REQ-7). It is stored as `roster_index` and honored by `_maybe_ready_required` when EVERY
+    active signup carries one; otherwise seating stays arrival-order (INV-2). It does NOT change
+    `run_full`/`run_not_open` semantics — placement is resolved at fill time, not on insert.
+
+    `join_token` gates shard runs (INV-4 / SPEC D7). A `run_kind='parent'` run is NEVER joinable
+    (it is a presentational umbrella) -> `run_not_joinable`. A `run_kind='child'` shard is joinable
+    ONLY when `join_token` matches the child row's `join_token` (set by `create_sharded_run`);
+    absent/wrong -> `run_not_joinable`. A `run_kind='normal'` run ignores the token entirely, so
+    normal/discovered signups are byte-identical to before (INV-2).
     """
     now, ph = _utcnow(), _ph()
     with conn() as c:
         run = c.execute(f"SELECT * FROM runs WHERE id={ph}", (run_id,)).fetchone()
         if not run:
             return None, "run_not_found"
+        run_kind = (run["run_kind"] if "run_kind" in run.keys() else None) or "normal"
+        if run_kind == "parent":
+            return None, "run_not_joinable"
+        if run_kind == "child":
+            expected = run["join_token"] if "join_token" in run.keys() else None
+            if not expected or join_token != expected:
+                return None, "run_not_joinable"
+        # FINDING #3 (codex round-5): bounds-check an EXPLICIT seat against run.players BEFORE insert.
+        # _maybe_ready_required only assigns roster_index < players, so an out-of-range (or non-int)
+        # seat would leave this signup unseated forever and wedge the shard in waiting/ready_required.
+        # A signup with NO seat (normal runs) skips this entirely (INV-2).
+        if seat is not None:
+            # bool is an int subclass: a JSON true/false must NOT silently coerce to seat 1/0.
+            if isinstance(seat, bool) or not isinstance(seat, int):
+                return None, "invalid_seat"
+            seat_idx = seat
+            if seat_idx < 0 or seat_idx >= int(run["players"]):
+                return None, "invalid_seat"
+            # FINDING #3 (codex round-6): an explicit seat must be UNIQUE among active signups in this
+            # run. Without this, two agents could claim the same seat and _maybe_ready_required would
+            # assign duplicate seats, corrupting the deterministic identity->seat contract (SPEC D5/V-7).
+            # A signup with NO seat is unaffected (INV-2). We exclude this agent's own active signup
+            # (a re-create returns the existing row below and must not collide with itself).
+            taken = c.execute(
+                f"SELECT 1 FROM run_signups WHERE run_id={ph} AND agent_id!={ph} "
+                f"AND roster_index={ph} "
+                f"AND status IN ('waiting','ready_required','ready','active')",
+                (run_id, agent_id, seat_idx),
+            ).fetchone()
+            if taken:
+                return None, "invalid_seat"
         existing = c.execute(
             f"SELECT * FROM run_signups WHERE run_id={ph} AND agent_id={ph} "
             f"AND status NOT IN ('completed','rejected','expired','cancelled')",
@@ -1035,13 +1113,45 @@ def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
         if identity_err:
             return None, identity_err
         signup_id = f"signup_{uuid.uuid4().hex[:16]}"
-        c.execute(
-            f"INSERT INTO run_signups (id,run_id,agent_id,status,seat,created_utc,updated_utc,"
-            f"waiting_expires_utc,ready_deadline_utc,last_poll_utc,last_event_id,max_concurrent_turns) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
-            (signup_id, run_id, agent_id, "waiting", None, now, now, _utc_after(waiting_seconds),
-             None, None, None, int(max_concurrent_turns)),
-        )
+        # FINDINGS #2/#3: the seat pre-check above is a friendly fast path but NON-ATOMIC (TOCTOU): a
+        # concurrent signup could pass the same check and race us here. The partial unique index
+        # uq_run_signups_run_roster makes the INSERT the authoritative arbiter — catch its violation and
+        # return invalid_seat so a racing duplicate seat is rejected atomically. No-seat (NULL) signups
+        # are excluded by the partial index, so this never fires for normal runs (INV-2).
+        try:
+            c.execute(
+                f"INSERT INTO run_signups (id,run_id,agent_id,status,seat,created_utc,updated_utc,"
+                f"waiting_expires_utc,ready_deadline_utc,last_poll_utc,last_event_id,max_concurrent_turns,"
+                f"roster_index) "
+                f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                (signup_id, run_id, agent_id, "waiting", None, now, now, _utc_after(waiting_seconds),
+                 None, None, None, int(max_concurrent_turns),
+                 int(seat) if seat is not None else None),
+            )
+        except _seat_unique_violation() as exc:
+            # Postgres aborts the transaction on a constraint violation; roll back so the conn()
+            # context-manager's commit-on-exit doesn't fail. SQLite tolerates a rollback here too.
+            try:
+                c.rollback()
+            except Exception:
+                pass
+            # ONLY the explicit-seat index (uq_run_signups_run_roster) is a seat error. A racing
+            # duplicate (run_id, agent_id) signup must reload the existing signup, NOT report
+            # 'invalid_seat' (codex round-9). An unrecognized violation re-raises rather than mislabel.
+            if _is_seat_index_violation(exc):
+                return None, "invalid_seat"
+            # A (run_id, agent_id) violation means a signup for this agent already exists (a racing
+            # duplicate, or this agent's prior — possibly expired — signup). Reload and return it
+            # rather than mislabel it 'invalid_seat'. Status-agnostic: any collision means a row exists.
+            raced = c.execute(
+                f"SELECT * FROM run_signups WHERE run_id={ph} AND agent_id={ph}",
+                (run_id, agent_id),
+            ).fetchone()
+            if raced:
+                _maybe_ready_required(c, run_id)
+                return _rowdict(c.execute(f"SELECT * FROM run_signups WHERE id={ph}",
+                                          (raced["id"],)).fetchone()), None
+            raise
         _maybe_ready_required(c, run_id)
         return _rowdict(c.execute(f"SELECT * FROM run_signups WHERE id={ph}", (signup_id,)).fetchone()), None
 
@@ -1115,6 +1225,27 @@ def set_coordinator_url(run_id: str, url: str | None) -> None:
         c.execute(f"UPDATE runs SET coordinator_url={ph} WHERE id={ph}", (url, run_id))
 
 
+def claim_coordinator_spawn(run_id: str, lease_seconds: int = 120) -> bool:
+    """Atomically claim the right to spawn THE coordinator for an open connected run. Returns True for
+    exactly one caller; a concurrent or retried spawn trigger (a re-fired Vercel fetch, a double POST)
+    gets False — so only one coordinator container is launched per run, preventing two coordinators
+    double-driving it (duplicate events, double-finalization).
+
+    The claim is a short LEASE: if the spawn crashes before the container publishes its coordinator_url,
+    the lease expires and a later trigger can re-claim. Once coordinator_url is set the run is
+    coordinated and never re-claimed; once it leaves 'open' it is no longer claimable. This replaces the
+    spawn endpoint's non-atomic get_run() check-then-spawn (a TOCTOU)."""
+    now, lease_until, ph = _utcnow(), _utc_after(lease_seconds), _ph()
+    with conn() as c:
+        cur = c.execute(
+            f"UPDATE runs SET coordinator_lease_utc={ph} "
+            f"WHERE id={ph} AND status='open' AND coordinator_url IS NULL "
+            f"AND (coordinator_lease_utc IS NULL OR coordinator_lease_utc < {ph})",
+            (lease_until, run_id, now),
+        )
+        return (cur.rowcount or 0) == 1
+
+
 def activate_run_if_ready(run_id: str) -> int:
     """Coordinator-driven, race-free activation. When enough seated signups are ready, promote them
     to active in ONE authoritative write, mark the run running, and emit the active event (once).
@@ -1175,24 +1306,47 @@ def update_run_signups_status(run_id: str, status: str,
                       (status, now, run_id))
 
 
+_SEQ_RETRIES = 8  # racing appenders contend for COALESCE(MAX(seq),0)+1; UNIQUE(run_id,seq) + retry
+
+
 def append_event_tx(c, run_id: str, event_type: str, payload: dict,
                     visibility: str = "public", target_signup_id: str | None = None,
                     game_instance_id: str | None = None, phase: str | None = None) -> dict:
+    """Append an event with a per-run monotonic seq. seq = MAX+1 is allocated under READ COMMITTED, so
+    two concurrent appenders (the HTTP thread via append_event and the coordinator thread calling this
+    directly) can pick the same seq. UNIQUE(run_id,seq) rejects the loser and we retry with a fresh
+    MAX+1. Postgres aborts the whole tx on the violation, so wrap the INSERT in a SAVEPOINT there;
+    SQLite aborts only the statement, so a plain retry in the same tx suffices."""
     ph = _ph()
-    row = c.execute(f"SELECT COALESCE(MAX(seq),0) + 1 n FROM run_events WHERE run_id={ph}",
-                    (run_id,)).fetchone()
-    seq = int(row["n"])
     now = _utcnow()
     event_id = f"evt_{uuid.uuid4().hex[:16]}"
-    c.execute(
-        f"INSERT INTO run_events (id,run_id,game_instance_id,seq,visibility,target_signup_id,phase,type,payload_json,created_utc) "
-        f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
-        (event_id, run_id, game_instance_id, seq, visibility, target_signup_id, phase,
-         event_type, json.dumps(payload), now),
-    )
-    return {"id": event_id, "run_id": run_id, "game_instance_id": game_instance_id,
-            "seq": seq, "visibility": visibility, "target_signup_id": target_signup_id,
-            "phase": phase, "type": event_type, "payload": payload, "created_utc": now}
+    unique_exc = _seat_unique_violation()  # the backend's IntegrityError type (PG/SQLite)
+    use_savepoint = _is_pg()
+    for attempt in range(_SEQ_RETRIES):
+        row = c.execute(f"SELECT COALESCE(MAX(seq),0) + 1 n FROM run_events WHERE run_id={ph}",
+                        (run_id,)).fetchone()
+        seq = int(row["n"])
+        if use_savepoint:
+            c.execute("SAVEPOINT ev_seq")
+        try:
+            c.execute(
+                f"INSERT INTO run_events (id,run_id,game_instance_id,seq,visibility,target_signup_id,phase,type,payload_json,created_utc) "
+                f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                (event_id, run_id, game_instance_id, seq, visibility, target_signup_id, phase,
+                 event_type, json.dumps(payload), now),
+            )
+        except unique_exc as exc:
+            if use_savepoint:
+                c.execute("ROLLBACK TO SAVEPOINT ev_seq")
+            if _is_run_seq_violation(exc) and attempt < _SEQ_RETRIES - 1:
+                continue  # a concurrent append took this seq — recompute MAX+1 and retry
+            raise
+        if use_savepoint:
+            c.execute("RELEASE SAVEPOINT ev_seq")
+        return {"id": event_id, "run_id": run_id, "game_instance_id": game_instance_id,
+                "seq": seq, "visibility": visibility, "target_signup_id": target_signup_id,
+                "phase": phase, "type": event_type, "payload": payload, "created_utc": now}
+    raise RuntimeError(f"append_event: exhausted {_SEQ_RETRIES} seq retries for run {run_id}")
 
 
 def append_event(run_id: str, event_type: str, payload: dict,

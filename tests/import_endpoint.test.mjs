@@ -12,12 +12,12 @@
 // Exits non-zero on the first failed assertion (node:assert throws).
 process.env.DATABASE_URL ||= 'postgres://u:p@localhost/db';
 
-import assert from 'node:assert/strict';
-import {
+const assert = await import('node:assert/strict');
+const {
   gameToSqlParams, runHeaderToSqlParams,
   RUNS_UPSERT, GAMES_INSERT, PLAYERS_INSERT,
-} from '../api/runs/import.js';
-import { agentFromToken } from '../api/_db.js';
+} = await import('../api/runs/import.js');
+const { agentFromToken } = await import('../api/_db.js');
 
 let passed = 0;
 function ok(name, fn) {

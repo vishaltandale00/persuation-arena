@@ -198,8 +198,9 @@ def test_game_player_count(tmp_path, monkeypatch):
 
 # --- arena run is local-only (never touches the remote DB) -------------------
 def test_run_drops_database_url_local_only(monkeypatch):
-    """`arena run` must NEVER use a remote DB: it drops DATABASE_URL so the store is local SQLite.
-    The only path to the prod leaderboard is `arena push` (the Vercel JS API)."""
+    """`arena run` must NEVER use a remote DB. The fail-safe _dispatch() drops DATABASE_URL before
+    any non-remote subcommand runs, so the store is local SQLite. The only path to the prod
+    leaderboard is `arena push` (the Vercel JS API)."""
     monkeypatch.setenv("DATABASE_URL", "postgres://bogus:bogus@localhost:1/none")
     captured = {}
 
@@ -213,8 +214,10 @@ def test_run_drops_database_url_local_only(monkeypatch):
         deck, deal_schedule, port = "arena", None, 8000
         reasoning_effort = max_tokens_per_turn = temperature = retries = prior_message_turns = None
 
-    cli._run(_Args())
-    assert captured["db_url_at_call"] is None  # DATABASE_URL was set, but `arena run` dropped it
+    args = _Args()
+    args.func = cli._run  # instance attr -> unbound; dispatch checks identity then calls it
+    cli._dispatch(args)  # the central guard drops DATABASE_URL, then runs _run
+    assert captured["db_url_at_call"] is None  # DATABASE_URL was set, but dispatch dropped it
 
 
 def test_use_local_store_pops_database_url(monkeypatch):

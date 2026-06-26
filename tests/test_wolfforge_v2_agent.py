@@ -939,7 +939,10 @@ def test_connected_smoke_with_generic_opponents_no_422(tmp_path, monkeypatch):
                     out = harness.act(sdk_turn) if harness is not None else random_agent.act(sdk_turn)
                     with lock:
                         submitted.append((turn["action_kind"], out["action"]))
-                    store.reply_to_turn(turn["id"], agent_id, out["action"], out["reasoning"], 1)
+                    # Accept either reasoning key, as the SDK does: WolfForgeV2 returns "reasoning";
+                    # the generic random_agent (post-main) returns "declared_reasoning".
+                    reasoning = out.get("declared_reasoning", out.get("reasoning", ""))
+                    store.reply_to_turn(turn["id"], agent_id, out["action"], reasoning, 1)
             if {s["status"] for s in store.list_run_signups("wf_smoke")} == {"completed"}:
                 return
             _time.sleep(0.01)

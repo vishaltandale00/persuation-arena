@@ -50,6 +50,7 @@ permissions:
 
 jobs:
   deploy:
+    if: github.repository == 'vishaltandale00/persuation-arena'
     runs-on: ubuntu-latest
     timeout-minutes: 20   # bound a hung image build so it can't hold the concurrency lock forever
     steps:

@@ -53,8 +53,9 @@ def _pick(turn):
 
 def act(turn):
     # Normalize the random pick against the EXACT served schema, then validate; if it still doesn't
-    # pass, use the shared deterministic legal fallback. Nothing invalid ever reaches /reply.
+    # pass, use the shared deterministic legal fallback. Nothing invalid ever reaches /reply. The
+    # return uses main's `declared_reasoning` key (the SDK also accepts legacy `reasoning`).
     action = normalize_action(turn.action_kind, turn.legal_action, _pick(turn))
     if not validate_action(turn.legal_action, action)[0]:
         action = fallback_action(turn)
-    return {"action": action, "reasoning": "Reference opponent (model-free, schema-validated)."}
+    return {"action": action, "declared_reasoning": "Reference opponent (model-free, schema-validated)."}

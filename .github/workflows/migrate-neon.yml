@@ -14,9 +14,9 @@
 # One-time setup (only the repo owner can do this):
 #   Settings -> Secrets and variables -> Actions -> New repository secret
 #     NEON_DATABASE_URL = <the prod Neon connection string>
-# Until that secret exists the job no-ops (it won't fail the build). After adding
-# it, run this workflow once via "Run workflow" (workflow_dispatch) to apply
-# immediately; thereafter it runs automatically whenever arena/store.py changes.
+# Until that secret exists the job warns and skips. After adding it, run this
+# workflow once via "Run workflow" (workflow_dispatch) to apply immediately;
+# thereafter it runs automatically whenever arena/store.py changes.
 name: Migrate Neon
 
 on:
@@ -37,6 +37,7 @@ concurrency:
 
 jobs:
   migrate:
+    if: github.repository == 'vishaltandale00/persuation-arena'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -58,7 +59,13 @@ jobs:
           DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
-            echo "NEON_DATABASE_URL secret not set — skipping. Add it in repo Settings -> Secrets to enable auto-migrate."
+            msg="NEON_DATABASE_URL secret not set; skipping Neon migration. Add it in repo Settings -> Secrets to enable auto-migrate."
+            echo "::warning title=Neon migration skipped::$msg"
+            {
+              echo "### Neon migration skipped"
+              echo
+              echo "$msg"
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           uv run python -c "from arena import store; store.init_schema(); print('Neon schema up to date (PG_SCHEMA_STMTS + PG_MIGRATION_STMTS applied)')"

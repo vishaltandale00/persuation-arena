@@ -46,7 +46,7 @@ class FileMemoryAgent:
             {"role": "user", "content": f"Your notes on the game so far:\n\n{memory}\n\n{action_request(turn)}"},
         ]
         action, reasoning, _ = decide(self.model, messages, turn)
-        return {"action": action, "reasoning": reasoning}
+        return {"action": action, "declared_reasoning": reasoning}
 
 
 # Module-level handlers for `arena-agent play ... examples/file_memory_agent.py` (model via env).
