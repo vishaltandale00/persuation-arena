@@ -70,6 +70,7 @@
   .panel .body{padding:14px 16px}
   .livepanel{margin-top:18px}
   .ovside{display:flex;flex-direction:column;gap:16px}
+  .results-panel{margin-top:18px}
   .cfg{display:grid;grid-template-columns:1fr 1fr;gap:12px 18px}
   .cfg .c .k{font-family:var(--mono);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint)}
   .cfg .c .v{margin-top:2px;font-size:13.5px}
@@ -84,13 +85,18 @@
   .agrow .meta,.agrow .conn{font-family:var(--mono);font-size:11px;color:var(--faint);overflow-wrap:anywhere}
   .agrow .conn{line-height:1.45}
   .pending{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
-  .winbars{display:flex;flex-direction:column;gap:8px}
-  .wb{display:flex;align-items:center;gap:9px}
-  .wb .nm{width:78px;font-size:13px} .wb .bar{height:8px;border-radius:4px;background:var(--accent)} .wb .c{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
-  .factions{display:flex;flex-direction:column;gap:9px}
-  .frow{border-top:1px solid var(--line);padding-top:9px}
-  .frow:first-child{border-top:0;padding-top:0}
-  .fname{font-weight:600;font-size:12px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .winbars{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px}
+  .wb{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px 10px;align-items:center;border:1px solid var(--line);border-radius:8px;background:#fcfcfc;padding:10px 12px}
+  .wb .nm{font-weight:600;font-size:13px;line-height:1.25;min-width:0}
+  .wb .pct{grid-column:2;grid-row:1;font-family:var(--mono);font-size:14px;font-weight:650;text-align:right;font-variant-numeric:tabular-nums}
+  .wb .barwrap{height:8px;border-radius:5px;background:var(--line);overflow:hidden}
+  .wb .bar{display:block;height:100%;min-width:2px;border-radius:5px;background:var(--accent)}
+  .wb .barwrap,.wb .c{grid-column:1/-1}
+  .wb .c{font-family:var(--mono);font-size:11px;color:var(--ink-2);line-height:1.35}
+  .wb .c .muted{color:var(--faint)}
+  .factions{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px}
+  .frow{border:1px solid var(--line);border-radius:8px;background:#fcfcfc;padding:10px}
+  .fname{font-weight:600;font-size:12.5px;margin-bottom:8px;line-height:1.25;overflow-wrap:anywhere}
   .fpairs{display:grid;grid-template-columns:1fr 1fr;gap:7px}
   .fcell{border:1px solid var(--line-2);border-radius:7px;padding:7px 8px;min-width:0;background:#fcfcfc}
   .fcell.good{background:var(--good-soft);border-color:#cfe6df}
@@ -100,7 +106,7 @@
   .fcell.good .fpct{color:var(--good)}
   .fcell.evil .fpct{color:var(--evil)}
   .fn{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:1px}
-  .teamsplit{display:flex;gap:8px;margin-bottom:4px}
+  .teamsplit{display:flex;gap:10px;margin-bottom:12px}
   .ts{flex:1;border:1px solid var(--line-2);border-radius:8px;padding:10px;text-align:center}
   .ts .n{font-size:18px;font-weight:600} .ts.good{background:var(--good-soft);border-color:#cfe6df} .ts.good .n{color:var(--good)} .ts.evil{background:var(--evil-soft);border-color:#ecccca} .ts.evil .n{color:var(--evil)}
   .ts .k{font-family:var(--mono);font-size:11px;text-transform:uppercase;color:var(--faint);margin-top:2px}
@@ -130,7 +136,7 @@
   .grow2:last-child{border-bottom:0} .grow2:hover{background:var(--hover)} .grow2:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
   .grow2.live{color:var(--ink)}
   .grow2 .gid{font-family:var(--mono);font-size:12px} .grow2 .gseed{font-family:var(--mono);font-size:11px;color:var(--faint)}
-  .grow2 .gline{font-size:13px;color:var(--ink-2)}
+  .grow2 .gline{font-size:13px;color:var(--ink-2);min-width:0;line-height:1.35}
   .wtag{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:5px;justify-self:start}
   .wtag.good{background:var(--good-soft);color:var(--good)} .wtag.evil{background:var(--evil-soft);color:var(--evil)} .wtag.void{background:var(--sel);color:var(--faint)}
   .replay{font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid var(--line-2);border-radius:5px;padding:1px 6px;justify-self:end}
@@ -161,6 +167,9 @@
   .pc1 .nm{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis} .pc1 .seat{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint)}
   .pc-model{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .pc-role{margin-top:7px;display:flex;align-items:center;gap:6px}
+  .pc-states{margin-top:7px;display:grid;gap:3px}
+  .pc-state{display:grid;grid-template-columns:34px minmax(0,1fr);align-items:center;gap:4px}
+  .pc-state .k{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
   .roletag{font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
   .roletag.good{background:var(--good-soft);color:var(--good)} .roletag.evil{background:var(--evil-soft);color:var(--evil)}
   .deadtag{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--evil)}
@@ -203,6 +212,9 @@
   .cards{display:flex;flex-wrap:wrap;gap:5px}
   .card{font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:4px;border:1px solid var(--line-2);color:var(--ink-2)}
   .card.good{color:var(--good);border-color:#cfe6df;background:var(--good-soft)} .card.evil{color:var(--evil);border-color:#ecccca;background:var(--evil-soft)}
+  .state-subhead{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:10px 0 5px;font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint)}
+  .state-subhead:first-child{margin-top:0}
+  .state-subhead .note{font-size:9px;letter-spacing:0;text-transform:none;text-align:right}
   .trow{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line)} .trow:last-child{border-bottom:0} .trow .who{font-size:13px}
   .ledger{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
   .ledger li{font-size:12px;color:var(--ink-2);display:flex;gap:8px} .ledger .n{font-family:var(--mono);font-size:11px;color:var(--faint);flex:none}
@@ -303,7 +315,7 @@
     .livegame{grid-template-columns:1fr;height:auto}
     .ovgrid{grid-template-columns:1fr}
     .rt-head,.rt-row{grid-template-columns:16px minmax(92px,.7fr) minmax(0,1fr) 96px;gap:10px} .rt-head span:nth-child(n+4),.rt-ng,.rt-when{display:none}
-    .gh,.grow2{grid-template-columns:16px 70px 1fr 96px;gap:10px} .gh span:nth-child(n+5),.grow2 .gseed,.replay{display:none}
+    .gh,.grow2{grid-template-columns:16px 70px minmax(0,1fr) 96px;gap:10px} .gh span:nth-child(n+5),.grow2 .gseed,.replay{display:none}
     .keyrow{grid-template-columns:1fr}
     .run-settings{grid-template-columns:repeat(3,minmax(0,1fr))}
     .lobby-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -332,8 +344,13 @@
     .connrow .sub{overflow-wrap:anywhere}
     .ev{grid-template-columns:38px minmax(0,1fr);gap:5px 8px}
     .ev .pay{grid-column:1/-1}
-    .gh,.grow2{grid-template-columns:16px 1fr;gap:10px}
-    .gh span:nth-child(n+3),.grow2 .gline,.grow2 .wtag{display:none}
+    .teamsplit{flex-direction:column}
+    .fpairs{grid-template-columns:1fr}
+    .gh,.grow2{grid-template-columns:16px minmax(0,1fr) auto;gap:5px 10px}
+    .gh span:nth-child(n+3){display:none}
+    .grow2 .gid{grid-column:2;grid-row:1}
+    .grow2 .gline{grid-column:2/-1;grid-row:2;display:block}
+    .grow2 .wtag{grid-column:3;grid-row:1;display:inline-block}
     .run-settings{grid-template-columns:1fr}
     .lobby-grid{grid-template-columns:1fr}
     .advanced{grid-template-columns:1fr}
@@ -434,11 +451,11 @@
           <div class="gh"><span></span><span>Game</span><span>Seed</span><span>Result</span><span>Winner</span><span></span></div>
           <div id="ovgames"></div>
         </div>
+        <div class="panel results-panel"><h3>Results</h3><div class="body" id="ovresults"></div></div>
       </div>
       <div class="ovside">
         <div class="panel"><h3>Agents</h3><div class="body"><div class="agtable" id="ovagents"></div><div id="ovpending"></div></div></div>
         <div class="panel"><h3>Settings</h3><div class="body"><div class="cfg" id="ovcfg"></div></div></div>
-        <div class="panel"><h3>Results</h3><div class="body" id="ovresults"></div></div>
       </div>
     </div>
   </div>
@@ -538,7 +555,7 @@
               <div class="control"><label>Prior turns</label>
                 <input type="text" id="nf-prior" placeholder="all"></div>
             </div>
-            <div class="run-mode" id="nf-mode">Local server runs immediately; hosted deployments queue for a worker.</div>
+            <div class="run-mode" id="nf-mode">The local server runs this comparison immediately, in-process.</div>
           </div>
         </section>
         </div>
@@ -581,8 +598,10 @@
 
 <div class="toast" id="toast">Saved</div>
 
-<script>
+<script type="module">
 "use strict";
+
+import { onuwStartingCenter, roleTeam } from "./observer-state.js";
 
 const DECK_LABELS={arena:"Arena pressure",classic:"Classic",tanner:"Tanner puzzle"};
 function tagOf(n){ return (n[0]+(n[1]||"")).toUpperCase(); }
@@ -608,6 +627,8 @@ function renderMentions(text,m){
 
 /* ===== RUNS — each has its own agent roster (same agents only within the run) ===== */
 const API="/api";  // same-origin Vercel serverless functions under /api
+// Diagonal: localhost serves the Python app (static in-process runs); prod (Vercel) is connected-only.
+const IS_LOCAL=["localhost","127.0.0.1","[::1]","::1"].includes(location.hostname)||location.hostname.endsWith(".local");
 let RUNS={}, RUN_ORDER=[];
 let curDebug=null;
 const TRANSCRIPTS={};
@@ -904,6 +925,7 @@ function renderRunOverview(){
     (curRun.game==="onuw"?cfgItem("Deal schedule",((curRun.dealSchedule||{}).mode==="balanced"?"Balanced roles":"Random")):"")+
     (curRun.deck&&curRun.deck.length?cfgItem("Roles",curRun.deck.join(", ")):"")+
     cfgItem("Status",curRun.status==="done"?"Completed":curRun.status==="partial"?"Partial":running?("Running · "+prog):runStatusLabel(curRun))+
+    cfgItem("Total cost",formatCost(curRun.usage&&curRun.usage.cost))+
     cfgItem("Reasoning effort",rc.reasoning_effort||"—")+
     cfgItem("Max tokens / response",rc.max_tokens_per_turn||"—")+
     cfgItem("Temperature",rc.temperature!=null?rc.temperature:"—")+
@@ -923,7 +945,10 @@ function renderRunOverview(){
         const s=(sc[a.name]&&sc[a.name].overall)||{rate:0,lo:0,hi:0,n:0};
         const rel=sc[a.name]||{calls:0,forfeits:0,forfeit_rate:0};
         const pct=Math.round(s.rate*100),lo=Math.round(s.lo*100),hi=Math.round(s.hi*100);
-        return '<div class="wb"><span class="nm">'+esc(a.name)+'</span><span class="bar" style="width:'+(s.rate*120)+'px"></span><span class="c">'+pct+'% <span style="color:var(--faint)">('+lo+'–'+hi+'%, n='+s.n+' · forfeits '+rel.forfeits+'/'+rel.calls+')</span></span></div>';
+        return '<div class="wb"><span class="nm">'+esc(a.name)+'</span>'+
+          '<span class="pct">'+pct+'%</span>'+
+          '<span class="barwrap" aria-hidden="true"><span class="bar" style="width:'+pct+'%"></span></span>'+
+          '<span class="c"><span class="muted">CI</span> '+lo+'–'+hi+'% · <span class="muted">n</span> '+s.n+' · <span class="muted">forfeits</span> '+rel.forfeits+'/'+rel.calls+'</span></div>';
       }).join("")+'</div>'+
       '<div class="lbl" style="margin:16px 0 6px">By faction · win-rate</div>'+
       '<div class="factions">'+curRun.agents.map(a=>{
@@ -978,6 +1003,7 @@ function agentRow(a){
 }
 function cfgItem(k,v){ return '<div class="c"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>'; }
 function formatPriorTurns(v){ return v===-1?"All":(v!=null?v:"—"); }
+function formatCost(v){ return v!=null?"$"+Number(v).toFixed(4):"—"; }
 function relTime(ts){
   if(!ts) return "never";
   const t=Date.parse(ts); if(!Number.isFinite(t)) return ts;
@@ -1142,9 +1168,15 @@ function renderStrip(){
     b.className="pcard"+(selected===pid?" sel":"")+(dead.includes(pid)?" dead":"");
     b.onclick=()=>{ selected=(selected===pid?null:pid); renderStrip(); renderState(); };
     const act=lastActionFor(pid);
+    const roles=curRun.game==="onuw"
+      ? '<div class="pc-states">'+
+          '<div class="pc-state"><span class="k">start</span><span><span class="roletag '+teamCls(roleTeam(m,pl.dealt))+'">'+pl.dealt+'</span></span></div>'+
+          '<div class="pc-state"><span class="k">end</span><span><span class="roletag '+teamCls(roleTeam(m,pl.end))+'">'+pl.end+'</span>'+(dead.includes(pid)?'<span class="deadtag"> eliminated</span>':'')+'</span></div>'+
+        '</div>'
+      : '<div class="pc-role"><span class="roletag '+teamCls(pl.team)+'">'+pl.end+'</span>'+(dead.includes(pid)?'<span class="deadtag">eliminated</span>':'')+'</div>';
     b.innerHTML='<div class="pc1"><span class="dot '+teamCls(pl.team)+'"></span><span class="nm">'+nm(pid)+'</span><span class="seat">s'+pl.seat+'</span></div>'+
       '<div class="pc-model">'+modelOf(pid)+'</div>'+
-      '<div class="pc-role"><span class="roletag '+teamCls(pl.team)+'">'+pl.end+'</span>'+(dead.includes(pid)?'<span class="deadtag">eliminated</span>':'')+'</div>'+
+      roles+
       (act?('<div class="pc-act"><span class="k">'+act.k+'</span>'+act.v+'</div>'):'');
     s.appendChild(b); });
 }
@@ -1153,16 +1185,34 @@ function reasoningText(v){
   if(v==null || v==="") return "";
   return typeof v==="string" ? v : JSON.stringify(v,null,2);
 }
+function hiddenModelTurnsHtml(turns){
+  if(!Array.isArray(turns)||!turns.length) return "";
+  const items=turns.map((t,i)=>{
+    const action=reasoningText(t.action);
+    const reason=reasoningText(t.reasoning);
+    const provider=reasoningText(t.provider_reasoning || t.provider_reasoning_details);
+    const raw=reasoningText(t.raw);
+    let inner="";
+    if(action) inner+='<div><div class="rk">Action</div><pre class="rtxt">'+esc(action)+'</pre></div>';
+    if(reason) inner+='<div><div class="rk">Declared reasoning</div><div class="rtxt">'+esc(reason)+'</div></div>';
+    if(provider) inner+='<div><div class="rk">Provider reasoning</div><div class="rtxt">'+esc(provider)+'</div></div>';
+    if(raw) inner+='<details><summary>Raw model output</summary><pre class="rtxt">'+esc(raw)+'</pre></details>';
+    return '<details><summary>Hidden model turn '+(i+1)+'</summary>'+inner+'</details>';
+  }).join("");
+  return '<div><div class="rk">Earlier hidden turns</div>'+items+'</div>';
+}
 function turnReasoningHtml(e){
   const declared=reasoningText(e.declared_reasoning);
   const provider=reasoningText(e.provider_reasoning || e.provider_reasoning_details);
   const raw=reasoningText(e.raw_model_output);
-  if(!declared && !provider && !raw) return "";
+  const hidden=hiddenModelTurnsHtml(e.hidden_model_turns_before);
+  if(!declared && !provider && !raw && !hidden) return "";
   let body="";
   if(declared) body+='<div><div class="rk">Declared reasoning</div><div class="rtxt">'+esc(declared)+'</div></div>';
   if(provider) body+='<div><div class="rk">Provider reasoning</div><div class="rtxt">'+esc(provider)+'</div></div>';
   if(raw) body+='<details><summary>Raw model output</summary><pre class="rtxt">'+esc(raw)+'</pre></details>';
-  const summary=provider&&declared?"Reasoning · declared + provider":(provider?"Reasoning · provider":"Reasoning · declared");
+  if(hidden) body+=hidden;
+  const summary=provider&&declared?"Reasoning · declared + provider":(provider?"Reasoning · provider":(declared?"Reasoning · declared":"Reasoning · hidden"));
   return '<details class="turn-reason"><summary>'+summary+'</summary><div class="rbody">'+body+'</div></details>';
 }
 function convoItem(m,e){
@@ -1195,9 +1245,17 @@ function synthBlock(p){ return block("Phase summary",
 function stateONUW(m){
   const cur=curPhase(); const p=m.phases[cur]; let h=synthBlock(p);
   h+=block("Cards in play (8)",'<div class="cards">'+m.cardsInPlay.map(c=>'<span class="card '+teamCls(c[1])+'">'+c[0]+'</span>').join("")+'</div>');
-  let rows=m.players.map((pl,pid)=>'<div class="trow"><span class="who">'+nm(pid)+'</span><span class="roletag '+teamCls(pl.team)+'">'+pl.end+'</span></div>').join("");
-  rows+='<div class="cards" style="margin-top:7px">'+m.center.map((c,i)=>'<span class="card '+teamCls(c[1])+'">center '+(i+1)+': '+c[0]+'</span>').join("")+'</div>';
-  h+=block("End-of-night truth",rows);
+  const startingCenter=onuwStartingCenter(m);
+  const startingRows=m.players.map((pl,pid)=>'<div class="trow"><span class="who">'+nm(pid)+'</span><span class="roletag '+teamCls(roleTeam(m,pl.dealt))+'">'+pl.dealt+'</span></div>').join("");
+  const endingRows=m.players.map((pl,pid)=>'<div class="trow"><span class="who">'+nm(pid)+'</span><span class="roletag '+teamCls(roleTeam(m,pl.end))+'">'+pl.end+'</span></div>').join("");
+  h+=block("Starting state",
+    '<div class="state-subhead"><span>Players</span></div>'+startingRows+
+    '<div class="state-subhead"><span>Center cards</span><span class="note">original order unavailable</span></div>'+
+    '<div class="cards">'+startingCenter.map(c=>'<span class="card '+teamCls(c[1])+'">'+c[0]+'</span>').join("")+'</div>');
+  h+=block("Ending state",
+    '<div class="state-subhead"><span>Players</span></div>'+endingRows+
+    '<div class="state-subhead"><span>Center cards</span></div>'+
+    '<div class="cards">'+m.center.map((c,i)=>'<span class="card '+teamCls(c[1])+'">center '+(i+1)+': '+c[0]+'</span>').join("")+'</div>');
   const acts=m.phases[0].events.filter(e=>e.t==="act");
   h+=block("Night actions",'<ul class="ledger">'+acts.map((e,i)=>'<li><span class="n">'+(i+1)+'</span>'+e.text+'</li>').join("")+'</ul>');
   if(cur>=2){ const t=m.phases[2].tally; const mx=Math.max.apply(null,t.map(x=>x.n));
@@ -1242,7 +1300,7 @@ function setPlayUI(on){ const i=document.getElementById("playicon"),t=document.g
 
 /* STATIC RUN — fixed model roster, persisted transcripts/reasoning/results */
 let MODEL_CATALOG=[], modelCatalogLoaded=false;
-let nfMode="static";
+let nfMode=IS_LOCAL?"static":"connected";  // diagonal: localhost=static, prod=connected
 let nfRows=[
   {name:"GPT-5.5",model:"openai/gpt-5.5"},
   {name:"Grok 4.20",model:"x-ai/grok-4.20"},
@@ -1278,6 +1336,7 @@ function renderNewRun(){
   document.getElementById("nf-deal-field").style.display=g==="onuw"?"":"none";
   const cg=document.getElementById("cf-game").value;
   document.getElementById("cf-deck-field").style.display=cg==="onuw"?"":"none";
+  document.getElementById("nf-mode-tabs").style.display="none";  // diagonal: one mode per environment
   document.getElementById("nf-static").classList.toggle("on",nfMode==="static");
   document.getElementById("nf-connected").classList.toggle("on",nfMode==="connected");
   document.querySelectorAll("#nf-mode-tabs button").forEach(b=>b.classList.toggle("on",b.dataset.mode===nfMode));
@@ -1353,12 +1412,8 @@ function runPayload(){
   return payload;
 }
 async function launchStaticRun(payload){
-  try{
-    return await jpost("/run",payload);
-  }catch(e){
-    if(e.status===404||e.status===405) return await jpost("/runs",payload);
-    throw e;
-  }
+  // localhost only: the Python server runs this comparison in-process. Prod (Vercel) has no /api/run.
+  return await jpost("/run",payload);
 }
 function connectedPayload(){
   const game=document.getElementById("cf-game").value;
@@ -1410,8 +1465,7 @@ document.getElementById("nf-launch").onclick=async ()=>{
     const payload=nfMode==="static"?runPayload():connectedPayload();
     const d=nfMode==="static"?await launchStaticRun(payload):await jpost("/runs",payload);
     if(nfMode==="static"){
-      const queued=d.status==="queued";
-      toast((queued?"Run queued: ":"Run started: ")+d.run_id+" — "+payload.agents.length+" models, "+payload.games+" games · "+payload.rounds+" discussion messages.");
+      toast("Run started: "+d.run_id+" — "+payload.agents.length+" models, "+payload.games+" games · "+payload.rounds+" discussion messages.");
     }else{
       toast("Lobby opened: "+d.run_id+" — "+payload.players+" seats, "+payload.games+" games · "+payload.rounds+" discussion messages.");
     }

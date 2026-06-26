@@ -95,21 +95,9 @@ def _pick_balanced_role(
     counts_by_spec: list[Counter[str]],
     spec_idx: int,
     *,
-    assigned: list[str],
-    seats_left_after: int,
     rng: random.Random,
 ) -> str:
     roles = list(remaining)
-    if "Werewolf" in remaining and "Werewolf" not in assigned and seats_left_after == 0:
-        roles = ["Werewolf"]
-    elif "Werewolf" in remaining and "Werewolf" not in assigned:
-        # Do not make a choice that leaves no possible wolf in play.
-        non_wolves_left = sum(n for role, n in remaining.items() if role != "Werewolf")
-        if non_wolves_left < seats_left_after:
-            roles = [
-                r for r in roles
-                if r == "Werewolf" or non_wolves_left - 1 >= seats_left_after
-            ]
     rng.shuffle(roles)
     return min(
         roles,
@@ -164,10 +152,6 @@ def _improve_balanced_deal(
             for c in range(len(center)):
                 if dealt[a] == center[c]:
                     continue
-                candidate_dealt = list(dealt)
-                candidate_dealt[a] = center[c]
-                if "Werewolf" not in candidate_dealt:
-                    continue
                 _delta_role(counts_by_spec, spec_a, dealt[a], center[c], 1)
                 score = _role_balance_score(counts_by_spec)
                 _delta_role(counts_by_spec, spec_a, center[c], dealt[a], 1)
@@ -199,7 +183,7 @@ def balanced_onuw_deal_schedule(
 
     Seat rotation remains the existing fairness primitive. This adds a deterministic greedy deal
     pass that minimizes the current deficit in the model-index x dealt-role matrix while respecting
-    the deck multiset and keeping at least one Werewolf in the dealt seats.
+    the deck multiset.
     """
     counts_by_spec = [Counter() for _ in range(n_players)]
     sched: list[DealScheduleEntry] = []
@@ -212,19 +196,15 @@ def balanced_onuw_deal_schedule(
         dealt: list[str | None] = [None] * n_players
         seat_order = list(range(n_players))
         rng.shuffle(seat_order)
-        assigned: list[str] = []
-        for idx, seat in enumerate(seat_order):
+        for seat in seat_order:
             spec_idx = (seat + rot) % n_players
             role = _pick_balanced_role(
                 remaining,
                 counts_by_spec,
                 spec_idx,
-                assigned=assigned,
-                seats_left_after=n_players - idx - 1,
                 rng=rng,
             )
             dealt[seat] = role
-            assigned.append(role)
             counts_by_spec[spec_idx][role] += 1
             remaining[role] -= 1
             if remaining[role] <= 0:

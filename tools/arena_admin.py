@@ -18,8 +18,8 @@ from pathlib import Path
 from arena import store
 
 # child tables keyed by run_id, deleted before the runs row; turn_replies is keyed by turn_id.
-RUN_TABLES = ["run_signups", "run_events", "game_players", "games", "jobs", "turns"]
-ALL_TABLES = ["runs", "games", "game_players", "jobs", "run_events",
+RUN_TABLES = ["run_signups", "run_events", "game_players", "games", "turns"]
+ALL_TABLES = ["runs", "games", "game_players", "run_events",
               "run_signups", "turns", "turn_replies", "agents"]
 
 

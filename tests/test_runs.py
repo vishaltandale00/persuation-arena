@@ -102,7 +102,7 @@ def test_balanced_onuw_schedule_balances_model_role_exposure():
     for _, _, _, deal in sched:
         assert deal is not None
         assert Counter(deal) == Counter(deck)
-        assert "Werewolf" in deal[:5]
+    assert any("Werewolf" not in deal[:5] for _, _, _, deal in sched)
 
     exposure = batch.schedule_role_exposure(sched, 5, SPECS)
     for role in set(deck):
@@ -110,18 +110,14 @@ def test_balanced_onuw_schedule_balances_model_role_exposure():
         assert max(counts) - min(counts) <= 1
 
 
-def test_every_scheduled_deal_has_a_wolf_in_play():
-    # require_wolf_in_play guarantees at least one Werewolf is dealt (never all benched in the
-    # center), so no scheduled game is an unrateable no-wolf round. This seed_base previously led
-    # with a zero-wolf deal; the guarantee now precludes it across the whole cycle.
+def test_random_deal_allows_all_wolves_in_center():
     from arena.games.onuw import ONUW
 
-    counts = []
-    for _, seed, _ in batch.fresh_deal_schedule(n_games=5, n_players=5, seed_base=702742):
-        core = ONUW({i: f"P{i}" for i in range(5)}, seed=seed)
-        core.deal()
-        counts.append(list(core.dealt.values()).count("Werewolf"))
-    assert all(c >= 1 for c in counts), counts
+    core = ONUW({i: f"P{i}" for i in range(5)}, seed=22)
+    core.deal()
+
+    assert list(core.dealt.values()).count("Werewolf") == 0
+    assert core.center.count("Werewolf") == 2
 
 
 # ---- batch resilience -------------------------------------------------------
