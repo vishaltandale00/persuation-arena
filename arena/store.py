@@ -109,7 +109,7 @@ PG_SCHEMA_STMTS = [
          id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
          players INTEGER, seed_base BIGINT, created TEXT, agents_json TEXT,
          submitter TEXT, created_utc TEXT, deck_preset TEXT, coordinator_url TEXT,
-         metadata_json TEXT,
+         coordinator_lease_utc TEXT, metadata_json TEXT,
          run_kind TEXT DEFAULT 'normal', parent_run_id TEXT, shard_index INTEGER, num_shards INTEGER,
          join_token TEXT
        )""",
@@ -176,7 +176,7 @@ _MIGRATIONS = {
     "game_players": [("calls", "INTEGER DEFAULT 0"), ("forfeits", "INTEGER DEFAULT 0"),
                      ("agent_id", "TEXT"), ("signup_id", "TEXT")],
     "runs": [("submitter", "TEXT"), ("created_utc", "TEXT"), ("deck_preset", "TEXT"),
-             ("coordinator_url", "TEXT"), ("metadata_json", "TEXT"),
+             ("coordinator_url", "TEXT"), ("coordinator_lease_utc", "TEXT"), ("metadata_json", "TEXT"),
              ("run_kind", "TEXT DEFAULT 'normal'"), ("parent_run_id", "TEXT"),
              ("shard_index", "INTEGER"), ("num_shards", "INTEGER"), ("join_token", "TEXT")],
     "agents": [("declared_model", "TEXT"), ("declared_harness", "TEXT")],
@@ -186,6 +186,7 @@ _MIGRATIONS = {
 PG_MIGRATION_STMTS = [
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS coordinator_url TEXT",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS coordinator_lease_utc TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS metadata_json TEXT",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_kind TEXT DEFAULT 'normal'",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS parent_run_id TEXT",
@@ -1185,6 +1186,27 @@ def set_coordinator_url(run_id: str, url: str | None) -> None:
     ph = _ph()
     with conn() as c:
         c.execute(f"UPDATE runs SET coordinator_url={ph} WHERE id={ph}", (url, run_id))
+
+
+def claim_coordinator_spawn(run_id: str, lease_seconds: int = 120) -> bool:
+    """Atomically claim the right to spawn THE coordinator for an open connected run. Returns True for
+    exactly one caller; a concurrent or retried spawn trigger (a re-fired Vercel fetch, a double POST)
+    gets False — so only one coordinator container is launched per run, preventing two coordinators
+    double-driving it (duplicate events, double-finalization).
+
+    The claim is a short LEASE: if the spawn crashes before the container publishes its coordinator_url,
+    the lease expires and a later trigger can re-claim. Once coordinator_url is set the run is
+    coordinated and never re-claimed; once it leaves 'open' it is no longer claimable. This replaces the
+    spawn endpoint's non-atomic get_run() check-then-spawn (a TOCTOU)."""
+    now, lease_until, ph = _utcnow(), _utc_after(lease_seconds), _ph()
+    with conn() as c:
+        cur = c.execute(
+            f"UPDATE runs SET coordinator_lease_utc={ph} "
+            f"WHERE id={ph} AND status='open' AND coordinator_url IS NULL "
+            f"AND (coordinator_lease_utc IS NULL OR coordinator_lease_utc < {ph})",
+            (lease_until, run_id, now),
+        )
+        return (cur.rowcount or 0) == 1
 
 
 def activate_run_if_ready(run_id: str) -> int:
