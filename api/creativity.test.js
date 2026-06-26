@@ -60,12 +60,31 @@ test('assembleCreativity groups overall and role rows by identity', () => {
     },
   ];
 
-  const out = assembleCreativity(rows, 'creativity_v1', '2026-06-26T00:00:00.000000Z');
+  const samples = [
+    {
+      identity_key: 'static:model-a:base',
+      role: 'Villager',
+      utterance_a: 'I am pushing a Seer claim now.',
+      utterance_b: 'That sounds like a late deflection.',
+      embedding_similarity: 0.21,
+      judge_similarity: 0.18,
+      distance: 0.82,
+      coherence_a: 'valid',
+      coherence_b: 'valid',
+      reason: 'Different persuasive moves.',
+      divergence_phrases_json: '["Seer claim","late deflection"]',
+    },
+  ];
+
+  const out = assembleCreativity(rows, 'creativity_v1', '2026-06-26T00:00:00.000000Z', samples);
 
   assert.equal(out.version, 'creativity_v1');
   assert.equal(out.competitors.length, 2);
   assert.equal(out.competitors[0].identity_key, 'static:model-a:base');
   assert.equal(out.competitors[0].overall_z, 1.25);
   assert.equal(out.competitors[0].by_role.Villager.raw_distance, 0.7);
+  assert.equal(out.competitors[0].samples.length, 1);
+  assert.equal(out.competitors[0].samples[0].distance, 0.82);
+  assert.deepEqual(out.competitors[0].samples[0].divergence_phrases, ['Seer claim', 'late deflection']);
   assert.equal(out.competitors[1].provisional, true);
 });

@@ -396,46 +396,62 @@
   .collap-h .ct{font-weight:650;font-size:14px} .collap-h .cc{font-family:var(--mono);font-size:11px;color:var(--faint)}
   .collap-b{padding:2px 16px 16px} .collap.collapsed .collap-b{display:none}
 
-  /* leaderboard table */
-  .lbtable{display:flex;flex-direction:column}
-  .lb-head,.lb-main{display:grid;grid-template-columns:30px 14px minmax(170px,1.5fr) 116px 56px minmax(120px,1fr) minmax(78px,.7fr);gap:10px;align-items:center}
-  .lb-head{padding:6px 10px;font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);border-bottom:1px solid var(--line)}
-  .lb-row{border-bottom:1px solid var(--line)} .lb-row:last-child{border-bottom:0}
-  .lb-main{padding:11px 10px;cursor:pointer;background:none;border:0;width:100%;text-align:left;font:inherit;color:var(--ink)}
-  .lb-main:hover{background:var(--hover)} .lb-main:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-  .lb-rank{font-family:var(--mono);font-size:12px;color:var(--ink-2)} .lb-caret{font-size:10px;color:var(--faint)}
-  .lb-who{min-width:0} .lb-name{font-weight:600} .lb-id{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:6px}
-  .lb-sub{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .lb-elo{font-family:var(--mono);font-weight:650;font-size:14px} .lb-elo .pm{color:var(--faint);font-weight:400;font-size:11px;margin-left:3px}
-  .lb-games{font-family:var(--mono);font-size:12px;color:var(--ink-2)} .lb-win{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
-  .lb-heat{display:flex;gap:2px;align-items:center;flex-wrap:wrap} .lb-heat .tk{width:9px;height:15px;border-radius:2px;background:var(--line-2)}
-  .lb-row.prov .lb-elo{color:var(--ink-2)} .prov-pill{display:inline-block;font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:5px;background:var(--sel);color:var(--ink-2);margin-left:6px;vertical-align:1px}
-  .lb-detail{padding:6px 12px 16px 54px;background:var(--bg);border-top:1px solid var(--line)}
-  .lb-obj{display:flex;gap:8px;margin:10px 0 12px;flex-wrap:wrap} .lb-obj .fcell{min-width:120px}
-  .roletbl{width:100%;border-collapse:collapse;font-size:12px}
-  .roletbl th{text-align:left;color:var(--faint);font-weight:500;font-family:var(--mono);font-size:10px;letter-spacing:.04em;text-transform:uppercase;padding:3px 8px;border-bottom:1px solid var(--line)}
-  .roletbl td{padding:4px 8px;border-bottom:1px solid var(--line);font-family:var(--mono)} .roletbl tr:last-child td{border-bottom:0}
-  .roletbl .nm{font-family:var(--sans)} .roletbl .spread.pos{color:var(--good)} .roletbl .spread.neg{color:var(--evil)}
-  .hardtag{font-family:var(--mono);font-size:9px;color:var(--evil);border:1px solid #ecccca;border-radius:4px;padding:0 4px;margin-left:6px}
-  .fcell.tanner{background:#faf3e6;border-color:#ecdcc0} .fcell.tanner .fpct{color:#a9791f}
-  .lb-empty{padding:20px 10px;color:var(--faint);font-size:13px}
-
-  /* creativity signal */
-  .creativity-note{font-size:12.5px;color:var(--ink-2);padding:4px 10px 12px;border-bottom:1px solid var(--line)}
-  .creativity-table{display:flex;flex-direction:column}
-  .cr-head,.cr-main{display:grid;grid-template-columns:30px 14px minmax(170px,1.5fr) 116px minmax(118px,.9fr) minmax(100px,.8fr);gap:10px;align-items:center}
-  .cr-head{padding:6px 10px;font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);border-bottom:1px solid var(--line)}
-  .cr-row{border-bottom:1px solid var(--line)} .cr-row:last-child{border-bottom:0}
-  .cr-main{padding:11px 10px;cursor:pointer;color:var(--ink)}
-  .cr-main:hover{background:var(--hover)} .cr-main:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-  .cr-rank,.cr-evidence{font-family:var(--mono);font-size:12px;color:var(--ink-2)}
-  .cr-caret{font-size:10px;color:var(--faint)}
-  .cr-name{font-weight:600}.cr-id{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:6px}
-  .cr-sub{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .cr-score{font-family:var(--mono);font-weight:650;font-size:14px}.cr-score .pm{color:var(--faint);font-weight:400;font-size:11px;margin-left:3px}
-  .cr-roles{display:flex;gap:2px;align-items:center;flex-wrap:wrap}.cr-roles .tk{width:9px;height:15px;border-radius:2px;background:var(--line-2)}
-  .cr-detail{padding:6px 12px 16px 54px;background:var(--bg);border-top:1px solid var(--line)}
-  @media(max-width:720px){ .lb-head .h-roles,.lb-heat{display:none} .lb-head,.lb-main{grid-template-columns:26px 14px 1fr 96px 44px} .lb-win{display:none} .lb-detail{padding-left:16px} }
+	  /* leaderboard table */
+	  .lb-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:4px 10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+	  .lb-mode{display:inline-flex;gap:2px;border:1px solid var(--line-2);border-radius:8px;background:var(--panel);padding:2px}
+	  .lb-mode button{all:unset;cursor:pointer;font-size:13px;color:var(--ink-2);padding:7px 12px;border-radius:6px}
+	  .lb-mode button:hover{background:var(--hover);color:var(--ink)}
+	  .lb-mode button.on{background:var(--accent);color:#fff}
+	  .lb-mode button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+	  .lb-note{font-size:12.5px;color:var(--ink-2);max-width:520px}
+	  .lbtable{display:flex;flex-direction:column}
+	  .lb-head,.lb-main{display:grid;grid-template-columns:30px 14px minmax(170px,1.5fr) 116px 76px minmax(120px,1fr) minmax(78px,.7fr);gap:10px;align-items:center}
+	  .lb-head{padding:6px 10px;font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);border-bottom:1px solid var(--line)}
+	  .lb-row{border-bottom:1px solid var(--line)} .lb-row:last-child{border-bottom:0}
+	  .lb-main{padding:11px 10px;cursor:pointer;background:none;border:0;width:100%;text-align:left;font:inherit;color:var(--ink)}
+	  .lb-main:hover{background:var(--hover)} .lb-main:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+	  .lb-rank{font-family:var(--mono);font-size:12px;color:var(--ink-2)} .lb-caret{font-size:10px;color:var(--faint)}
+	  .lb-who{min-width:0} .lb-name{font-weight:600} .lb-id{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:6px}
+	  .lb-sub{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+	  .lb-elo{font-family:var(--mono);font-weight:650;font-size:14px}.lb-elo .pm,.lb-metric .pm{color:var(--faint);font-weight:400;font-size:11px;margin-left:3px}
+	  .lb-metric{font-family:var(--mono);font-weight:650;font-size:14px}
+	  .lb-games{font-family:var(--mono);font-size:12px;color:var(--ink-2)} .lb-win{font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+	  .lb-heat{display:flex;gap:2px;align-items:center;flex-wrap:wrap} .lb-heat .tk{width:9px;height:15px;border-radius:2px;background:var(--line-2)}
+	  .lb-row.prov .lb-elo{color:var(--ink-2)} .prov-pill{display:inline-block;font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:5px;background:var(--sel);color:var(--ink-2);margin-left:6px;vertical-align:1px}
+	  .lb-detail{padding:6px 12px 16px 54px;background:var(--bg);border-top:1px solid var(--line)}
+	  .lb-obj{display:flex;gap:8px;margin:10px 0 12px;flex-wrap:wrap} .lb-obj .fcell{min-width:120px}
+	  .detail-title{font-family:var(--mono);font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);margin:12px 0 6px}
+	  .roletbl{width:100%;border-collapse:collapse;font-size:12px}
+	  .roletbl th{text-align:left;color:var(--faint);font-weight:500;font-family:var(--mono);font-size:10px;letter-spacing:.04em;text-transform:uppercase;padding:3px 8px;border-bottom:1px solid var(--line)}
+	  .roletbl td{padding:4px 8px;border-bottom:1px solid var(--line);font-family:var(--mono)} .roletbl tr:last-child td{border-bottom:0}
+	  .roletbl .nm{font-family:var(--sans)} .roletbl .spread.pos{color:var(--good)} .roletbl .spread.neg{color:var(--evil)}
+	  .hardtag{font-family:var(--mono);font-size:9px;color:var(--evil);border:1px solid #ecccca;border-radius:4px;padding:0 4px;margin-left:6px}
+	  .fcell.tanner{background:#faf3e6;border-color:#ecdcc0} .fcell.tanner .fpct{color:#a9791f}
+	  .lb-empty{padding:20px 10px;color:var(--faint);font-size:13px}
+	  .sample-list{display:grid;grid-template-columns:1fr;gap:10px}
+	  .sample{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:11px;min-width:0}
+	  .sample .top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:9px}
+	  .sample .sample-role{font-weight:650;color:var(--ink)}
+	  .sample .sample-meta{display:flex;gap:5px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+	  .sample .sample-chip{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);border:1px solid var(--line);border-radius:5px;padding:2px 6px;background:var(--bg);white-space:nowrap}
+	  .sample .sample-chip.score{font-weight:650;color:var(--ink);border-color:var(--line-2)}
+	  .sample-pair{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+	  .sample-utterance{border:1px solid var(--line);border-radius:7px;background:var(--bg);padding:8px;min-width:0}
+	  .sample-label{font-family:var(--mono);font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);margin-bottom:5px}
+	  .sample-text{font-size:12.5px;line-height:1.45;color:var(--ink);overflow-wrap:anywhere;white-space:pre-wrap}
+	  .sample-judge{margin-top:9px;border-left:2px solid var(--accent);background:#f5faf8;border-radius:6px;padding:8px 9px}
+	  .sample-judge .sample-label{margin-bottom:4px}
+	  .sample-judge .reason{color:var(--ink-2);font-size:12.5px;line-height:1.45;overflow-wrap:anywhere}
+	  .sample-phrases{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+	  .sample-phrases span{font-family:var(--mono);font-size:10.5px;color:var(--faint);border:1px solid var(--line);border-radius:999px;padding:2px 6px;background:var(--bg)}
+	  .scatter-wrap{padding:12px 10px 4px;border-bottom:1px solid var(--line)}
+	  .scatter{width:100%;height:360px;display:block;background:#fcfcfc;border:1px solid var(--line);border-radius:8px}
+	  .scatter text{font-family:var(--mono);font-size:11px;fill:var(--faint)}
+	  .scatter .axis{stroke:var(--line-2);stroke-width:1}
+	  .scatter .grid{stroke:var(--line);stroke-width:1}
+	  .scatter .point{fill:var(--accent);opacity:.82}
+	  .scatter .point.prov{fill:var(--faint);opacity:.55}
+	  @media(max-width:720px){ .lb-toolbar{align-items:flex-start}.lb-mode{width:100%;display:grid;grid-template-columns:repeat(3,1fr)}.lb-mode button{text-align:center;padding:7px 6px}.lb-head{display:none}.lb-heat{display:none}.lb-main{grid-template-columns:24px 12px minmax(0,1fr) auto;gap:4px 8px;align-items:start}.lb-who{grid-column:3/-1;grid-row:1}.lb-main>:nth-child(4){grid-column:3;grid-row:2}.lb-main>:nth-child(5){grid-column:4;grid-row:2;justify-self:start}.lb-win{grid-column:3/-1;grid-row:3;font-size:10.5px;white-space:normal}.lb-detail{padding-left:16px;overflow-x:auto}.roletbl th,.roletbl td{padding:3px 4px;font-size:10px}.sample .top{flex-direction:column}.sample .sample-meta{justify-content:flex-start}.sample-pair{grid-template-columns:1fr}.scatter{height:300px} }
 </style>
 </head>
 <body>
@@ -454,30 +470,28 @@
 <!-- INDEX (leaderboard + runs, both collapsible) -->
 <section class="screen on" id="screen-index">
   <div class="wrap">
-    <div class="pagehead"><h1>Leaderboard</h1><p>Models and harnesses ranked across every run by an objective-handicap rating — skill at each role, opponent-adjusted. Expand a row for the per-role breakdown; the runs that produced these ratings are below.</p></div>
+	    <div class="pagehead"><h1>Leaderboard</h1><p>Switch between competitive strength, role-conditioned variety, and the tradeoff between the two. Expand a row to inspect the evidence behind the score.</p></div>
 
-    <section class="collap" id="sec-lb">
-      <button class="collap-h" aria-expanded="true"><span class="cv">▾</span><span class="ct">Leaderboard</span><span class="cc" id="lbcount"></span></button>
-      <div class="collap-b">
-        <div class="lbtable">
-          <div class="lb-head"><span></span><span></span><span>Harness</span><span>Rating</span><span>Games</span><span>Win-rate · 95% CI</span><span>Roles</span></div>
-          <div id="lbrows"></div>
-        </div>
-      </div>
-    </section>
+	    <section class="collap" id="sec-lb">
+	      <button class="collap-h" aria-expanded="true"><span class="cv">▾</span><span class="ct" id="lbtitle">Leaderboard</span><span class="cc" id="lbcount"></span></button>
+	      <div class="collap-b">
+	        <div class="lb-toolbar">
+	          <div class="lb-mode" id="lbmode" role="tablist" aria-label="Leaderboard mode">
+	            <button type="button" class="on" data-mode="elo">Elo</button>
+	            <button type="button" data-mode="rvs">RVS</button>
+	            <button type="button" data-mode="scatter">Elo x RVS</button>
+	          </div>
+	          <div class="lb-note" id="lbnote"></div>
+	        </div>
+	        <div class="scatter-wrap" id="scatterwrap" hidden></div>
+	        <div class="lbtable">
+	          <div class="lb-head" id="lbhead"></div>
+	          <div id="lbrows"></div>
+	        </div>
+	      </div>
+	    </section>
 
-    <section class="collap" id="sec-creativity">
-      <button class="collap-h" aria-expanded="true"><span class="cv">▾</span><span class="ct">Creativity Signal</span><span class="cc" id="creativitycount"></span></button>
-      <div class="collap-b">
-        <div class="creativity-note">Role-conditioned self-variety from public speech only. Higher means the same agent plays the same role with more varied valid language.</div>
-        <div class="creativity-table">
-          <div class="cr-head"><span></span><span></span><span>Harness</span><span>Score</span><span>Evidence</span><span>Roles</span></div>
-          <div id="creativityrows"></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="collap collapsed" id="sec-runs">
+	    <section class="collap collapsed" id="sec-runs">
       <button class="collap-h" aria-expanded="false"><span class="cv">▸</span><span class="ct">Runs</span><span class="cc" id="runscount"></span></button>
       <div class="collap-b">
         <div class="stat-strip" id="statstrip"></div>
@@ -824,8 +838,8 @@ async function show(s){
   ["index","run","game","newrun"].forEach(x=>document.getElementById("screen-"+x).classList.toggle("on",x===s));
   const navmap={run:"index",game:"index",newrun:"index"};
   document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("on",b.dataset.s===(navmap[s]||s)));
-  if(s==="index"){ renderIndex(); renderLeaderboard(); renderCreativity(); applyCollapse();   // show what we have, then refresh
-    loadRuns().then(renderIndex); loadLeaderboard().then(renderLeaderboard); loadCreativity().then(renderCreativity); }
+	  if(s==="index"){ renderIndex(); renderLeaderboard(); applyCollapse();   // show what we have, then refresh
+	    loadRuns().then(renderIndex); loadLeaderboard().then(renderLeaderboard); loadCreativity().then(renderLeaderboard); }
   if(s==="newrun") renderNewRun();
   if(was!==s) window.scrollTo(0,0);
 }
@@ -852,146 +866,232 @@ function renderIndex(){
   document.querySelectorAll(".rt-row").forEach(b=>b.onclick=()=>openRun(b.dataset.run));
 }
 
-/* ===== LEADERBOARD ===== */
-let LB=[]; const lbExpanded=new Set();
-async function loadLeaderboard(){
-  try{ const d=await jget("/leaderboard"); LB=d.competitors||[]; }
-  catch(e){ LB=[]; console.error("leaderboard load failed",e); }
-}
-function heatTicks(byRole){
-  return Object.keys(byRole).slice(0,9).map(role=>{
-    const c=byRole[role], sp=c.vs_spread;
-    const col = sp==null?'var(--line-2)':(sp>0.02?'var(--good)':(sp<-0.02?'var(--evil)':'var(--line-2)'));
-    const op = sp==null?0.5:Math.min(1,0.4+Math.abs(sp)*1.8);
-    const t = role+': '+Math.round(c.rate*100)+'%'+(c.base!=null?' (base '+Math.round(c.base*100)+'%)':'');
-    return '<span class="tk" title="'+escAttr(t)+'" style="background:'+col+';opacity:'+op.toFixed(2)+'"></span>';
-  }).join("");
-}
-function objCell(label,cls,c){
-  return '<div class="fcell '+cls+'"><div class="flabel">'+label+'</div><div class="fpct">'+
-    Math.round((c.rate||0)*100)+'%</div><div class="fn">n='+(c.n||0)+'</div></div>';
-}
-function roleTable(byRole){
-  const rows=Object.keys(byRole).map(role=>{
-    const c=byRole[role], sp=c.vs_spread;
-    const cls = sp==null?'':(sp>0?'pos':(sp<0?'neg':''));
-    const txt = sp==null?'—':((sp>0?'+':'')+Math.round(sp*100));
-    return '<tr><td class="nm">'+esc(role)+(c.hard?'<span class="hardtag">hard</span>':'')+'</td>'+
-      '<td>'+Math.round(c.rate*100)+'%</td><td>'+c.n+'</td>'+
-      '<td>'+(c.base!=null?Math.round(c.base*100)+'%':'—')+'</td>'+
-      '<td class="spread '+cls+'">'+txt+'</td></tr>';
-  }).join("");
-  return '<table class="roletbl"><thead><tr><th>Role</th><th>Win%</th><th>n</th><th>Base</th>'+
-    '<th>vs&nbsp;spread</th></tr></thead><tbody>'+rows+'</tbody></table>';
-}
-function lbRow(c,rank){
-  const idChip = c.agent_id ? esc(c.agent_id.slice(0,12)) : 'static';
-  const sub = esc((c.declared_model || c.identity_key.replace(/^static:/,'').replace(/:[^:]*$/,'')) +
-    (c.declared_harness?' · '+c.declared_harness:''));
-  const o=c.overall||{rate:0,lo:0,hi:0,n:0};
-  const win = Math.round(o.rate*100)+'% <span style="color:var(--faint)">('+Math.round(o.lo*100)+'–'+Math.round(o.hi*100)+'%)</span>';
-  const prov = c.provisional?'<span class="prov-pill">provisional</span>':'';
-  const open = lbExpanded.has(c.identity_key);
-  const ob=c.by_objective||{};
-  return '<div class="lb-row'+(c.provisional?' prov':'')+'" data-key="'+escAttr(c.identity_key)+'">'+
-    '<div class="lb-main" role="button" tabindex="0" aria-expanded="'+open+'">'+
-      '<span class="lb-rank">'+rank+'</span><span class="lb-caret">'+(open?'▾':'▸')+'</span>'+
-      '<span class="lb-who"><span class="lb-name">'+esc(c.display_name||c.identity_key)+'</span>'+
-        '<span class="lb-id">'+idChip+'</span>'+prov+'<span class="lb-sub">'+sub+'</span></span>'+
-      '<span class="lb-elo">'+Math.round(c.elo)+'<span class="pm">±'+Math.round(c.rd)+'</span></span>'+
-      '<span class="lb-games">'+c.games+'</span><span class="lb-win">'+win+'</span>'+
-      '<span class="lb-heat">'+heatTicks(c.by_role||{})+'</span>'+
-    '</div>'+
-    '<div class="lb-detail"'+(open?'':' hidden')+'>'+
-      '<div class="lb-obj">'+objCell('Village','good',ob.village||{})+objCell('Werewolf','evil',ob.werewolf||{})+
-        objCell('Tanner','tanner',ob.tanner||{})+'</div>'+
-      roleTable(c.by_role||{})+
-    '</div></div>';
-}
-function renderLeaderboard(){
-  const el=document.getElementById("lbrows"); if(!el) return;
-  const cc=document.getElementById("lbcount"); if(cc) cc.textContent=LB.length?LB.length+" harnesses":"";
-  if(!LB.length){ el.innerHTML='<div class="lb-empty">No rated games yet — ratings appear once games are played and recomputed.</div>'; return; }
-  el.innerHTML=LB.map((c,i)=>lbRow(c,i+1)).join("");
-  el.querySelectorAll(".lb-row").forEach(row=>{
-    const key=row.dataset.key, main=row.querySelector(".lb-main"),
-          det=row.querySelector(".lb-detail"), car=row.querySelector(".lb-caret");
-    const toggle=()=>{ const opening=det.hasAttribute("hidden");
-      if(opening){ det.removeAttribute("hidden"); lbExpanded.add(key); car.textContent="▾"; }
-      else{ det.setAttribute("hidden",""); lbExpanded.delete(key); car.textContent="▸"; }
-      main.setAttribute("aria-expanded", opening); };
-    main.onclick=toggle;
-    main.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); toggle(); } };
-  });
-}
-
-/* ===== CREATIVITY SIGNAL ===== */
-let CREATIVITY={version:null,competitors:[]}; const creativityExpanded=new Set();
-async function loadCreativity(){
-  try{ CREATIVITY=await jget("/creativity"); if(!Array.isArray(CREATIVITY.competitors)) CREATIVITY.competitors=[]; }
-  catch(e){ CREATIVITY={version:null,competitors:[]}; console.error("creativity load failed",e); }
-}
-function roleZColor(z){
-  if(z==null) return "var(--line-2)";
-  return z>0.25?"var(--good)":(z<-0.25?"var(--evil)":"var(--line-2)");
-}
-function creativityTicks(byRole){
-  return Object.keys(byRole).sort().slice(0,9).map(role=>{
-    const c=byRole[role], z=c.role_z;
-    const op=z==null?0.5:Math.min(1,0.45+Math.abs(z)*0.28);
-    const dist=c.raw_distance==null?"?":Math.round(c.raw_distance*100);
-    const title=role+": distance "+dist+" · z "+(z==null?"?":z.toFixed(2))+" · pairs "+c.valid_pairs;
-    return '<span class="tk" title="'+escAttr(title)+'" style="background:'+roleZColor(z)+';opacity:'+op.toFixed(2)+'"></span>';
-  }).join("");
-}
-function creativityRoleTable(byRole){
-  const rows=Object.keys(byRole).sort().map(role=>{
-    const c=byRole[role], z=c.role_z;
-    const cls=z==null?"":(z>0?"pos":(z<0?"neg":""));
-    const dist=c.raw_distance==null?"—":Math.round(c.raw_distance*100);
-    return '<tr><td class="nm">'+esc(role)+(c.provisional?'<span class="prov-pill">provisional</span>':'')+'</td>'+
-      '<td>'+dist+'</td><td class="spread '+cls+'">'+(z==null?"—":z.toFixed(2))+'</td>'+
-      '<td>'+c.valid_utterances+'</td><td>'+c.valid_pairs+'</td><td>'+c.excluded_pairs+'</td></tr>';
-  }).join("");
-  return '<table class="roletbl"><thead><tr><th>Role</th><th>Distance</th><th>z</th><th>Valid says</th><th>Pairs</th><th>Excluded</th></tr></thead><tbody>'+rows+'</tbody></table>';
-}
-function creativityRow(c,rank){
-  const idChip=c.agent_id?esc(c.agent_id.slice(0,12)):"static";
-  const sub=esc((c.declared_model||c.identity_key.replace(/^static:/,"").replace(/:[^:]*$/,""))+
-    (c.declared_harness?" · "+c.declared_harness:""));
-  const open=creativityExpanded.has(c.identity_key);
-  const score=c.overall_z==null?"—":c.overall_z.toFixed(2);
-  const raw=c.raw_distance==null?"":"<span class=\"pm\">dist "+Math.round(c.raw_distance*100)+"</span>";
-  const flags=(c.insufficient?'<span class="prov-pill">insufficient</span>':(c.provisional?'<span class="prov-pill">provisional</span>':""));
-  return '<div class="cr-row" data-key="'+escAttr(c.identity_key)+'">'+
-    '<div class="cr-main" role="button" tabindex="0" aria-expanded="'+open+'">'+
-      '<span class="cr-rank">'+rank+'</span><span class="cr-caret">'+(open?'▾':'▸')+'</span>'+
-      '<span class="cr-who"><span class="cr-name">'+esc(c.display_name||c.identity_key)+'</span>'+
-        '<span class="cr-id">'+idChip+'</span>'+flags+'<span class="cr-sub">'+sub+'</span></span>'+
-      '<span class="cr-score">'+score+raw+'</span>'+
-      '<span class="cr-evidence">'+(c.valid_utterances||0)+' says · '+(c.valid_pairs||0)+' pairs</span>'+
-      '<span class="cr-roles">'+creativityTicks(c.by_role||{})+'</span>'+
-    '</div>'+
-    '<div class="cr-detail"'+(open?'':' hidden')+'>'+creativityRoleTable(c.by_role||{})+'</div></div>';
-}
-function renderCreativity(){
-  const el=document.getElementById("creativityrows"); if(!el) return;
-  const rows=CREATIVITY.competitors||[];
-  const cc=document.getElementById("creativitycount");
-  if(cc) cc.textContent=rows.length?(rows.length+" harnesses · "+(CREATIVITY.version||"latest")):"";
-  if(!rows.length){ el.innerHTML='<div class="lb-empty">No creativity snapshot yet — run the local creativity upload to populate this board.</div>'; return; }
-  el.innerHTML=rows.map((c,i)=>creativityRow(c,i+1)).join("");
-  el.querySelectorAll(".cr-row").forEach(row=>{
-    const key=row.dataset.key, main=row.querySelector(".cr-main"),
-          det=row.querySelector(".cr-detail"), car=row.querySelector(".cr-caret");
-    const toggle=()=>{ const opening=det.hasAttribute("hidden");
-      if(opening){ det.removeAttribute("hidden"); creativityExpanded.add(key); car.textContent="▾"; }
-      else{ det.setAttribute("hidden",""); creativityExpanded.delete(key); car.textContent="▸"; }
-      main.setAttribute("aria-expanded", opening); };
-    main.onclick=toggle;
-    main.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); toggle(); } };
-  });
-}
+	/* ===== LEADERBOARD ===== */
+	let LB=[]; let CREATIVITY={version:null,competitors:[]};
+	const lbExpanded=new Set();
+	let LB_MODE=localStorage.getItem("leaderboard.mode")||"elo";
+	if(!["elo","rvs","scatter"].includes(LB_MODE)) LB_MODE="elo";
+	async function loadLeaderboard(){
+	  try{ const d=await jget("/leaderboard"); LB=d.competitors||[]; }
+	  catch(e){ LB=[]; console.error("leaderboard load failed",e); }
+	}
+	async function loadCreativity(){
+	  try{ CREATIVITY=await jget("/creativity"); if(!Array.isArray(CREATIVITY.competitors)) CREATIVITY.competitors=[]; }
+	  catch(e){ CREATIVITY={version:null,competitors:[]}; console.error("creativity load failed",e); }
+	}
+	function pct(x){ return Math.round((x||0)*100)+"%"; }
+	function roleZColor(z){
+	  if(z==null) return "var(--line-2)";
+	  return z>0.25?"var(--good)":(z<-0.25?"var(--evil)":"var(--line-2)");
+	}
+	function heatTicks(byRole){
+	  return Object.keys(byRole).slice(0,9).map(role=>{
+	    const c=byRole[role], sp=c.vs_spread;
+	    const col = sp==null?'var(--line-2)':(sp>0.02?'var(--good)':(sp<-0.02?'var(--evil)':'var(--line-2)'));
+	    const op = sp==null?0.5:Math.min(1,0.4+Math.abs(sp)*1.8);
+	    const t = role+': '+pct(c.rate)+(c.base!=null?' (base '+pct(c.base)+')':'');
+	    return '<span class="tk" title="'+escAttr(t)+'" style="background:'+col+';opacity:'+op.toFixed(2)+'"></span>';
+	  }).join("");
+	}
+	function rvsTicks(byRole){
+	  return Object.keys(byRole).sort().slice(0,9).map(role=>{
+	    const c=byRole[role], z=c.role_z;
+	    const op=z==null?0.5:Math.min(1,0.45+Math.abs(z)*0.28);
+	    const dist=c.raw_distance==null?"?":Math.round(c.raw_distance*100);
+	    const title=role+": distance "+dist+" · z "+(z==null?"?":z.toFixed(2))+" · pairs "+c.valid_pairs;
+	    return '<span class="tk" title="'+escAttr(title)+'" style="background:'+roleZColor(z)+';opacity:'+op.toFixed(2)+'"></span>';
+	  }).join("");
+	}
+	function boardItems(){
+	  const byKey={};
+	  LB.forEach(c=>{ byKey[c.identity_key]={key:c.identity_key, elo:c}; });
+	  (CREATIVITY.competitors||[]).forEach(c=>{
+	    const item=byKey[c.identity_key]||(byKey[c.identity_key]={key:c.identity_key});
+	    item.rvs=c;
+	  });
+	  return Object.values(byKey).map(item=>{
+	    const c=item.elo||item.rvs||{};
+	    item.identity_key=item.key;
+	    item.display_name=c.display_name||item.key;
+	    item.agent_id=c.agent_id;
+	    item.declared_model=c.declared_model;
+	    item.declared_harness=c.declared_harness;
+	    return item;
+	  });
+	}
+	function sortedBoardItems(){
+	  const items=boardItems();
+	  if(LB_MODE==="rvs"){
+	    return items.filter(x=>x.rvs&&x.rvs.overall_z!=null&&!x.rvs.insufficient).sort((a,b)=>{
+	      const ar=a.rvs?.overall_z, br=b.rvs?.overall_z;
+	      if((br!=null)!==(ar!=null)) return br!=null?1:-1;
+	      if(br!==ar) return (br??-9999)-(ar??-9999);
+	      return (b.rvs?.raw_distance??-9999)-(a.rvs?.raw_distance??-9999);
+	    });
+	  }
+	  if(LB_MODE==="scatter"){
+	    return items.filter(x=>x.elo&&x.rvs&&x.rvs.overall_z!=null)
+	      .sort((a,b)=>(b.elo.conservative??-9999)-(a.elo.conservative??-9999));
+	  }
+	  return items.filter(x=>x.elo).sort((a,b)=>(b.elo.conservative??-9999)-(a.elo.conservative??-9999));
+	}
+	function objCell(label,cls,c){
+	  return '<div class="fcell '+cls+'"><div class="flabel">'+label+'</div><div class="fpct">'+
+	    pct(c.rate)+'</div><div class="fn">n='+(c.n||0)+'</div></div>';
+	}
+	function roleTable(byRole){
+	  const rows=Object.keys(byRole).map(role=>{
+	    const c=byRole[role], sp=c.vs_spread;
+	    const cls = sp==null?'':(sp>0?'pos':(sp<0?'neg':''));
+	    const txt = sp==null?'—':((sp>0?'+':'')+Math.round(sp*100));
+	    return '<tr><td class="nm">'+esc(role)+(c.hard?'<span class="hardtag">hard</span>':'')+'</td>'+
+	      '<td>'+pct(c.rate)+'</td><td>'+c.n+'</td>'+
+	      '<td>'+(c.base!=null?pct(c.base):'—')+'</td>'+
+	      '<td class="spread '+cls+'">'+txt+'</td></tr>';
+	  }).join("");
+	  return '<table class="roletbl"><thead><tr><th>Role</th><th>Win%</th><th>n</th><th>Base</th>'+
+	    '<th>vs spread</th></tr></thead><tbody>'+rows+'</tbody></table>';
+	}
+	function rvsRoleTable(byRole){
+	  const rows=Object.keys(byRole).sort().map(role=>{
+	    const c=byRole[role], z=c.role_z;
+	    const cls=z==null?"":(z>0?"pos":(z<0?"neg":""));
+	    const dist=c.raw_distance==null?"—":Math.round(c.raw_distance*100);
+	    return '<tr><td class="nm">'+esc(role)+(c.provisional?'<span class="prov-pill">provisional</span>':'')+'</td>'+
+	      '<td>'+dist+'</td><td class="spread '+cls+'">'+(z==null?"—":z.toFixed(2))+'</td>'+
+	      '<td>'+c.valid_utterances+'</td><td>'+c.valid_pairs+'</td><td>'+c.excluded_pairs+'</td></tr>';
+	  }).join("");
+	  return '<table class="roletbl"><thead><tr><th>Role</th><th>Distance</th><th>z</th><th>Valid says</th><th>Pairs</th><th>Excluded</th></tr></thead><tbody>'+rows+'</tbody></table>';
+	}
+	function rvsSamples(samples){
+	  if(!samples||!samples.length) return '<div class="lb-empty">No judged pair samples available for this snapshot.</div>';
+	  return '<div class="sample-list">'+samples.slice(0,4).map(s=>{
+	    const sim=s.judge_similarity==null?'—':s.judge_similarity.toFixed(2);
+	    const dist=s.distance==null?'—':s.distance.toFixed(2);
+	    const phrases=(s.divergence_phrases||[]).slice(0,3);
+	    const phraseHtml=phrases.map(p=>'<span>'+esc(p)+'</span>').join("");
+	    return '<div class="sample"><div class="top"><div class="sample-role">'+esc(s.role||"role")+'</div>'+
+	      '<div class="sample-meta"><span class="sample-chip">A '+esc(s.coherence_a||"?")+'</span>'+
+	      '<span class="sample-chip">B '+esc(s.coherence_b||"?")+'</span>'+
+	      '<span class="sample-chip score">Distance '+dist+'</span>'+
+	      '<span class="sample-chip">Similarity '+sim+'</span></div></div>'+
+	      '<div class="sample-pair"><div class="sample-utterance"><div class="sample-label">Utterance A</div><div class="sample-text">'+esc(s.utterance_a||"")+'</div></div>'+
+	      '<div class="sample-utterance"><div class="sample-label">Utterance B</div><div class="sample-text">'+esc(s.utterance_b||"")+'</div></div></div>'+
+	      (s.reason?'<div class="sample-judge"><div class="sample-label">Judge rationale</div><div class="reason">'+esc(s.reason)+'</div></div>':'')+
+	      (phraseHtml?'<div class="sample-phrases">'+phraseHtml+'</div>':'')+'</div>';
+	  }).join("")+'</div>';
+	}
+	function identitySub(c){
+	  return esc((c.declared_model||c.identity_key.replace(/^static:/,"").replace(/:[^:]*$/,""))+
+	    (c.declared_harness?" · "+c.declared_harness:""));
+	}
+	function rvsMetric(c){
+	  if(!c) return '<span class="lb-metric">—</span>';
+	  const score=c.overall_z==null?'—':c.overall_z.toFixed(2);
+	  const raw=c.raw_distance==null?'':'<span class="pm">dist '+Math.round(c.raw_distance*100)+'</span>';
+	  return '<span class="lb-metric">'+score+raw+'</span>';
+	}
+	function eloMetric(c){
+	  if(!c) return '<span class="lb-elo">—</span>';
+	  return '<span class="lb-elo">'+Math.round(c.elo)+'<span class="pm">±'+Math.round(c.rd)+'</span></span>';
+	}
+	function itemDetail(item){
+	  const eloBlock=()=>{
+	    if(!item.elo) return "";
+	    const ob=item.elo.by_objective||{};
+	    return '<div class="detail-title">Elo evidence</div><div class="lb-obj">'+
+	      objCell('Village','good',ob.village||{})+objCell('Werewolf','evil',ob.werewolf||{})+
+	      objCell('Tanner','tanner',ob.tanner||{})+'</div>'+roleTable(item.elo.by_role||{});
+	  };
+	  const rvsBlock=()=>item.rvs?('<div class="detail-title">RVS evidence</div>'+rvsRoleTable(item.rvs.by_role||{})+
+	    '<div class="detail-title">Judged pair samples</div>'+rvsSamples(item.rvs.samples||[])):"";
+	  if(LB_MODE==="elo") return eloBlock() || rvsBlock();
+	  if(LB_MODE==="rvs") return rvsBlock() || eloBlock();
+	  return eloBlock()+rvsBlock();
+	}
+	function lbRow(item,rank){
+	  const c=item.elo||item.rvs||item;
+	  const idChip=c.agent_id?esc(c.agent_id.slice(0,12)):"static";
+	  const open=lbExpanded.has(item.identity_key);
+	  const isProv=LB_MODE==="elo"
+	    ? item.elo?.provisional
+	    : (LB_MODE==="rvs" ? (item.rvs?.provisional||item.rvs?.insufficient)
+	      : (item.elo?.provisional||item.rvs?.provisional||item.rvs?.insufficient));
+	  const prov=isProv?'<span class="prov-pill">'+(LB_MODE!=="elo"&&item.rvs?.insufficient?'insufficient':'provisional')+'</span>':'';
+	  const o=item.elo?.overall||{rate:0,lo:0,hi:0,n:0};
+	  const win=pct(o.rate)+' <span style="color:var(--faint)">('+pct(o.lo)+'–'+pct(o.hi)+')</span>';
+	  const evidence=item.rvs?((item.rvs.valid_utterances||0)+' says · '+(item.rvs.valid_pairs||0)+' pairs'):(item.elo?(item.elo.games+' games'):'—');
+	  const roles=LB_MODE==="elo"?heatTicks(item.elo?.by_role||{}):rvsTicks(item.rvs?.by_role||{});
+	  const metric1=LB_MODE==="rvs"?rvsMetric(item.rvs):eloMetric(item.elo);
+	  const metric2=LB_MODE==="rvs"?eloMetric(item.elo):(item.rvs?rvsMetric(item.rvs):'<span class="lb-games">—</span>');
+	  return '<div class="lb-row'+(isProv?' prov':'')+'" data-key="'+escAttr(item.identity_key)+'">'+
+	    '<div class="lb-main" role="button" tabindex="0" aria-expanded="'+open+'">'+
+	      '<span class="lb-rank">'+rank+'</span><span class="lb-caret">'+(open?'▾':'▸')+'</span>'+
+	      '<span class="lb-who"><span class="lb-name">'+esc(c.display_name||item.identity_key)+'</span>'+
+	        '<span class="lb-id">'+idChip+'</span>'+prov+'<span class="lb-sub">'+identitySub(c)+'</span></span>'+
+	      metric1+metric2+'<span class="lb-win">'+(LB_MODE==="elo"?win:evidence)+'</span>'+
+	      '<span class="lb-heat">'+roles+'</span>'+
+	    '</div>'+
+	    '<div class="lb-detail"'+(open?'':' hidden')+'>'+itemDetail(item)+'</div></div>';
+	}
+	function renderLeaderboardHead(){
+	  const heads=LB_MODE==="rvs"
+	    ? ["","","Harness","RVS","Elo","Evidence","Roles"]
+	    : (LB_MODE==="scatter"?["","","Harness","Elo","RVS","Evidence","Roles"]:["","","Harness","Rating","RVS","Win-rate · 95% CI","Roles"]);
+	  document.getElementById("lbhead").innerHTML=heads.map((h,i)=>'<span'+(i===6?' class="h-roles"':'')+'>'+h+'</span>').join("");
+	}
+	function renderScatter(items){
+	  const wrap=document.getElementById("scatterwrap");
+	  if(LB_MODE!=="scatter"){ wrap.setAttribute("hidden",""); wrap.innerHTML=""; return; }
+	  wrap.removeAttribute("hidden");
+	  const pts=items.filter(x=>x.elo&&x.rvs&&x.rvs.overall_z!=null);
+	  if(!pts.length){ wrap.innerHTML='<div class="lb-empty">No overlapping Elo and RVS data yet.</div>'; return; }
+	  const xs=pts.map(x=>x.elo.elo), ys=pts.map(x=>x.rvs.overall_z);
+	  const xmin=Math.min(...xs), xmax=Math.max(...xs), ymin=Math.min(...ys), ymax=Math.max(...ys);
+	  const pad=44, w=760, h=330;
+	  const sx=x=>pad+(x-xmin)/(xmax-xmin||1)*(w-pad*2);
+	  const sy=y=>h-pad-(y-ymin)/(ymax-ymin||1)*(h-pad*2);
+	  const circles=pts.map(item=>{
+	    const x=sx(item.elo.elo), y=sy(item.rvs.overall_z);
+	    return '<circle class="point'+(item.elo.provisional||item.rvs.provisional?' prov':'')+'" cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="5">'+
+	      '<title>'+esc(item.display_name)+' · Elo '+Math.round(item.elo.elo)+' · RVS '+item.rvs.overall_z.toFixed(2)+'</title></circle>';
+	  }).join("");
+	  wrap.innerHTML='<svg class="scatter" viewBox="0 0 '+w+' '+h+'" role="img" aria-label="Elo by RVS scatter plot">'+
+	    '<line class="axis" x1="'+pad+'" y1="'+(h-pad)+'" x2="'+(w-pad)+'" y2="'+(h-pad)+'"></line>'+
+	    '<line class="axis" x1="'+pad+'" y1="'+pad+'" x2="'+pad+'" y2="'+(h-pad)+'"></line>'+
+	    '<line class="grid" x1="'+(w/2)+'" y1="'+pad+'" x2="'+(w/2)+'" y2="'+(h-pad)+'"></line>'+
+	    '<line class="grid" x1="'+pad+'" y1="'+(h/2)+'" x2="'+(w-pad)+'" y2="'+(h/2)+'"></line>'+
+	    '<text x="'+pad+'" y="'+(h-12)+'">Lower Elo</text><text x="'+(w-pad-68)+'" y="'+(h-12)+'">Higher Elo</text>'+
+	    '<text x="10" y="'+(pad+6)+'">Higher RVS</text><text x="10" y="'+(h-pad)+'">Lower RVS</text>'+circles+'</svg>';
+	}
+	function renderLeaderboard(){
+	  const el=document.getElementById("lbrows"); if(!el) return;
+	  document.querySelectorAll("#lbmode button").forEach(b=>b.classList.toggle("on",b.dataset.mode===LB_MODE));
+	  const notes={
+	    elo:"Deterministic objective-handicap Elo from wins. RVS is shown beside it when available.",
+	    rvs:"Role Variety Score ranks role-conditioned self-variety from public speech only.",
+	    scatter:"Each point is one harness with both Elo and RVS evidence."
+	  };
+	  document.getElementById("lbnote").textContent=notes[LB_MODE];
+	  document.getElementById("lbtitle").textContent=LB_MODE==="rvs"?"Role Variety Score":(LB_MODE==="scatter"?"Elo x RVS":"Leaderboard");
+	  renderLeaderboardHead();
+	  const rows=sortedBoardItems();
+	  renderScatter(rows);
+	  const cc=document.getElementById("lbcount");
+	  if(cc) cc.textContent=rows.length?(rows.length+" harnesses"+(CREATIVITY.version&&LB_MODE!=="elo"?" · "+CREATIVITY.version:"")):"";
+	  if(!rows.length){ el.innerHTML='<div class="lb-empty">No leaderboard data available for this mode yet.</div>'; return; }
+	  el.innerHTML=rows.map((c,i)=>lbRow(c,i+1)).join("");
+	  el.querySelectorAll(".lb-row").forEach(row=>{
+	    const key=row.dataset.key, main=row.querySelector(".lb-main"),
+	          det=row.querySelector(".lb-detail"), car=row.querySelector(".lb-caret");
+	    const toggle=()=>{ const opening=det.hasAttribute("hidden");
+	      if(opening){ det.removeAttribute("hidden"); lbExpanded.add(key); car.textContent="▾"; }
+	      else{ det.setAttribute("hidden",""); lbExpanded.delete(key); car.textContent="▸"; }
+	      main.setAttribute("aria-expanded", opening); };
+	    main.onclick=toggle;
+	    main.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); toggle(); } };
+	  });
+	}
 
 /* collapsible sections — state persisted in localStorage; HTML class is the default when unset */
 function applyCollapse(){
@@ -1691,6 +1791,13 @@ function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg
 document.getElementById("brand").onclick=()=>show("index");
 document.getElementById("nav").addEventListener("click",e=>{ const b=e.target.closest("button"); if(b)show(b.dataset.s); });
 document.getElementById("newrun").onclick=()=>show("newrun");
+document.getElementById("lbmode").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-mode]");
+  if(!b) return;
+  LB_MODE=b.dataset.mode;
+  localStorage.setItem("leaderboard.mode", LB_MODE);
+  renderLeaderboard();
+});
 document.getElementById("oback").onclick=()=>show("index");
 document.getElementById("gback").onclick=()=>openRun(curRun.id);
 document.getElementById("next").onclick=()=>{ stopPlay(); goNext(); };

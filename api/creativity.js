@@ -16,6 +16,17 @@ function intish(value) {
   return Number(value || 0);
 }
 
+function parsePhrases(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 function publicRole(row) {
   return {
     raw_distance: r3(row.raw_distance),
@@ -29,7 +40,22 @@ function publicRole(row) {
   };
 }
 
-export function assembleCreativity(rows, version = null, updatedUtc = null) {
+function publicSample(row) {
+  return {
+    role: row.role,
+    utterance_a: row.utterance_a,
+    utterance_b: row.utterance_b,
+    embedding_similarity: r3(row.embedding_similarity),
+    judge_similarity: r3(row.judge_similarity),
+    distance: r3(row.distance),
+    coherence_a: row.coherence_a,
+    coherence_b: row.coherence_b,
+    reason: row.reason,
+    divergence_phrases: parsePhrases(row.divergence_phrases_json),
+  };
+}
+
+export function assembleCreativity(rows, version = null, updatedUtc = null, sampleRows = []) {
   const byIdentity = {};
   for (const row of rows) {
     const entry = (byIdentity[row.identity_key] ||= {
@@ -40,6 +66,7 @@ export function assembleCreativity(rows, version = null, updatedUtc = null) {
       declared_model: row.declared_model,
       declared_harness: row.declared_harness,
       by_role: {},
+      samples: [],
     });
 
     if (row.role === '*') {
@@ -60,6 +87,11 @@ export function assembleCreativity(rows, version = null, updatedUtc = null) {
     }
   }
 
+  for (const row of sampleRows) {
+    const entry = byIdentity[row.identity_key];
+    if (entry) entry.samples.push(publicSample(row));
+  }
+
   const competitors = Object.values(byIdentity).sort((a, b) => {
     const az = a.overall_z ?? -9999;
     const bz = b.overall_z ?? -9999;
@@ -75,6 +107,11 @@ export function assembleCreativity(rows, version = null, updatedUtc = null) {
 
 async function creativityTableExists() {
   const rows = await q("SELECT to_regclass('public.creativity_scores') AS table_name");
+  return Boolean(rows[0]?.table_name);
+}
+
+async function creativityJudgmentsTableExists() {
+  const rows = await q("SELECT to_regclass('public.creativity_judgments') AS table_name");
   return Boolean(rows[0]?.table_name);
 }
 
@@ -108,7 +145,27 @@ export default async function handler(req, res) {
       }
 
       const rows = await q('SELECT * FROM creativity_scores WHERE version = $1', [version]);
-      return send(res, 200, assembleCreativity(rows, version, updatedUtc));
+      let samples = [];
+      if (await creativityJudgmentsTableExists()) {
+        const sampleRows = await q(
+          'SELECT identity_key, role, utterance_a, utterance_b, embedding_similarity, judge_similarity, distance, ' +
+            'coherence_a, coherence_b, reason, divergence_phrases_json ' +
+            'FROM creativity_judgments WHERE version = $1 ' +
+            "ORDER BY identity_key, CASE WHEN coherence_a = 'valid' AND coherence_b = 'valid' THEN 0 ELSE 1 END, " +
+            "CASE WHEN tokens_a >= 4 AND tokens_b >= 4 AND lower(trim(utterance_a)) <> 'none' " +
+            "AND lower(trim(utterance_b)) <> 'none' THEN 0 ELSE 1 END, " +
+            'distance DESC NULLS LAST, judgment_key',
+          [version],
+        );
+        const counts = new Map();
+        samples = sampleRows.filter(row => {
+          const count = counts.get(row.identity_key) || 0;
+          if (count >= 4) return false;
+          counts.set(row.identity_key, count + 1);
+          return true;
+        });
+      }
+      return send(res, 200, assembleCreativity(rows, version, updatedUtc, samples));
     } catch (err) {
       if (err?.code === '42P01') return send(res, 200, { version: null, updated_utc: null, competitors: [] });
       throw err;

@@ -831,6 +831,19 @@ def creativity_leaderboard(version: str | None = None) -> dict:
                 f"SELECT * FROM creativity_scores WHERE version={ph}", (version,)
             ).fetchall()
         ]
+        sample_rows = [
+            dict(r) for r in c.execute(
+                f"SELECT identity_key, role, utterance_a, utterance_b, embedding_similarity, "
+                f"judge_similarity, distance, coherence_a, coherence_b, reason, divergence_phrases_json "
+                f"FROM creativity_judgments WHERE version={ph} "
+                f"ORDER BY identity_key, "
+                f"CASE WHEN coherence_a = 'valid' AND coherence_b = 'valid' THEN 0 ELSE 1 END, "
+                f"CASE WHEN tokens_a >= 4 AND tokens_b >= 4 AND lower(trim(utterance_a)) <> 'none' "
+                f"AND lower(trim(utterance_b)) <> 'none' THEN 0 ELSE 1 END, "
+                f"distance DESC, judgment_key",
+                (version,),
+            ).fetchall()
+        ]
 
     by_identity: dict[str, dict] = {}
     for r in rows:
@@ -843,6 +856,7 @@ def creativity_leaderboard(version: str | None = None) -> dict:
             "declared_model": r.get("declared_model"),
             "declared_harness": r.get("declared_harness"),
             "by_role": {},
+            "samples": [],
         })
         if r["role"] == "*":
             entry.update({
@@ -868,6 +882,34 @@ def creativity_leaderboard(version: str | None = None) -> dict:
                 "provisional": bool(int(r.get("provisional") or 0)),
                 "insufficient": bool(int(r.get("insufficient") or 0)),
             }
+
+    sample_counts: dict[str, int] = {}
+    for r in sample_rows:
+        ident = r["identity_key"]
+        if ident not in by_identity:
+            continue
+        count = sample_counts.get(ident, 0)
+        if count >= 4:
+            continue
+        sample_counts[ident] = count + 1
+        try:
+            phrases = json.loads(r.get("divergence_phrases_json") or "[]")
+            if not isinstance(phrases, list):
+                phrases = []
+        except json.JSONDecodeError:
+            phrases = []
+        by_identity[ident]["samples"].append({
+            "role": r.get("role"),
+            "utterance_a": r.get("utterance_a"),
+            "utterance_b": r.get("utterance_b"),
+            "embedding_similarity": r.get("embedding_similarity"),
+            "judge_similarity": r.get("judge_similarity"),
+            "distance": r.get("distance"),
+            "coherence_a": r.get("coherence_a"),
+            "coherence_b": r.get("coherence_b"),
+            "reason": r.get("reason"),
+            "divergence_phrases": [str(p) for p in phrases if p],
+        })
 
     competitors = list(by_identity.values())
     competitors.sort(
