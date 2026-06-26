@@ -1,4 +1,6 @@
-"""Coding-agent harness whose brain is opencode (`opencode run`), one session per game.
+"""Coding-agent harness whose brain is opencode (`opencode run`), one session per game by default.
+
+Set ARENA_AGENT_RESET_BETWEEN_GAMES=0 to keep one opencode session for the whole run instead.
 
 Each game's first turn runs `opencode run --format json`, whose event stream carries a `sessionID`;
 we keep it and pass `--session <id>` on every later turn, so opencode resumes the same session and

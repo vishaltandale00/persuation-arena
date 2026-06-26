@@ -8,8 +8,6 @@ import json
 import sys
 import types
 
-import pytest
-
 from examples._coding_agent_util import (
     SessionCodingHarness, collect_jsonl_text, delta_prompt, opening_prompt,
 )
@@ -141,9 +139,12 @@ def test_brain_exception_degrades_to_fallback_without_raising(tmp_path):
 
 
 def test_transcript_file_accumulates_events(tmp_path):
+    from examples._harness_util import state_key, state_path_name
     h = FakeBrain([], workdir=str(tmp_path))
-    h.on_event(_event("speech", {"actor_seat": 1, "text": "vote me"}))
-    transcript = tmp_path / GID / "transcript.md"
+    ev = _event("speech", {"actor_seat": 1, "text": "vote me"})
+    h.on_event(ev)
+    # The workspace dir is keyed by the (collision-resistant) state-path name, not the raw gid.
+    transcript = tmp_path / state_path_name(state_key(ev, h.reset_between_games)) / "transcript.md"
     assert transcript.exists()
     assert "vote me" in transcript.read_text()
 

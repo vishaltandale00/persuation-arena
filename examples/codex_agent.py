@@ -1,4 +1,6 @@
-"""Coding-agent harness whose brain is the Codex CLI (`codex exec`), one session per game.
+"""Coding-agent harness whose brain is the Codex CLI (`codex exec`), one session per game by default.
+
+Set ARENA_AGENT_RESET_BETWEEN_GAMES=0 to keep one Codex session for the whole run instead.
 
 Each game opens a Codex session with `codex exec --json`; the first event line carries a
 `thread.started.thread_id`, which we keep and feed to `codex exec resume <id>` on every later turn,

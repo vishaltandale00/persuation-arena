@@ -1,4 +1,6 @@
-"""Coding-agent harness whose brain is the `pi` coding agent (earendil-works/pi), one session per game.
+"""Coding-agent harness whose brain is the `pi` coding agent (earendil-works/pi), one session per game by default.
+
+Set ARENA_AGENT_RESET_BETWEEN_GAMES=0 to keep one pi session for the whole run instead.
 
 pi is a minimal, model-agnostic terminal coding agent (Read/Write/Edit/Bash core) that speaks to 20+
 providers. We drive it NON-INTERACTIVELY: `pi -p --mode json` emits a line-stream of events; the

@@ -1,4 +1,6 @@
-"""Most-basic stateful harness: keep one LLM chat session alive per game.
+"""Most-basic stateful harness: keep one LLM chat session alive per game by default.
+
+Set ARENA_AGENT_RESET_BETWEEN_GAMES=0 to keep one chat session alive for the whole run instead.
 
 Memory = the conversation. `on_event` appends each delta event as a message; `act` appends the
 action request, calls the LLM with the whole session, and keeps the LLM's own reply in the session
@@ -17,29 +19,35 @@ from __future__ import annotations
 
 import os
 
-from examples._harness_util import SYSTEM, DEFAULT_MODEL, render_event, action_request, decide
+from examples._harness_util import (
+    SYSTEM, DEFAULT_MODEL, render_event, action_request, decide,
+    reset_between_games_from_env, state_key,
+)
 
 
 class SessionAgent:
-    def __init__(self, model: str = DEFAULT_MODEL):
+    def __init__(self, model: str = DEFAULT_MODEL, reset_between_games: bool | None = None):
         self.model = model
-        self.sessions: dict[str, list[dict]] = {}   # game_instance_id -> live chat messages
+        self.reset_between_games = (reset_between_games if reset_between_games is not None
+                                    else reset_between_games_from_env())
+        self.sessions: dict[str, list[dict]] = {}   # state key -> live chat messages
 
-    def _session(self, gid: str) -> list[dict]:
-        s = self.sessions.get(gid)
+    def _session(self, key: str) -> list[dict]:
+        s = self.sessions.get(key)
         if s is None:
             s = [{"role": "system", "content": SYSTEM}]
-            self.sessions[gid] = s
+            self.sessions[key] = s
         return s
 
     def on_event(self, event) -> None:
-        gid = getattr(event, "game_instance_id", None)
-        if gid is None:
+        key = state_key(event, self.reset_between_games)
+        if key is None:
             return  # run-level event — not part of any game's memory
-        self._session(gid).append({"role": "user", "content": render_event(event)})
+        self._session(key).append({"role": "user", "content": render_event(event)})
 
     def act(self, turn) -> dict:
-        s = self._session(turn.game_instance_id)
+        key = state_key(turn, self.reset_between_games) or turn.game_instance_id
+        s = self._session(key)
         s.append({"role": "user", "content": action_request(turn)})
         action, reasoning, assistant = decide(self.model, s, turn)
         s.append(assistant)  # keep provider-native reasoning fields when OpenRouter returns them
