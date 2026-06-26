@@ -211,8 +211,8 @@
   .sysline{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:center;padding:7px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:13px 0}
   .resline{font-family:var(--mono);font-size:12px;text-align:center;padding:10px;border-radius:8px;border:1px solid var(--line-2);margin:6px 0 13px}
   .resline.good{background:var(--good-soft);color:var(--good);border-color:#cfe6df} .resline.evil{background:var(--evil-soft);color:var(--evil);border-color:#ecccca} .resline.void{background:var(--sel);color:var(--faint);border-color:var(--line-2)}
-  .game-summary{border-bottom:1px solid var(--line);background:var(--panel);padding:13px 18px}
-  .game-summary-inner{max-width:1100px;margin:0 auto}
+  .game-summary{border-bottom:1px solid var(--line);background:var(--panel);padding:0 0 15px;margin-bottom:16px}
+  .game-summary-inner{max-width:760px;margin:0}
   .game-summary-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
   .game-summary-title{font-size:13px;font-weight:600}
   .game-summary-meta{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
@@ -1188,10 +1188,10 @@ function renderSummaryOnly(){
 }
 function renderGameDetail(){
   document.getElementById("gamebody").innerHTML=
-    '<div id="gamesummary"></div><div class="phaserail" id="phaserail"></div><div class="strip" id="strip"></div>'+
-    '<div class="bottom"><section class="convo" id="convo"><div class="convo-inner" id="convoinner"></div></section><section class="state" id="state"></section></div>';
-  renderGameSummary();
+    '<div class="phaserail" id="phaserail"></div><div class="strip" id="strip"></div>'+
+    '<div class="bottom"><section class="convo" id="convo"><div class="convo-inner" id="convoinner"><div id="gamesummary"></div></div></section><section class="state" id="state"></section></div>';
   renderConvoFull();          // the whole conversation, shown at once (review, not a live reveal)
+  renderGameSummary();
   updateLens(false);          // the right-side "lens": state panel + strip + reasoning at the current phase
   document.getElementById("convo").scrollTop=0;  // start at the top so you read from the beginning
   ensureGameSummary();
@@ -1252,7 +1252,7 @@ function updateLens(scrollToPhase){
   if(scrollToPhase){ const el=document.getElementById("cph-"+curPhase()); if(el) el.scrollIntoView({block:"start"}); }
 }
 function renderConvoFull(){
-  const c=document.getElementById("convoinner"); c.innerHTML=""; const m=T();
+  const c=document.getElementById("convoinner"); c.innerHTML='<div id="gamesummary"></div>'; const m=T();
   m.phases.forEach((p,pi)=>{
     const d=document.createElement("div"); d.className="phasebar"; d.id="cph-"+pi;
     d.innerHTML='<span class="t">'+(pi+1)+' · '+p.name+'</span><span class="ln"></span>';
