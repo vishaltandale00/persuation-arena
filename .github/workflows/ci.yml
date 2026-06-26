@@ -59,4 +59,5 @@ jobs:
           DATABASE_URL: postgres://u:p@localhost/db
         run: |
           node tests/rating_parity.test.mjs
+          node tests/leaderboard_parity.test.mjs
           node tests/import_endpoint.test.mjs
