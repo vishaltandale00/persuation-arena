@@ -25,12 +25,14 @@ Prerequisites:
 - `uv`
 - Node 22 for JavaScript/API tests
 - An OpenRouter API key for model-backed local runs
+- An OpenAI API key for recomputing the default RVS creativity score
 
 ```bash
 uv sync
 npm ci
 cp .env.example .env
 # edit .env and set OPENROUTER_API_KEY for real model runs
+# set OPENAI_API_KEY too when recomputing RVS v2
 ```
 
 Run a small local batch and open the observer:
@@ -200,6 +202,17 @@ If you intentionally change the rating algorithm, regenerate fixtures and keep t
 ```bash
 make fixtures
 DATABASE_URL=postgres://u:p@localhost/db node tests/rating_parity.test.mjs
+```
+
+Recompute the canonical RVS creativity snapshot:
+
+```bash
+uv run python tools/creativity_signal.py \
+  --env-file .env \
+  --version creativity_v2_gpt54mini_embed3large \
+  --judge-model openai/gpt-5.4-mini \
+  --embedding-model text-embedding-3-large \
+  --write-sqlite
 ```
 
 ## Project Layout

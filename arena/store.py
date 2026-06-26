@@ -121,6 +121,12 @@ CREATE TABLE IF NOT EXISTS creativity_judgments (
   reason TEXT, divergence_phrases_json TEXT,
   tokens_a INTEGER, tokens_b INTEGER, length_ratio REAL, created_utc TEXT
 );
+CREATE TABLE IF NOT EXISTS creativity_versions (
+  version TEXT PRIMARY KEY, updated_utc TEXT, score_rows INTEGER, judgment_count INTEGER,
+  embedding_model TEXT, judge_model TEXT, judge_temperature REAL, judge_prompt_version TEXT
+);
+CREATE INDEX IF NOT EXISTS creativity_judgments_version_idx ON creativity_judgments (version);
+CREATE INDEX IF NOT EXISTS creativity_judgments_version_identity_idx ON creativity_judgments (version, identity_key);
 """
 
 # Postgres: created once via scripts/init_db.py or store.init_schema() (NOT per connection —
@@ -209,6 +215,13 @@ PG_SCHEMA_STMTS = [
          reason TEXT, divergence_phrases_json TEXT,
          tokens_a INTEGER, tokens_b INTEGER, length_ratio DOUBLE PRECISION, created_utc TEXT
        )""",
+    """CREATE TABLE IF NOT EXISTS creativity_versions (
+         version TEXT PRIMARY KEY, updated_utc TEXT, score_rows INTEGER, judgment_count INTEGER,
+         embedding_model TEXT, judge_model TEXT, judge_temperature DOUBLE PRECISION,
+         judge_prompt_version TEXT
+       )""",
+    "CREATE INDEX IF NOT EXISTS creativity_judgments_version_idx ON creativity_judgments (version)",
+    "CREATE INDEX IF NOT EXISTS creativity_judgments_version_identity_idx ON creativity_judgments (version, identity_key)",
 ]
 
 # Columns added after the original schema shipped; ALTER-added on open so old SQLite DBs upgrade.
@@ -281,6 +294,14 @@ def active_backend_label() -> str:
 
 def _ph() -> str:
     return "%s" if _is_pg() else "?"
+
+
+def _table_exists(c, name: str) -> bool:
+    if _is_pg():
+        row = c.execute("SELECT to_regclass(%s) AS table_name", (name,)).fetchone()
+        return bool(dict(row or {}).get("table_name"))
+    row = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+    return bool(row)
 
 
 def _seat_unique_violation() -> type[BaseException] | tuple[type[BaseException], ...]:
@@ -803,6 +824,63 @@ def all_rating_events() -> list[dict]:
         return [dict(r) for r in c.execute("SELECT * FROM rating_events").fetchall()]
 
 
+CURRENT_CREATIVITY_VERSION = "creativity_v2_gpt54mini_embed3large"
+CREATIVITY_VERSION_LABELS = {
+    "creativity_v2_gpt54mini_embed3large": {
+        "label": "RVS v2 current",
+        "status": "current",
+        "embedding_model": "text-embedding-3-large",
+        "judge_model": "openai/gpt-5.4-mini",
+        "judge_temperature": None,
+        "judge_prompt_version": "creativity_judge_v1",
+    },
+    "creativity_v1_defaulttemp": {
+        "label": "RVS v1 legacy",
+        "status": "legacy",
+        "embedding_model": "local_tfidf_v0",
+        "judge_model": "openai/gpt-4o-mini",
+        "judge_temperature": None,
+        "judge_prompt_version": "creativity_judge_v1",
+    },
+    "creativity_v1": {
+        "label": "RVS v1 legacy",
+        "status": "legacy",
+        "embedding_model": "local_tfidf_v0",
+        "judge_model": "openai/gpt-4o-mini",
+        "judge_temperature": None,
+        "judge_prompt_version": "creativity_judge_v1",
+    },
+}
+
+
+def _creativity_version_row(row: dict, version_meta: dict | None = None) -> dict:
+    known = CREATIVITY_VERSION_LABELS.get(row["version"], {})
+    version_meta = version_meta or {}
+    return {
+        "version": row["version"],
+        "label": known.get("label") or row["version"],
+        "status": known.get("status") or "experimental",
+        "updated_utc": version_meta.get("updated_utc") or row.get("updated_utc"),
+        "score_rows": int(row.get("score_rows") or 0),
+        "judgment_count": int(version_meta.get("judgment_count") or 0),
+        "embedding_model": version_meta.get("embedding_model") or known.get("embedding_model"),
+        "judge_model": version_meta.get("judge_model") or known.get("judge_model"),
+        "judge_temperature": (
+            version_meta.get("judge_temperature")
+            if version_meta.get("judge_temperature") is not None
+            else known.get("judge_temperature")
+        ),
+        "judge_prompt_version": version_meta.get("judge_prompt_version") or known.get("judge_prompt_version"),
+    }
+
+
+def _default_creativity_version(versions: list[dict]) -> str | None:
+    for row in versions:
+        if row["version"] == CURRENT_CREATIVITY_VERSION:
+            return row["version"]
+    return versions[0]["version"] if versions else None
+
+
 def creativity_leaderboard(version: str | None = None) -> dict:
     """Latest creativity snapshot, shaped for the observer.
 
@@ -811,39 +889,53 @@ def creativity_leaderboard(version: str | None = None) -> dict:
     """
     ph = _ph()
     with conn() as c:
-        if version is None:
-            row = c.execute(
-                "SELECT version, MAX(updated_utc) updated_utc FROM creativity_scores "
-                "GROUP BY version ORDER BY updated_utc DESC LIMIT 1"
-            ).fetchone()
-            if not row:
-                return {"version": None, "updated_utc": None, "competitors": []}
-            version = row["version"]
-            updated_utc = row["updated_utc"]
-        else:
-            row = c.execute(
-                f"SELECT MAX(updated_utc) updated_utc FROM creativity_scores WHERE version={ph}",
-                (version,),
-            ).fetchone()
-            updated_utc = row["updated_utc"] if row else None
+        score_versions = [
+            dict(r) for r in c.execute(
+                "SELECT version, MAX(updated_utc) updated_utc, COUNT(*) score_rows FROM creativity_scores "
+                "GROUP BY version ORDER BY updated_utc DESC"
+            ).fetchall()
+        ]
+        has_judgments = _table_exists(c, "creativity_judgments")
+        version_meta = []
+        if _table_exists(c, "creativity_versions"):
+            version_meta = [
+                dict(r) for r in c.execute(
+                    "SELECT version, updated_utc, score_rows, judgment_count, embedding_model, judge_model, "
+                    "judge_temperature, judge_prompt_version FROM creativity_versions"
+                ).fetchall()
+            ]
+        meta_by_version = {row["version"]: row for row in version_meta}
+        versions = [_creativity_version_row(row, meta_by_version.get(row["version"])) for row in score_versions]
+        if not versions:
+            return {"version": None, "version_meta": None, "versions": [], "updated_utc": None, "competitors": []}
+        known_versions = {row["version"] for row in versions}
+        if version not in known_versions:
+            version = _default_creativity_version(versions)
+        row = c.execute(
+            f"SELECT MAX(updated_utc) updated_utc FROM creativity_scores WHERE version={ph}",
+            (version,),
+        ).fetchone()
+        updated_utc = row["updated_utc"] if row else None
         rows = [
             dict(r) for r in c.execute(
                 f"SELECT * FROM creativity_scores WHERE version={ph}", (version,)
             ).fetchall()
         ]
-        sample_rows = [
-            dict(r) for r in c.execute(
-                f"SELECT identity_key, role, utterance_a, utterance_b, embedding_similarity, "
-                f"judge_similarity, distance, coherence_a, coherence_b, reason, divergence_phrases_json "
-                f"FROM creativity_judgments WHERE version={ph} "
-                f"ORDER BY identity_key, "
-                f"CASE WHEN coherence_a = 'valid' AND coherence_b = 'valid' THEN 0 ELSE 1 END, "
-                f"CASE WHEN tokens_a >= 4 AND tokens_b >= 4 AND lower(trim(utterance_a)) <> 'none' "
-                f"AND lower(trim(utterance_b)) <> 'none' THEN 0 ELSE 1 END, "
-                f"distance DESC, judgment_key",
-                (version,),
-            ).fetchall()
-        ]
+        sample_rows = []
+        if has_judgments:
+            sample_rows = [
+                dict(r) for r in c.execute(
+                    f"SELECT identity_key, role, utterance_a, utterance_b, embedding_similarity, "
+                    f"judge_similarity, distance, coherence_a, coherence_b, reason, divergence_phrases_json "
+                    f"FROM creativity_judgments WHERE version={ph} "
+                    f"ORDER BY identity_key, "
+                    f"CASE WHEN coherence_a = 'valid' AND coherence_b = 'valid' THEN 0 ELSE 1 END, "
+                    f"CASE WHEN tokens_a >= 4 AND tokens_b >= 4 AND lower(trim(utterance_a)) <> 'none' "
+                    f"AND lower(trim(utterance_b)) <> 'none' THEN 0 ELSE 1 END, "
+                    f"distance DESC, judgment_key",
+                    (version,),
+                ).fetchall()
+            ]
 
     by_identity: dict[str, dict] = {}
     for r in rows:
@@ -921,7 +1013,13 @@ def creativity_leaderboard(version: str | None = None) -> dict:
         ),
         reverse=True,
     )
-    return {"version": version, "updated_utc": updated_utc, "competitors": competitors}
+    return {
+        "version": version,
+        "version_meta": next((row for row in versions if row["version"] == version), None),
+        "versions": versions,
+        "updated_utc": updated_utc,
+        "competitors": competitors,
+    }
 
 
 def get_rating(identity_key: str) -> dict | None:

@@ -6,6 +6,34 @@
 import { q, send } from './_db.js';
 import { roundHalfEven } from './_round.js';
 
+const CURRENT_CREATIVITY_VERSION = 'creativity_v2_gpt54mini_embed3large';
+const VERSION_LABELS = {
+  creativity_v2_gpt54mini_embed3large: {
+    label: 'RVS v2 current',
+    status: 'current',
+    embedding_model: 'text-embedding-3-large',
+    judge_model: 'openai/gpt-5.4-mini',
+    judge_temperature: null,
+    judge_prompt_version: 'creativity_judge_v1',
+  },
+  creativity_v1_defaulttemp: {
+    label: 'RVS v1 legacy',
+    status: 'legacy',
+    embedding_model: 'local_tfidf_v0',
+    judge_model: 'openai/gpt-4o-mini',
+    judge_temperature: null,
+    judge_prompt_version: 'creativity_judge_v1',
+  },
+  creativity_v1: {
+    label: 'RVS v1 legacy',
+    status: 'legacy',
+    embedding_model: 'local_tfidf_v0',
+    judge_model: 'openai/gpt-4o-mini',
+    judge_temperature: null,
+    judge_prompt_version: 'creativity_judge_v1',
+  },
+};
+
 const r3 = (x) => (x == null ? null : roundHalfEven(Number(x), 3));
 
 function boolish(value) {
@@ -25,6 +53,26 @@ function parsePhrases(value) {
   } catch {
     return [];
   }
+}
+
+function publicVersion(row, versionMeta = {}) {
+  const known = VERSION_LABELS[row.version] || {};
+  return {
+    version: row.version,
+    label: known.label || row.version,
+    status: known.status || 'experimental',
+    updated_utc: versionMeta.updated_utc || row.updated_utc,
+    score_rows: intish(row.score_rows),
+    judgment_count: intish(versionMeta.judgment_count),
+    embedding_model: versionMeta.embedding_model || known.embedding_model || null,
+    judge_model: versionMeta.judge_model || known.judge_model || null,
+    judge_temperature: versionMeta.judge_temperature ?? known.judge_temperature ?? null,
+    judge_prompt_version: versionMeta.judge_prompt_version || known.judge_prompt_version || null,
+  };
+}
+
+function defaultCreativityVersion(versions) {
+  return versions.find(v => v.version === CURRENT_CREATIVITY_VERSION)?.version || versions[0]?.version || null;
 }
 
 function publicRole(row) {
@@ -55,7 +103,7 @@ function publicSample(row) {
   };
 }
 
-export function assembleCreativity(rows, version = null, updatedUtc = null, sampleRows = []) {
+export function assembleCreativity(rows, version = null, updatedUtc = null, sampleRows = [], versions = []) {
   const byIdentity = {};
   for (const row of rows) {
     const entry = (byIdentity[row.identity_key] ||= {
@@ -102,7 +150,13 @@ export function assembleCreativity(rows, version = null, updatedUtc = null, samp
     return (b.valid_pairs || 0) - (a.valid_pairs || 0);
   });
 
-  return { version, updated_utc: updatedUtc, competitors };
+  return {
+    version,
+    version_meta: versions.find(v => v.version === version) || null,
+    versions,
+    updated_utc: updatedUtc,
+    competitors,
+  };
 }
 
 async function creativityTableExists() {
@@ -115,38 +169,53 @@ async function creativityJudgmentsTableExists() {
   return Boolean(rows[0]?.table_name);
 }
 
+async function creativityVersionsTableExists() {
+  const rows = await q("SELECT to_regclass('public.creativity_versions') AS table_name");
+  return Boolean(rows[0]?.table_name);
+}
+
+async function creativityVersions(hasVersionMeta) {
+  const scoreRows = await q(
+    'SELECT version, MAX(updated_utc) AS updated_utc, COUNT(*) AS score_rows ' +
+      'FROM creativity_scores GROUP BY version ORDER BY updated_utc DESC',
+  );
+  const metaByVersion = new Map();
+  if (hasVersionMeta) {
+    const metaRows = await q(
+      'SELECT version, updated_utc, score_rows, judgment_count, embedding_model, judge_model, ' +
+        'judge_temperature, judge_prompt_version FROM creativity_versions',
+    );
+    for (const row of metaRows) metaByVersion.set(row.version, row);
+  }
+  return scoreRows.map(row => publicVersion(row, metaByVersion.get(row.version)));
+}
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
 
   if (req.method === 'GET') {
     try {
       if (!(await creativityTableExists())) {
-        return send(res, 200, { version: null, updated_utc: null, competitors: [] });
+        return send(res, 200, { version: null, version_meta: null, versions: [], updated_utc: null, competitors: [] });
       }
 
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-      let version = url.searchParams.get('version');
-      let updatedUtc = null;
-      if (!version) {
-        const latest = await q(
-          'SELECT version, MAX(updated_utc) AS updated_utc FROM creativity_scores ' +
-            'GROUP BY version ORDER BY updated_utc DESC LIMIT 1',
-        );
-        if (!latest.length) {
-          return send(res, 200, { version: null, updated_utc: null, competitors: [] });
-        }
-        version = latest[0].version;
-        updatedUtc = latest[0].updated_utc;
-      } else {
-        const stamp = await q('SELECT MAX(updated_utc) AS updated_utc FROM creativity_scores WHERE version = $1', [
-          version,
-        ]);
-        updatedUtc = stamp[0]?.updated_utc || null;
+      const hasJudgments = await creativityJudgmentsTableExists();
+      const versions = await creativityVersions(await creativityVersionsTableExists());
+      if (!versions.length) {
+        return send(res, 200, { version: null, version_meta: null, versions: [], updated_utc: null, competitors: [] });
       }
+      let version = url.searchParams.get('version');
+      if (!versions.some(v => v.version === version)) version = defaultCreativityVersion(versions);
+      let updatedUtc = null;
+      const stamp = await q('SELECT MAX(updated_utc) AS updated_utc FROM creativity_scores WHERE version = $1', [
+        version,
+      ]);
+      updatedUtc = stamp[0]?.updated_utc || null;
 
       const rows = await q('SELECT * FROM creativity_scores WHERE version = $1', [version]);
       let samples = [];
-      if (await creativityJudgmentsTableExists()) {
+      if (hasJudgments) {
         const sampleRows = await q(
           'SELECT identity_key, role, utterance_a, utterance_b, embedding_similarity, judge_similarity, distance, ' +
             'coherence_a, coherence_b, reason, divergence_phrases_json ' +
@@ -165,9 +234,11 @@ export default async function handler(req, res) {
           return true;
         });
       }
-      return send(res, 200, assembleCreativity(rows, version, updatedUtc, samples));
+      return send(res, 200, assembleCreativity(rows, version, updatedUtc, samples, versions));
     } catch (err) {
-      if (err?.code === '42P01') return send(res, 200, { version: null, updated_utc: null, competitors: [] });
+      if (err?.code === '42P01') {
+        return send(res, 200, { version: null, version_meta: null, versions: [], updated_utc: null, competitors: [] });
+      }
       throw err;
     }
   }

@@ -76,9 +76,24 @@ test('assembleCreativity groups overall and role rows by identity', () => {
     },
   ];
 
-  const out = assembleCreativity(rows, 'creativity_v1', '2026-06-26T00:00:00.000000Z', samples);
+  const versions = [
+    {
+      version: 'creativity_v1',
+      label: 'RVS v1 legacy',
+      status: 'legacy',
+      embedding_model: 'local_tfidf_v0',
+      judge_model: 'openai/gpt-4o-mini',
+      judge_temperature: null,
+      judge_prompt_version: 'creativity_judge_v1',
+      judgment_count: 1,
+    },
+  ];
+
+  const out = assembleCreativity(rows, 'creativity_v1', '2026-06-26T00:00:00.000000Z', samples, versions);
 
   assert.equal(out.version, 'creativity_v1');
+  assert.equal(out.version_meta.label, 'RVS v1 legacy');
+  assert.equal(out.versions.length, 1);
   assert.equal(out.competitors.length, 2);
   assert.equal(out.competitors[0].identity_key, 'static:model-a:base');
   assert.equal(out.competitors[0].overall_z, 1.25);

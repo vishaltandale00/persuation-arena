@@ -403,6 +403,10 @@
 	  .lb-mode button:hover{background:var(--hover);color:var(--ink)}
 	  .lb-mode button.on{background:var(--accent);color:#fff}
 	  .lb-mode button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+	  .rvs-version{display:flex;align-items:center;gap:7px}
+	  .rvs-version[hidden]{display:none}
+	  .rvs-version label{font-family:var(--mono);font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint)}
+	  .rvs-version select{font:inherit;font-size:12.5px;color:var(--ink);border:1px solid var(--line-2);border-radius:7px;background:var(--panel);padding:6px 26px 6px 8px;max-width:240px}
 	  .lb-note{font-size:12.5px;color:var(--ink-2);max-width:520px}
 	  .lbtable{display:flex;flex-direction:column}
 	  .lb-head,.lb-main{display:grid;grid-template-columns:30px 14px minmax(170px,1.5fr) 116px 76px minmax(120px,1fr) minmax(78px,.7fr);gap:10px;align-items:center}
@@ -444,6 +448,15 @@
 	  .sample-judge .reason{color:var(--ink-2);font-size:12.5px;line-height:1.45;overflow-wrap:anywhere}
 	  .sample-phrases{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
 	  .sample-phrases span{font-family:var(--mono);font-size:10.5px;color:var(--faint);border:1px solid var(--line);border-radius:999px;padding:2px 6px;background:var(--bg)}
+	  .score-recipe{margin:10px 0;border:1px solid var(--line);border-radius:8px;background:var(--panel);overflow:hidden}
+	  .score-recipe summary{cursor:pointer;font-weight:650;font-size:13px;padding:9px 10px;list-style:none}
+	  .score-recipe summary::-webkit-details-marker{display:none}
+	  .score-recipe summary:before{content:"▸";display:inline-block;width:14px;color:var(--faint)}
+	  .score-recipe[open] summary:before{content:"▾"}
+	  .score-recipe .recipe-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;border-top:1px solid var(--line);padding:10px}
+	  .recipe-item{border:1px solid var(--line);border-radius:7px;background:var(--bg);padding:8px;min-width:0}
+	  .recipe-item .rk{font-family:var(--mono);font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--faint);margin-bottom:4px}
+	  .recipe-item .rv{font-size:12.5px;line-height:1.4;color:var(--ink-2);overflow-wrap:anywhere}
 	  .scatter-wrap{padding:12px 10px 4px;border-bottom:1px solid var(--line)}
 	  .scatter{width:100%;height:360px;display:block;background:#fcfcfc;border:1px solid var(--line);border-radius:8px}
 	  .scatter text{font-family:var(--mono);font-size:11px;fill:var(--faint)}
@@ -451,7 +464,7 @@
 	  .scatter .grid{stroke:var(--line);stroke-width:1}
 	  .scatter .point{fill:var(--accent);opacity:.82}
 	  .scatter .point.prov{fill:var(--faint);opacity:.55}
-	  @media(max-width:720px){ .lb-toolbar{align-items:flex-start}.lb-mode{width:100%;display:grid;grid-template-columns:repeat(3,1fr)}.lb-mode button{text-align:center;padding:7px 6px}.lb-head{display:none}.lb-heat{display:none}.lb-main{grid-template-columns:24px 12px minmax(0,1fr) auto;gap:4px 8px;align-items:start}.lb-who{grid-column:3/-1;grid-row:1}.lb-main>:nth-child(4){grid-column:3;grid-row:2}.lb-main>:nth-child(5){grid-column:4;grid-row:2;justify-self:start}.lb-win{grid-column:3/-1;grid-row:3;font-size:10.5px;white-space:normal}.lb-detail{padding-left:16px;overflow-x:auto}.roletbl th,.roletbl td{padding:3px 4px;font-size:10px}.sample .top{flex-direction:column}.sample .sample-meta{justify-content:flex-start}.sample-pair{grid-template-columns:1fr}.scatter{height:300px} }
+	  @media(max-width:720px){ .lb-toolbar{align-items:flex-start}.lb-mode{width:100%;display:grid;grid-template-columns:repeat(3,1fr)}.lb-mode button{text-align:center;padding:7px 6px}.rvs-version{width:100%;justify-content:space-between}.rvs-version select{max-width:210px}.lb-head{display:none}.lb-heat{display:none}.lb-main{grid-template-columns:24px 12px minmax(0,1fr) auto;gap:4px 8px;align-items:start}.lb-who{grid-column:3/-1;grid-row:1}.lb-main>:nth-child(4){grid-column:3;grid-row:2}.lb-main>:nth-child(5){grid-column:4;grid-row:2;justify-self:start}.lb-win{grid-column:3/-1;grid-row:3;font-size:10.5px;white-space:normal}.lb-detail{padding-left:16px;overflow-x:auto}.roletbl th,.roletbl td{padding:3px 4px;font-size:10px}.sample .top{flex-direction:column}.sample .sample-meta{justify-content:flex-start}.sample-pair{grid-template-columns:1fr}.score-recipe .recipe-body{grid-template-columns:1fr}.scatter{height:300px} }
 </style>
 </head>
 <body>
@@ -480,6 +493,10 @@
 	            <button type="button" class="on" data-mode="elo">Elo</button>
 	            <button type="button" data-mode="rvs">RVS</button>
 	            <button type="button" data-mode="scatter">Elo x RVS</button>
+	          </div>
+	          <div class="rvs-version" id="rvsVersionWrap" hidden>
+	            <label for="rvsver">RVS version</label>
+	            <select id="rvsver"></select>
 	          </div>
 	          <div class="lb-note" id="lbnote"></div>
 	        </div>
@@ -867,17 +884,64 @@ function renderIndex(){
 }
 
 	/* ===== LEADERBOARD ===== */
-	let LB=[]; let CREATIVITY={version:null,competitors:[]};
+	let LB=[]; let CREATIVITY={version:null,version_meta:null,versions:[],competitors:[]};
 	const lbExpanded=new Set();
 	let LB_MODE=localStorage.getItem("leaderboard.mode")||"elo";
 	if(!["elo","rvs","scatter"].includes(LB_MODE)) LB_MODE="elo";
+	let RVS_VERSION=localStorage.getItem("leaderboard.rvsVersion")||"";
 	async function loadLeaderboard(){
 	  try{ const d=await jget("/leaderboard"); LB=d.competitors||[]; }
 	  catch(e){ LB=[]; console.error("leaderboard load failed",e); }
 	}
-	async function loadCreativity(){
-	  try{ CREATIVITY=await jget("/creativity"); if(!Array.isArray(CREATIVITY.competitors)) CREATIVITY.competitors=[]; }
-	  catch(e){ CREATIVITY={version:null,competitors:[]}; console.error("creativity load failed",e); }
+	async function loadCreativity(version=RVS_VERSION){
+	  try{
+	    const suffix=version?"?version="+encodeURIComponent(version):"";
+	    CREATIVITY=await jget("/creativity"+suffix);
+	    if(!Array.isArray(CREATIVITY.competitors)) CREATIVITY.competitors=[];
+	    if(!Array.isArray(CREATIVITY.versions)) CREATIVITY.versions=[];
+	    if(CREATIVITY.version){ RVS_VERSION=CREATIVITY.version; localStorage.setItem("leaderboard.rvsVersion", RVS_VERSION); }
+	  }
+	  catch(e){ CREATIVITY={version:null,version_meta:null,versions:[],competitors:[]}; console.error("creativity load failed",e); }
+	}
+	function rvsVersionMeta(){
+	  return CREATIVITY.version_meta || (CREATIVITY.versions||[]).find(v=>v.version===CREATIVITY.version) || null;
+	}
+	function modelLabel(model){
+	  const map={
+	    "openai/gpt-5.4-mini":"GPT-5.4 mini",
+	    "openai/gpt-4o-mini":"GPT-4o mini",
+	    "text-embedding-3-large":"text-embedding-3-large",
+	    "local_tfidf_v0":"local TF-IDF"
+	  };
+	  return map[model] || model || "unknown";
+	}
+	function rvsVersionLabel(v){
+	  return v ? ((v.label||v.version)+(v.status==="experimental"?"":"")) : "RVS";
+	}
+	function rvsVersionSummary(){
+	  const meta=rvsVersionMeta();
+	  if(!meta) return "RVS · public say pairs only.";
+	  const bits=[rvsVersionLabel(meta)];
+	  if(meta.judge_model) bits.push("judge: "+modelLabel(meta.judge_model));
+	  if(meta.embedding_model) bits.push("embedding: "+modelLabel(meta.embedding_model));
+	  bits.push("public say pairs only");
+	  return bits.join(" · ");
+	}
+	function renderRvsVersionPicker(){
+	  const wrap=document.getElementById("rvsVersionWrap"), sel=document.getElementById("rvsver");
+	  if(!wrap||!sel) return;
+	  const versions=CREATIVITY.versions||[];
+	  const show=(LB_MODE==="rvs"||LB_MODE==="scatter") && versions.length>1;
+	  wrap.hidden=!show;
+	  if(!show) return;
+	  sel.innerHTML=versions.map(v=>'<option value="'+escAttr(v.version)+'">'+esc(v.label||v.version)+'</option>').join("");
+	  sel.value=CREATIVITY.version||"";
+	  sel.onchange=async()=>{
+	    RVS_VERSION=sel.value;
+	    localStorage.setItem("leaderboard.rvsVersion", RVS_VERSION);
+	    await loadCreativity(RVS_VERSION);
+	    renderLeaderboard();
+	  };
 	}
 	function pct(x){ return Math.round((x||0)*100)+"%"; }
 	function roleZColor(z){
@@ -981,6 +1045,20 @@ function renderIndex(){
 	      (phraseHtml?'<div class="sample-phrases">'+phraseHtml+'</div>':'')+'</div>';
 	  }).join("")+'</div>';
 	}
+	function rvsRecipe(){
+	  const meta=rvsVersionMeta()||{};
+	  const items=[
+	    ["Unit","Same-agent, same-role public say-event pairs."],
+	    ["Embedding prior",modelLabel(meta.embedding_model)+" similarity is passed to the judge as a weak hint."],
+	    ["LLM judge",modelLabel(meta.judge_model)+" scores continuous semantic/rhetorical similarity."],
+	    ["Coherence gate","Invalid, off-task, pass-only, and underinformative utterances are excluded."],
+	    ["Aggregation","Mean valid pairwise distance, then role-normalized against the field."],
+	    ["Version",(meta.version||CREATIVITY.version||"unversioned")+" · "+(meta.judge_prompt_version||"prompt unknown")]
+	  ];
+	  return '<details class="score-recipe"><summary>Scoring recipe</summary><div class="recipe-body">'+
+	    items.map(([k,v])=>'<div class="recipe-item"><div class="rk">'+esc(k)+'</div><div class="rv">'+esc(v)+'</div></div>').join("")+
+	    '</div></details>';
+	}
 	function identitySub(c){
 	  return esc((c.declared_model||c.identity_key.replace(/^static:/,"").replace(/:[^:]*$/,""))+
 	    (c.declared_harness?" · "+c.declared_harness:""));
@@ -1004,7 +1082,7 @@ function renderIndex(){
 	      objCell('Tanner','tanner',ob.tanner||{})+'</div>'+roleTable(item.elo.by_role||{});
 	  };
 	  const rvsBlock=()=>item.rvs?('<div class="detail-title">RVS evidence</div>'+rvsRoleTable(item.rvs.by_role||{})+
-	    '<div class="detail-title">Judged pair samples</div>'+rvsSamples(item.rvs.samples||[])):"";
+	    rvsRecipe()+'<div class="detail-title">Judged pair samples</div>'+rvsSamples(item.rvs.samples||[])):"";
 	  if(LB_MODE==="elo") return eloBlock() || rvsBlock();
 	  if(LB_MODE==="rvs") return rvsBlock() || eloBlock();
 	  return eloBlock()+rvsBlock();
@@ -1067,10 +1145,11 @@ function renderIndex(){
 	function renderLeaderboard(){
 	  const el=document.getElementById("lbrows"); if(!el) return;
 	  document.querySelectorAll("#lbmode button").forEach(b=>b.classList.toggle("on",b.dataset.mode===LB_MODE));
+	  renderRvsVersionPicker();
 	  const notes={
 	    elo:"Deterministic objective-handicap Elo from wins. RVS is shown beside it when available.",
-	    rvs:"Role Variety Score ranks role-conditioned self-variety from public speech only.",
-	    scatter:"Each point is one harness with both Elo and RVS evidence."
+	    rvs:rvsVersionSummary(),
+	    scatter:rvsVersionSummary()
 	  };
 	  document.getElementById("lbnote").textContent=notes[LB_MODE];
 	  document.getElementById("lbtitle").textContent=LB_MODE==="rvs"?"Role Variety Score":(LB_MODE==="scatter"?"Elo x RVS":"Leaderboard");
@@ -1078,7 +1157,8 @@ function renderIndex(){
 	  const rows=sortedBoardItems();
 	  renderScatter(rows);
 	  const cc=document.getElementById("lbcount");
-	  if(cc) cc.textContent=rows.length?(rows.length+" harnesses"+(CREATIVITY.version&&LB_MODE!=="elo"?" · "+CREATIVITY.version:"")):"";
+	  const meta=rvsVersionMeta();
+	  if(cc) cc.textContent=rows.length?(rows.length+" harnesses"+(meta&&LB_MODE!=="elo"?" · "+(meta.label||meta.version):"")):"";
 	  if(!rows.length){ el.innerHTML='<div class="lb-empty">No leaderboard data available for this mode yet.</div>'; return; }
 	  el.innerHTML=rows.map((c,i)=>lbRow(c,i+1)).join("");
 	  el.querySelectorAll(".lb-row").forEach(row=>{
