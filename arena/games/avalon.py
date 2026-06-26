@@ -14,10 +14,8 @@ Reuses the {reasoning, action} agent contract and emits the transcript shape the
 """
 from __future__ import annotations
 
-import random
-
 from arena.identity import participant_label, roster_line, seat_for_participant_ref
-from .base import Agent, agent_call_log, agent_stats, team_of
+from .base import Agent, Game, team_of
 
 ROLE_DESC = {
     "Merlin": "You know who the evil players are, but if the Assassin identifies you at the end, evil wins. Stay hidden.",
@@ -45,18 +43,14 @@ TEAM_SIZES_5 = TEAM_SIZES_BY_N[5]
 MAX_PROPOSALS = 3  # re-proposals per quest before auto-passing (v1 simplification of the hammer rule)
 
 
-class Avalon:
+class Avalon(Game):
     GAME = "avalon"
     TITLE = "The Resistance: Avalon"
     MIN_PLAYERS, MAX_PLAYERS = 5, 7
 
     def __init__(self, names: dict[int, str], seed: int, discussion_rounds: int = 1,
                  deal_override: list[str] | None = None):
-        self.names = names
-        self.n = len(names)
-        self.seed = seed
-        self.rng = random.Random(seed)
-        self.discussion_rounds = discussion_rounds
+        super().__init__(names, seed, discussion_rounds)
         self.deal_override = deal_override
         self.role: dict[int, str] = {}
         self.public: list[str] = []
@@ -292,17 +286,11 @@ class Avalon:
                            "outcome": {"team": "evil", "text": text},
                            "board": {"quests": [dict(s) for s in status]}})
 
-        players = [{
-            "seat": i, "dealt": self.role[i], "end": self.role[i], "team": team_of(self.role[i]),
-            "believes": self.role[i], "won": (team_of(self.role[i]) == winner),
-            **agent_stats(agents[i]),
-        } for i in range(self.n)]
-        return {
-            "game": self.GAME, "title": self.TITLE, "seed": self.seed,
-            "meta": f"{self.n} agents · 3 good / 2 evil · 5 quests · seed {self.seed}",
-            "players": players,
-            "agentCallLog": agent_call_log(agents),
-            "cardsInPlay": [[self.role[i], team_of(self.role[i])] for i in range(self.n)],
-            "center": None,
-            "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,
-        }
+        players = self._standard_players(agents, winner)
+        return self._transcript(
+            agents=agents, phases=phases, winner=winner,
+            meta=f"{self.n} agents · 3 good / 2 evil · 5 quests · seed {self.seed}",
+            players=players,
+            cards_in_play=[[self.role[i], team_of(self.role[i])] for i in range(self.n)],
+            center=None,
+        )

@@ -8,11 +8,10 @@ parity (mafia wins). Reuses the {reasoning, action} agent contract and emits the
 """
 from __future__ import annotations
 
-import random
 from collections import Counter
 
 from arena.identity import participant_label, seat_for_participant_ref
-from .base import Agent, agent_call_log, agent_stats, team_of
+from .base import Agent, Game, team_of
 
 ROLE_DESC = {
     "Mafia": "You secretly kill one player each night. Win when the Mafia equals the number of remaining villagers.",
@@ -30,17 +29,13 @@ ROLES_BY_N = {
 MAX_ROUNDS = 4
 
 
-class SecretMafia:
+class SecretMafia(Game):
     GAME = "secret_mafia"
     TITLE = "Secret Mafia"
     MIN_PLAYERS, MAX_PLAYERS = 5, 7
 
     def __init__(self, names, seed, discussion_rounds=1, deal_override=None):
-        self.names = names
-        self.n = len(names)
-        self.seed = seed
-        self.rng = random.Random(seed)
-        self.discussion_rounds = discussion_rounds
+        super().__init__(names, seed, discussion_rounds)
         self.deal_override = deal_override
         self.role = {}
         self.alive = set(range(self.n))
@@ -240,16 +235,11 @@ class SecretMafia:
                        "synth": {"state": text, "key": "Win by elimination (village) or parity (mafia).",
                                  "note": "Per-seat reasoning retained for scoring."},
                        "outcome": {"team": winner, "text": text}})
-        players = [{
-            "seat": i, "dealt": self.role[i], "end": self.role[i], "team": team_of(self.role[i]),
-            "believes": self.role[i], "won": (team_of(self.role[i]) == winner),
-            **agent_stats(agents[i]),
-        } for i in range(self.n)]
-        return {
-            "game": self.GAME, "title": self.TITLE, "seed": self.seed,
-            "meta": f"{self.n} agents · {self._composition()} · seed {self.seed}",
-            "players": players,
-            "agentCallLog": agent_call_log(agents),
-            "cardsInPlay": [[self.role[i], team_of(self.role[i])] for i in range(self.n)],
-            "center": None, "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,
-        }
+        players = self._standard_players(agents, winner)
+        return self._transcript(
+            agents=agents, phases=phases, winner=winner,
+            meta=f"{self.n} agents · {self._composition()} · seed {self.seed}",
+            players=players,
+            cards_in_play=[[self.role[i], team_of(self.role[i])] for i in range(self.n)],
+            center=None,
+        )
