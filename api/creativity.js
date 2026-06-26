@@ -8,9 +8,30 @@ import { roundHalfEven } from './_round.js';
 
 const CURRENT_CREATIVITY_VERSION = 'creativity_v2_gpt54mini_embed3large';
 const VERSION_LABELS = {
-  creativity_v2_gpt54mini_embed3large: { label: 'RVS v2 current', status: 'current' },
-  creativity_v1_defaulttemp: { label: 'RVS v1 legacy', status: 'legacy' },
-  creativity_v1: { label: 'RVS v1 legacy', status: 'legacy' },
+  creativity_v2_gpt54mini_embed3large: {
+    label: 'RVS v2 current',
+    status: 'current',
+    embedding_model: 'text-embedding-3-large',
+    judge_model: 'openai/gpt-5.4-mini',
+    judge_temperature: null,
+    judge_prompt_version: 'creativity_judge_v1',
+  },
+  creativity_v1_defaulttemp: {
+    label: 'RVS v1 legacy',
+    status: 'legacy',
+    embedding_model: 'local_tfidf_v0',
+    judge_model: 'openai/gpt-4o-mini',
+    judge_temperature: null,
+    judge_prompt_version: 'creativity_judge_v1',
+  },
+  creativity_v1: {
+    label: 'RVS v1 legacy',
+    status: 'legacy',
+    embedding_model: 'local_tfidf_v0',
+    judge_model: 'openai/gpt-4o-mini',
+    judge_temperature: null,
+    judge_prompt_version: 'creativity_judge_v1',
+  },
 };
 
 const r3 = (x) => (x == null ? null : roundHalfEven(Number(x), 3));
@@ -34,19 +55,19 @@ function parsePhrases(value) {
   }
 }
 
-function publicVersion(row, judgmentMeta = {}) {
+function publicVersion(row, versionMeta = {}) {
   const known = VERSION_LABELS[row.version] || {};
   return {
     version: row.version,
     label: known.label || row.version,
     status: known.status || 'experimental',
-    updated_utc: row.updated_utc,
+    updated_utc: versionMeta.updated_utc || row.updated_utc,
     score_rows: intish(row.score_rows),
-    judgment_count: intish(judgmentMeta.judgment_count),
-    embedding_model: judgmentMeta.embedding_model || null,
-    judge_model: judgmentMeta.judge_model || null,
-    judge_temperature: judgmentMeta.judge_temperature ?? null,
-    judge_prompt_version: judgmentMeta.judge_prompt_version || null,
+    judgment_count: intish(versionMeta.judgment_count),
+    embedding_model: versionMeta.embedding_model || known.embedding_model || null,
+    judge_model: versionMeta.judge_model || known.judge_model || null,
+    judge_temperature: versionMeta.judge_temperature ?? known.judge_temperature ?? null,
+    judge_prompt_version: versionMeta.judge_prompt_version || known.judge_prompt_version || null,
   };
 }
 
@@ -148,24 +169,25 @@ async function creativityJudgmentsTableExists() {
   return Boolean(rows[0]?.table_name);
 }
 
-async function creativityVersions(hasJudgments) {
+async function creativityVersionsTableExists() {
+  const rows = await q("SELECT to_regclass('public.creativity_versions') AS table_name");
+  return Boolean(rows[0]?.table_name);
+}
+
+async function creativityVersions(hasVersionMeta) {
   const scoreRows = await q(
     'SELECT version, MAX(updated_utc) AS updated_utc, COUNT(*) AS score_rows ' +
       'FROM creativity_scores GROUP BY version ORDER BY updated_utc DESC',
   );
-  const judgmentByVersion = new Map();
-  if (hasJudgments) {
-    const judgmentRows = await q(
-      'SELECT version, embedding_model, judge_model, judge_temperature, judge_prompt_version, COUNT(*) AS judgment_count ' +
-        'FROM creativity_judgments ' +
-        'GROUP BY version, embedding_model, judge_model, judge_temperature, judge_prompt_version ' +
-        'ORDER BY version, judgment_count DESC',
+  const metaByVersion = new Map();
+  if (hasVersionMeta) {
+    const metaRows = await q(
+      'SELECT version, updated_utc, score_rows, judgment_count, embedding_model, judge_model, ' +
+        'judge_temperature, judge_prompt_version FROM creativity_versions',
     );
-    for (const row of judgmentRows) {
-      if (!judgmentByVersion.has(row.version)) judgmentByVersion.set(row.version, row);
-    }
+    for (const row of metaRows) metaByVersion.set(row.version, row);
   }
-  return scoreRows.map(row => publicVersion(row, judgmentByVersion.get(row.version)));
+  return scoreRows.map(row => publicVersion(row, metaByVersion.get(row.version)));
 }
 
 export default async function handler(req, res) {
@@ -179,7 +201,7 @@ export default async function handler(req, res) {
 
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
       const hasJudgments = await creativityJudgmentsTableExists();
-      const versions = await creativityVersions(hasJudgments);
+      const versions = await creativityVersions(await creativityVersionsTableExists());
       if (!versions.length) {
         return send(res, 200, { version: null, version_meta: null, versions: [], updated_utc: null, competitors: [] });
       }

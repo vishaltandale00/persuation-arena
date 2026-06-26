@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS creativity_judgments (
 )
 """
 
+VERSIONS_DDL = """
+CREATE TABLE IF NOT EXISTS creativity_versions (
+  version TEXT PRIMARY KEY, updated_utc TEXT, score_rows INTEGER, judgment_count INTEGER,
+  embedding_model TEXT, judge_model TEXT, judge_temperature DOUBLE PRECISION, judge_prompt_version TEXT
+)
+"""
+
+INDEX_DDL = [
+    "CREATE INDEX IF NOT EXISTS creativity_judgments_version_idx ON creativity_judgments (version)",
+    "CREATE INDEX IF NOT EXISTS creativity_judgments_version_identity_idx ON creativity_judgments (version, identity_key)",
+]
+
 SCORE_COLS = [
     "version", "identity_key", "agent_id", "display_name", "declared_model", "declared_harness",
     "role", "raw_distance", "role_z", "overall_z", "valid_utterances", "valid_pairs",
@@ -68,6 +80,11 @@ JUDGMENT_COLS = [
     "embedding_model", "embedding_similarity", "judge_model", "judge_temperature",
     "judge_prompt_version", "judge_similarity", "distance", "coherence_a", "coherence_b", "reason",
     "divergence_phrases_json", "tokens_a", "tokens_b", "length_ratio", "created_utc",
+]
+
+VERSION_COLS = [
+    "version", "updated_utc", "score_rows", "judgment_count", "embedding_model", "judge_model",
+    "judge_temperature", "judge_prompt_version",
 ]
 
 
@@ -585,11 +602,30 @@ def upsert_sql(table: str, cols: list[str], conflict: str, update_cols: list[str
     )
 
 
-def write_sqlite(path: Path, scores: list[dict[str, Any]], judgments: list[dict[str, Any]]) -> None:
+def version_row(version: str, scores: list[dict[str, Any]], judgments: list[dict[str, Any]], *,
+                embedding_model: str, judge_model: str, judge_temperature: float | None) -> dict[str, Any]:
+    updated_utc = max((str(row.get("updated_utc") or "") for row in scores), default="") or utcnow()
+    return {
+        "version": version,
+        "updated_utc": updated_utc,
+        "score_rows": len(scores),
+        "judgment_count": len(judgments),
+        "embedding_model": embedding_model,
+        "judge_model": judge_model,
+        "judge_temperature": judge_temperature,
+        "judge_prompt_version": PROMPT_VERSION,
+    }
+
+
+def write_sqlite(path: Path, scores: list[dict[str, Any]], judgments: list[dict[str, Any]],
+                 version_meta: dict[str, Any]) -> None:
     con = sqlite3.connect(path)
     try:
         con.execute(SCORES_DDL)
         con.execute(JUDGMENTS_DDL)
+        con.execute(VERSIONS_DDL)
+        for stmt in INDEX_DDL:
+            con.execute(stmt)
         score_update = [c for c in SCORE_COLS if c not in {"version", "identity_key", "role"}]
         con.executemany(
             upsert_sql("creativity_scores", SCORE_COLS, "version,identity_key,role", score_update, "sqlite"),
@@ -601,12 +637,18 @@ def write_sqlite(path: Path, scores: list[dict[str, Any]], judgments: list[dict[
             "ON CONFLICT (judgment_key) DO NOTHING",
             [tuple(row.get(c) for c in JUDGMENT_COLS) for row in judgments],
         )
+        version_update = [c for c in VERSION_COLS if c != "version"]
+        con.execute(
+            upsert_sql("creativity_versions", VERSION_COLS, "version", version_update, "sqlite"),
+            tuple(version_meta.get(c) for c in VERSION_COLS),
+        )
         con.commit()
     finally:
         con.close()
 
 
-def upload_pg(database_url: str, scores: list[dict[str, Any]], judgments: list[dict[str, Any]]) -> None:
+def upload_pg(database_url: str, scores: list[dict[str, Any]], judgments: list[dict[str, Any]],
+              version_meta: dict[str, Any]) -> None:
     import psycopg
 
     with psycopg.connect(database_url, connect_timeout=8) as con:
@@ -614,6 +656,9 @@ def upload_pg(database_url: str, scores: list[dict[str, Any]], judgments: list[d
             cur.execute("SET statement_timeout = 30000")
             cur.execute(SCORES_DDL)
             cur.execute(JUDGMENTS_DDL)
+            cur.execute(VERSIONS_DDL)
+            for stmt in INDEX_DDL:
+                cur.execute(stmt)
             score_update = [c for c in SCORE_COLS if c not in {"version", "identity_key", "role"}]
             cur.executemany(
                 upsert_sql("creativity_scores", SCORE_COLS, "version,identity_key,role", score_update, "pg"),
@@ -624,6 +669,11 @@ def upload_pg(database_url: str, scores: list[dict[str, Any]], judgments: list[d
                 f"VALUES ({placeholders('pg', len(JUDGMENT_COLS))}) "
                 "ON CONFLICT (judgment_key) DO NOTHING",
                 [tuple(row.get(c) for c in JUDGMENT_COLS) for row in judgments],
+            )
+            version_update = [c for c in VERSION_COLS if c != "version"]
+            cur.execute(
+                upsert_sql("creativity_versions", VERSION_COLS, "version", version_update, "pg"),
+                tuple(version_meta.get(c) for c in VERSION_COLS),
             )
 
 
@@ -685,15 +735,23 @@ def main() -> None:
     competitors = sum(1 for s in scores if s["role"] == "*")
     eligible = sum(1 for s in scores if s["role"] == "*" and not s["insufficient"])
     print(f"judgments={len(judgments)} score_rows={len(scores)} competitors={competitors} eligible={eligible}")
+    meta = version_row(
+        args.version,
+        scores,
+        judgments,
+        embedding_model=args.embedding_model,
+        judge_model=args.judge_model,
+        judge_temperature=args.judge_temperature,
+    )
 
     if args.write_sqlite:
-        write_sqlite(args.sqlite, scores, judgments)
+        write_sqlite(args.sqlite, scores, judgments, meta)
         print(f"wrote sqlite snapshot version={args.version}")
     if args.upload_neon:
         database_url = env.get("DATABASE_URL") or os.environ.get("DATABASE_URL")
         if not database_url:
             raise RuntimeError("DATABASE_URL is required for --upload-neon")
-        upload_pg(database_url, scores, judgments)
+        upload_pg(database_url, scores, judgments, meta)
         print(f"uploaded Neon snapshot version={args.version}")
 
 
