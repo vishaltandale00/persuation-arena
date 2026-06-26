@@ -12,6 +12,7 @@ decide(model, messages, turn) -> (action, reasoning, assistant_message):
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -106,8 +107,16 @@ def state_key(obj, reset_between_games: bool = True) -> str | None:
 
 
 def state_path_name(key: str) -> str:
-    """Make a state key safe as one local path segment."""
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("_") or "state"
+    """Make a state key safe as one local path segment, INJECTIVELY.
+
+    Sanitizing alone is many-to-one ('run:a' and 'run_a' both collapse to 'run_a'), which would
+    point two distinct state keys at the same memory file/workspace and corrupt run separation. So
+    we suffix a short stable hash of the exact key: the readable sanitized stem stays for humans,
+    while the hash guarantees distinct keys never share a path.
+    """
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("_") or "state"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+    return f"{sanitized}-{digest}"
 
 
 def _message_field(message: Any, field: str) -> Any:

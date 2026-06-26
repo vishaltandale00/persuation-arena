@@ -17,7 +17,7 @@ import importlib
 from examples._harness_util import (
     _run_id_from_game_id, reset_between_games_from_env, state_key, state_path_name,
 )
-from persuasion_arena_agent.models import Event, Turn
+from persuasion_arena_agent.models import Event, PollResponse, Turn
 
 RUN_A = "run_aaa"
 RUN_B = "run_bbb"
@@ -100,10 +100,72 @@ def test_state_key_none_when_no_game_id_in_reset_mode():
     assert state_key(e, reset_between_games=True) is None   # run-level event has no game key
 
 
+def test_pollresponse_threads_run_id_onto_events_and_turn():
+    """codex PR#27 P2: the poll envelope carries run_id at the top level; PollResponse must thread it
+    onto child Event/Turn objects so run-scoped keying works for ANY game-id scheme."""
+    pr = PollResponse.from_dict({
+        "signup_id": "s1", "run_id": RUN_A, "run_status": "active", "poll_after_ms": 100,
+        "events": [{"event_id": "e1", "type": "speech", "payload": {}, "game_instance_id": "game_1"}],
+        "turn": {
+            "turn_id": "t1", "game_instance_id": "game_1", "game": "onuw", "seat": 0,
+            "phase": "discussion", "action_kind": "onuw.discussion.speak_or_pass",
+            "deadline_at": "2026-06-25T00:00:00Z", "observation": {}, "legal_action": {},
+        },
+    })
+    assert pr.events[0].run_id == RUN_A                    # inherited from the envelope
+    assert pr.turn.run_id == RUN_A
+    # And a per-row run_id, when present, is preserved (not clobbered by the envelope).
+    pr2 = PollResponse.from_dict({
+        "signup_id": "s1", "run_id": RUN_A, "run_status": "active", "poll_after_ms": 100,
+        "events": [{"event_id": "e1", "type": "speech", "payload": {}, "run_id": RUN_B}],
+        "turn": None,
+    })
+    assert pr2.events[0].run_id == RUN_B
+
+
+def test_run_scope_uses_top_level_run_id_for_simple_game_ids():
+    """codex PR#27 P2: with simple game ids like 'game_1' (no '<run>_game_<NNN>' prefix), run scope
+    must still key by the poll's run_id — carrying within a run and separating different runs that
+    reuse the same simple game ids in one harness process."""
+    # Two different runs, each with a plain 'game_1' / 'game_2' id scheme.
+    a1 = PollResponse.from_dict({"signup_id": "s", "run_id": RUN_A, "run_status": "active",
+        "events": [], "turn": {"turn_id": "t", "game_instance_id": "game_1", "game": "onuw",
+        "seat": 0, "phase": "p", "action_kind": "k", "deadline_at": "d",
+        "observation": {}, "legal_action": {}}, "poll_after_ms": 1}).turn
+    a2 = PollResponse.from_dict({"signup_id": "s", "run_id": RUN_A, "run_status": "active",
+        "events": [], "turn": {"turn_id": "t", "game_instance_id": "game_2", "game": "onuw",
+        "seat": 0, "phase": "p", "action_kind": "k", "deadline_at": "d",
+        "observation": {}, "legal_action": {}}, "poll_after_ms": 1}).turn
+    b1 = PollResponse.from_dict({"signup_id": "s", "run_id": RUN_B, "run_status": "active",
+        "events": [], "turn": {"turn_id": "t", "game_instance_id": "game_1", "game": "onuw",
+        "seat": 0, "phase": "p", "action_kind": "k", "deadline_at": "d",
+        "observation": {}, "legal_action": {}}, "poll_after_ms": 1}).turn
+
+    assert state_key(a1, reset_between_games=False) == RUN_A
+    assert state_key(a2, reset_between_games=False) == RUN_A   # same run -> one key across games
+    assert state_key(b1, reset_between_games=False) == RUN_B   # different run -> different key
+    assert state_key(a1, reset_between_games=False) != state_key(b1, reset_between_games=False)
+
+
 def test_state_path_name_is_a_safe_single_segment():
-    assert state_path_name("run_aaa:run_aaa_game_001") == "run_aaa_run_aaa_game_001"
-    assert state_path_name("///") == "state"
+    # Safe: one path segment, no separators, readable sanitized stem preserved.
+    name = state_path_name("run_aaa:run_aaa_game_001")
+    assert name.startswith("run_aaa_run_aaa_game_001-")
     assert "/" not in state_path_name("a/b\\c d")
+    assert "\\" not in state_path_name("a/b\\c d")
+    assert state_path_name("///").startswith("state-")     # empty-after-sanitize still resolves
+
+
+def test_state_path_name_is_injective_for_distinct_keys():
+    # codex PR#27 P2: sanitization alone is many-to-one ('run:a' and 'run_a' both -> 'run_a'),
+    # which would point two distinct run keys at the same FileMemoryAgent file. The hash suffix
+    # must keep distinct keys on distinct paths so run separation is never corrupted.
+    assert state_path_name("run:a") != state_path_name("run_a")
+    assert state_path_name("run/a") != state_path_name("run_a")
+    keys = ["run:a", "run_a", "run/a", "run.a", "run-a", "RUN_A", "run_a "]
+    assert len({state_path_name(k) for k in keys}) == len(keys)
+    # Deterministic: same key -> same path across calls.
+    assert state_path_name("run:a") == state_path_name("run:a")
 
 
 # -- the probe harness end-to-end ---------------------------------------------------------------
