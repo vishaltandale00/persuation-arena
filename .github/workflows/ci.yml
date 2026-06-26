@@ -58,6 +58,7 @@ jobs:
         env:
           DATABASE_URL: postgres://u:p@localhost/db
         run: |
+          node tests/round_half_even.test.mjs
           node tests/rating_parity.test.mjs
           node tests/leaderboard_parity.test.mjs
           node tests/import_endpoint.test.mjs
