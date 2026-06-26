@@ -53,6 +53,14 @@ def test_winners_no_wolf_in_play():
     assert killed["no_contest"]
 
 
+def test_winners_no_evil_hunter_chain_tanner_win_not_no_contest():
+    roles = {0: "Hunter", 1: "Tanner", 2: "Villager", 3: "Seer", 4: "Robber"}
+    w = compute_winners(roles, deaths=[0], votes={0: 1})
+    assert 1 in w["deaths"]
+    assert w["tanner"]
+    assert not w["no_contest"]
+
+
 def test_no_contest_predicate_on_stored_seats():
     # the degenerate: no evil seat, nobody won -> excluded from scoring/rating
     void = [{"team": "good", "won": 0}, {"team": "good", "won": 0}, {"team": "good", "won": 0}]

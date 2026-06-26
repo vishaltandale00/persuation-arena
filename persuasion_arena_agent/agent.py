@@ -4,7 +4,7 @@ from collections.abc import Callable
 import time
 from typing import Any
 
-from .client import ArenaHttpClient
+from .client import ArenaApiError, ArenaHttpClient
 from .credentials import AgentCredentials, CredentialsStore, DEFAULT_SERVER
 from .models import Event, PollResponse, Signup, Turn
 
@@ -130,9 +130,11 @@ class ArenaAgent:
                     # blip, the coordinator briefly unreachable — must NEVER kill the agent. If it did,
                     # one bad turn would forfeit every remaining turn for the whole run. Log it, keep
                     # the signup, and retry on the next poll; the offending turn defaults server-side
-                    # at its deadline, after which polling resumes cleanly.
-                    print(f"[arena-agent] step error for {signup.signup_id}: {type(e).__name__}: {e}",
-                          flush=True)
+                    # at its deadline, after which polling resumes cleanly. ArenaApiError carries the
+                    # safe server detail (e.g. the 422 validation reason); never log tokens/bodies.
+                    detail = f" detail={e.detail!r}" if isinstance(e, ArenaApiError) else ""
+                    print(f"[arena-agent] step error for agent={self.name!r} "
+                          f"signup={signup.signup_id}: {type(e).__name__}: {e}{detail}", flush=True)
                     keep.append(signup)
                     continue
                 if current and current.status not in {"completed", "rejected", "expired", "cancelled"}:
