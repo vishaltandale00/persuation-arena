@@ -35,9 +35,11 @@ from .identity import validate_unique_public_names
 
 DB_PATH = STORE_DIR / "arena.db"
 _event_seq_lock = threading.Lock()
+_sqlite_schema_lock = threading.Lock()
+_sqlite_initialized_paths: set[str] = set()
 
 # --- schema ------------------------------------------------------------------
-# SQLite: a single script (run on every conn() — cheap, local).
+# SQLite: a single script, lazily applied once per DB path.
 SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
   id TEXT PRIMARY KEY, game TEXT, label TEXT, status TEXT, n_games INTEGER,
@@ -361,6 +363,45 @@ def _migrate(c: sqlite3.Connection) -> None:
         )
 
 
+def _sqlite_cache_key() -> str | None:
+    raw = str(DB_PATH)
+    if raw == ":memory:":
+        return None
+    return str(Path(raw).expanduser().resolve(strict=False))
+
+
+def _open_sqlite_connection() -> tuple[sqlite3.Connection, str | None, bool]:
+    raw = str(DB_PATH)
+    if raw == ":memory:":
+        target: str | Path = raw
+        existed = False
+    else:
+        path = Path(raw)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existed = path.exists()
+        target = path
+    c = sqlite3.connect(target, timeout=_env_int("ARENA_SQLITE_TIMEOUT_SECONDS", 30))
+    c.row_factory = sqlite3.Row
+    return c, _sqlite_cache_key(), existed
+
+
+def _ensure_sqlite_schema(c: sqlite3.Connection, cache_key: str | None, existed: bool,
+                          *, force: bool = False) -> None:
+    if cache_key is not None and not existed:
+        with _sqlite_schema_lock:
+            _sqlite_initialized_paths.discard(cache_key)
+    if cache_key is not None and not force and cache_key in _sqlite_initialized_paths:
+        return
+    with _sqlite_schema_lock:
+        if cache_key is not None and not force and cache_key in _sqlite_initialized_paths:
+            return
+        c.executescript(SQLITE_SCHEMA)
+        _migrate(c)
+        c.commit()
+        if cache_key is not None:
+            _sqlite_initialized_paths.add(cache_key)
+
+
 def _backfill_connected_game_player_identities(c) -> dict:
     """Repair legacy connected game rows by matching the saved player name to a unique run roster row."""
     ph = _ph()
@@ -425,11 +466,8 @@ def conn():
         )
         _apply_pg_session_settings(c, statement_timeout)
     else:
-        STORE_DIR.mkdir(parents=True, exist_ok=True)
-        c = sqlite3.connect(DB_PATH)
-        c.row_factory = sqlite3.Row
-        c.executescript(SQLITE_SCHEMA)
-        _migrate(c)
+        c, cache_key, existed = _open_sqlite_connection()
+        _ensure_sqlite_schema(c, cache_key, existed)
     try:
         with c:
             yield c
@@ -438,7 +476,7 @@ def conn():
 
 
 def init_schema() -> None:
-    """Idempotently create the schema on the active backend. SQLite does this in conn() too;
+    """Idempotently create the schema on the active backend. SQLite does this lazily in conn() too;
     Postgres needs this called once (init_db.py / test setup)."""
     if _is_pg():
         with conn() as c:
@@ -449,6 +487,7 @@ def init_schema() -> None:
             _backfill_connected_game_player_identities(c)
     else:
         with conn() as c:
+            _ensure_sqlite_schema(c, _sqlite_cache_key(), True, force=True)
             _backfill_connected_game_player_identities(c)
 
 
