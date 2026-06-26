@@ -367,6 +367,39 @@ class ONUW(Game):
             "additionalProperties": False,
         }
 
+    def _night_choice(self, pid: int, agent: Agent, *, action_kind: str, prompt_suffix: str,
+                      parse_action, default_action: Any, schema: dict, choices: dict,
+                      default_wire_action: dict, rules: dict | None = None):
+        """Shared shape for the single-decision night roles (Doppelganger/Seer/Robber/
+        Troublemaker/Drunk).
+
+        Each of those roles otherwise repeats the same five-part boilerplate: a night
+        ``base_prompt`` plus an inline-JSON action instruction, the ``_act`` call wired with the
+        night phase + this role's ``action_kind``, and a ``legal_action`` carrying the schema,
+        choices, and a ``default_wire_action``. This helper owns that wiring; the caller supplies
+        only what actually differs per role — the prompt suffix, its parse closure, the safe
+        ``default_action``, and the schema/choices/default-wire describing the legal move. The
+        returned ``resp`` (``.action``/``.declared_reasoning``/``.ms``) is interpreted by the
+        caller exactly as before, so transcripts are unchanged.
+
+        ``_vote`` deliberately does NOT route through here: it needs the async
+        ``_prepare_or_act``/``wait`` contract, which this single-shot path does not model.
+        """
+        prompt = self.base_prompt(pid, phase="night", action_kind=action_kind) + prompt_suffix
+        legal_action: dict[str, Any] = {"schema": schema, "choices": choices}
+        if rules is not None:
+            legal_action["rules"] = rules
+        return self._act(
+            agent,
+            prompt,
+            parse_action,
+            default_action=default_action,
+            phase="night",
+            action_kind=action_kind,
+            legal_action=legal_action,
+            default_wire_action=default_wire_action,
+        )
+
     def _act(self, agent: Agent, observation: str, parse_action, default_action: Any, **turn_meta: Any):
         try:
             params = inspect.signature(agent.act).parameters.values()
@@ -495,10 +528,6 @@ class ONUW(Game):
         if not hasattr(self, "_doppel_role"):
             self._doppel_role = {}
         targets = [i for i in range(self.n) if i != pid]
-        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.doppelganger.copy_player") + (
-            "\n\nNIGHT ACTION (Doppelganger): look at one player's card and become a copy of that role.\n"
-            'Reply JSON {"declared_reasoning":"...","action":{"target":"@participant"}}.'
-        )
 
         def parse(a, raw):
             t = seat_for_participant_ref(a["target"], self.names, targets)
@@ -506,17 +535,17 @@ class ONUW(Game):
                 raise ValueError("bad target")
             return t
 
-        resp = self._act(
-            agent,
-            prompt,
-            parse,
-            default_action=targets[0],
-            phase="night",
+        resp = self._night_choice(
+            pid, agent,
             action_kind="onuw.doppelganger.copy_player",
-            legal_action={
-                "schema": self._participant_target_schema("target", targets),
-                "choices": {"players": self._players_choice(targets)},
-            },
+            prompt_suffix=(
+                "\n\nNIGHT ACTION (Doppelganger): look at one player's card and become a copy of that role.\n"
+                'Reply JSON {"declared_reasoning":"...","action":{"target":"@participant"}}.'
+            ),
+            parse_action=parse,
+            default_action=targets[0],
+            schema=self._participant_target_schema("target", targets),
+            choices={"players": self._players_choice(targets)},
             default_wire_action={"target": participant(self.names[targets[0]])["ref"]},
         )
         t = resp.action
@@ -541,12 +570,6 @@ class ONUW(Game):
 
     def _seer_action(self, pid: int, agent: Agent):
         alive_targets = [i for i in range(self.n) if i != pid]
-        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.seer.inspect") + (
-            "\n\nNIGHT ACTION (Seer): choose ONE:\n"
-            '  {"mode":"player","target":"@participant"}  view one other player\'s card, OR\n'
-            '  {"mode":"center","indices":[a,b]}  view two of the three center cards (0-based).\n'
-            'Reply JSON {"declared_reasoning":"...","action":{...}}.'
-        )
 
         def parse(a, raw):
             if a.get("mode") == "player":
@@ -562,45 +585,47 @@ class ONUW(Game):
             raise ValueError("bad mode")
 
         center_indices = list(range(len(self.center)))
-        resp = self._act(
-            agent,
-            prompt,
-            parse,
-            default_action=("center", [0, 1]),
-            phase="night",
+        resp = self._night_choice(
+            pid, agent,
             action_kind="onuw.seer.inspect",
-            legal_action={
-                "schema": {
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "required": ["mode", "target"],
-                            "properties": {
-                                "mode": {"enum": ["player"]},
-                                "target": {"type": "string", "enum": participant_refs(self.names, alive_targets)},
-                            },
-                            "additionalProperties": False,
+            prompt_suffix=(
+                "\n\nNIGHT ACTION (Seer): choose ONE:\n"
+                '  {"mode":"player","target":"@participant"}  view one other player\'s card, OR\n'
+                '  {"mode":"center","indices":[a,b]}  view two of the three center cards (0-based).\n'
+                'Reply JSON {"declared_reasoning":"...","action":{...}}.'
+            ),
+            parse_action=parse,
+            default_action=("center", [0, 1]),
+            schema={
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "required": ["mode", "target"],
+                        "properties": {
+                            "mode": {"enum": ["player"]},
+                            "target": {"type": "string", "enum": participant_refs(self.names, alive_targets)},
                         },
-                        {
-                            "type": "object",
-                            "required": ["mode", "indices"],
-                            "properties": {
-                                "mode": {"enum": ["center"]},
-                                "indices": {
-                                    "type": "array",
-                                    "items": {"type": "integer", "enum": center_indices},
-                                    "minItems": 2,
-                                    "maxItems": 2,
-                                    "uniqueItems": True,
-                                },
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "required": ["mode", "indices"],
+                        "properties": {
+                            "mode": {"enum": ["center"]},
+                            "indices": {
+                                "type": "array",
+                                "items": {"type": "integer", "enum": center_indices},
+                                "minItems": 2,
+                                "maxItems": 2,
+                                "uniqueItems": True,
                             },
-                            "additionalProperties": False,
                         },
-                    ]
-                },
-                "choices": {"players": self._players_choice(alive_targets),
-                            "center": center_indices},
+                        "additionalProperties": False,
+                    },
+                ]
             },
+            choices={"players": self._players_choice(alive_targets),
+                     "center": center_indices},
             default_wire_action={"mode": "center", "indices": [0, 1]},
         )
         mode, val = resp.action
@@ -615,10 +640,6 @@ class ONUW(Game):
 
     def _robber_action(self, pid: int, agent: Agent):
         targets = [i for i in range(self.n) if i != pid]
-        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.robber.swap_or_decline") + (
-            "\n\nNIGHT ACTION (Robber): swap your card with a player's and see your new role, or decline.\n"
-            'Reply JSON {"declared_reasoning":"...","action":{"target":"@participant or null"}}.'
-        )
 
         def parse(a, raw):
             t = a.get("target")
@@ -629,17 +650,17 @@ class ONUW(Game):
                 raise ValueError("bad target")
             return t
 
-        resp = self._act(
-            agent,
-            prompt,
-            parse,
-            default_action=targets[0],
-            phase="night",
+        resp = self._night_choice(
+            pid, agent,
             action_kind="onuw.robber.swap_or_decline",
-            legal_action={
-                "schema": self._participant_target_schema("target", targets, nullable=True),
-                "choices": {"players": self._players_choice(targets), "decline": True},
-            },
+            prompt_suffix=(
+                "\n\nNIGHT ACTION (Robber): swap your card with a player's and see your new role, or decline.\n"
+                'Reply JSON {"declared_reasoning":"...","action":{"target":"@participant or null"}}.'
+            ),
+            parse_action=parse,
+            default_action=targets[0],
+            schema=self._participant_target_schema("target", targets, nullable=True),
+            choices={"players": self._players_choice(targets), "decline": True},
             default_wire_action={"target": participant(self.names[targets[0]])["ref"]},
         )
         t = resp.action
@@ -654,10 +675,6 @@ class ONUW(Game):
 
     def _tm_action(self, pid: int, agent: Agent):
         others = [i for i in range(self.n) if i != pid]
-        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.troublemaker.swap_two_or_decline") + (
-            "\n\nNIGHT ACTION (Troublemaker): swap two OTHER players' cards (you don't see them), or decline.\n"
-            'Reply JSON {"declared_reasoning":"...","action":{"a":"@participant or null","b":"@participant or null"}}.'
-        )
 
         def parse(a, raw):
             if a.get("a") is None or a.get("b") is None:
@@ -668,39 +685,39 @@ class ONUW(Game):
                 raise ValueError("bad pair")
             return (x, y)
 
-        resp = self._act(
-            agent,
-            prompt,
-            parse,
-            default_action=(others[0], others[1]),
-            phase="night",
+        resp = self._night_choice(
+            pid, agent,
             action_kind="onuw.troublemaker.swap_two_or_decline",
-            legal_action={
-                "schema": {
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "required": ["a", "b"],
-                            "properties": {
-                                "a": {"type": "string", "enum": participant_refs(self.names, others)},
-                                "b": {"type": "string", "enum": participant_refs(self.names, others)},
-                            },
-                            "additionalProperties": False,
+            prompt_suffix=(
+                "\n\nNIGHT ACTION (Troublemaker): swap two OTHER players' cards (you don't see them), or decline.\n"
+                'Reply JSON {"declared_reasoning":"...","action":{"a":"@participant or null","b":"@participant or null"}}.'
+            ),
+            parse_action=parse,
+            default_action=(others[0], others[1]),
+            schema={
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "required": ["a", "b"],
+                        "properties": {
+                            "a": {"type": "string", "enum": participant_refs(self.names, others)},
+                            "b": {"type": "string", "enum": participant_refs(self.names, others)},
                         },
-                        {
-                            "type": "object",
-                            "required": ["a", "b"],
-                            "properties": {
-                                "a": {"type": "null"},
-                                "b": {"type": "null"},
-                            },
-                            "additionalProperties": False,
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "required": ["a", "b"],
+                        "properties": {
+                            "a": {"type": "null"},
+                            "b": {"type": "null"},
                         },
-                    ]
-                },
-                "choices": {"players": self._players_choice(others), "decline": True},
-                "rules": {"distinct": [["a", "b"]]},
+                        "additionalProperties": False,
+                    },
+                ]
             },
+            choices={"players": self._players_choice(others), "decline": True},
+            rules={"distinct": [["a", "b"]]},
             default_wire_action={
                 "a": participant(self.names[others[0]])["ref"],
                 "b": participant(self.names[others[1]])["ref"],
@@ -717,11 +734,6 @@ class ONUW(Game):
         return f"Troublemaker swaps {self.names[x]} and {self.names[y]}", resp.declared_reasoning, resp.ms
 
     def _drunk_action(self, pid: int, agent: Agent):
-        prompt = self.base_prompt(pid, phase="night", action_kind="onuw.drunk.swap_center") + (
-            "\n\nNIGHT ACTION (Drunk): swap your card with a center card (0-based) without looking.\n"
-            'Reply JSON {"declared_reasoning":"...","action":{"index":<0,1,2>}}.'
-        )
-
         def parse(a, raw):
             i = int(a["index"])
             if i < 0 or i >= len(self.center):
@@ -729,17 +741,17 @@ class ONUW(Game):
             return i
 
         indices = list(range(len(self.center)))
-        resp = self._act(
-            agent,
-            prompt,
-            parse,
-            default_action=0,
-            phase="night",
+        resp = self._night_choice(
+            pid, agent,
             action_kind="onuw.drunk.swap_center",
-            legal_action={
-                "schema": self._index_schema("index", indices),
-                "choices": {"center": indices},
-            },
+            prompt_suffix=(
+                "\n\nNIGHT ACTION (Drunk): swap your card with a center card (0-based) without looking.\n"
+                'Reply JSON {"declared_reasoning":"...","action":{"index":<0,1,2>}}.'
+            ),
+            parse_action=parse,
+            default_action=0,
+            schema=self._index_schema("index", indices),
+            choices={"center": indices},
             default_wire_action={"index": 0},
         )
         i = resp.action
