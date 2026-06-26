@@ -16,7 +16,7 @@ function enrichTranscriptTurnReasoning(transcript, events, runId, gid) {
   for (const event of events) {
     if (event.game_instance_id !== iid || event.type !== 'model_turn_completed') continue;
     let payload = {};
-    try { payload = JSON.parse(event.payload_json || '{}'); } catch (_) { payload = {}; }
+    try { payload = JSON.parse(event.payload_json || '{}'); } catch { payload = {}; }
     if (payload.seat == null || !event.phase) continue;
     const key = `${String(event.phase).toLowerCase()}:${Number(payload.seat)}`;
     if (!queues.has(key)) queues.set(key, []);

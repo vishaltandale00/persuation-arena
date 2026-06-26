@@ -49,11 +49,6 @@ function envInt(name, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function envFloat(name, fallback) {
-  const n = parseFloat(process.env[name] ?? fallback);
-  return Number.isFinite(n) ? n : fallback;
-}
-
 function envOptionalFloat(name) {
   const raw = process.env[name];
   if (raw === undefined || String(raw).trim() === '') return null;
