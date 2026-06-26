@@ -2,7 +2,7 @@
 // Generates a concise observer-facing game summary and persists it inside transcript_json.summary.
 import { q, send } from '../../../../_db.js';
 import { summarizeGame } from '../../../../_game_summary.js';
-import { runKind, sourceRunIds } from '../../../../_shards.js';
+import { parentGameSource, runKind, sourceRunIds } from '../../../../_shards.js';
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
@@ -14,19 +14,31 @@ export default async function handler(req, res) {
   if (!run) return send(res, 404, { error: 'run not found' });
 
   let sourceIds = [runId];
+  let mappedSource = null;
   if (runKind(run) === 'parent') {
     const childIds = (await q(
       'SELECT id FROM runs WHERE parent_run_id = $1 ORDER BY shard_index', [runId],
     )).map((c) => c.id);
     sourceIds = sourceRunIds(run, childIds);
+    const childRuns = [];
+    for (const childId of sourceIds) {
+      const games = await q('SELECT gid FROM games WHERE run_id = $1 ORDER BY gid', [childId]);
+      childRuns.push({ id: childId, games });
+    }
+    mappedSource = parentGameSource(childRuns, gid);
   }
 
   let row = null;
   let sourceRunId = runId;
+  let sourceGid = gid;
+  if (mappedSource) {
+    sourceIds = [mappedSource.runId];
+    sourceGid = mappedSource.gid;
+  }
   for (const srcId of sourceIds) {
     const rows = await q(
       'SELECT transcript_json FROM games WHERE run_id = $1 AND gid = $2',
-      [srcId, gid],
+      [srcId, sourceGid],
     );
     if (rows[0]) {
       row = rows[0];
@@ -50,7 +62,7 @@ export default async function handler(req, res) {
   transcript.summary = summary;
   await q(
     'UPDATE games SET transcript_json = $1 WHERE run_id = $2 AND gid = $3',
-    [JSON.stringify(transcript), sourceRunId, gid],
+    [JSON.stringify(transcript), sourceRunId, sourceGid],
   );
   return send(res, 200, { ok: true, cached: false, summary });
 }

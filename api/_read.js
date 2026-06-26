@@ -40,17 +40,19 @@ function isNoContest(seats) {
 
 /**
  * Port of arena/score.py _aggregate_rows: agent -> scorecard from a flat list of game_players rows.
- * Rows are grouped by `gid` so no-contest games drop out; child shards carry DISJOINT global gids
- * (SPEC D8), so unioning rows across several runs and grouping by gid is correct — no game is split
- * or double-counted. This is the shared core of both scoreRun (one run) and scoreRuns (a sharded
- * parent's children). Each scorecard has {w,n,rate,lo,hi} cells for overall/good/evil, a by_role map
+ * Rows are grouped by `(run_id, gid)` when `run_id` is available, so no-contest games drop out without
+ * merging independent historical runs that reused local gids. This is the shared core of both scoreRun
+ * (one run) and scoreRuns (a parent run's children). Each scorecard has {w,n,rate,lo,hi} cells for overall/good/evil, a by_role map
  * of {dealt_role: cell}, and reliability fields {calls, forfeits, forfeit_rate}.
  * Team bucket is r.team if in ('good','evil') else 'good'; dealt_role falls back to '?'.
  */
 export function aggregateScorecard(rows) {
   // group by game so no-contest games (no evil seat, no winner) drop out of scoring
   const games = {};
-  for (const r of rows) (games[r.gid] ||= []).push(r);
+  for (const r of rows) {
+    const key = r.run_id == null ? String(r.gid) : `${r.run_id}\x00${r.gid}`;
+    (games[key] ||= []).push(r);
+  }
 
   const agg = {}; // agent -> aggregate accumulator
   for (const seats of Object.values(games)) {
@@ -101,7 +103,7 @@ export function aggregateScorecard(rows) {
 }
 
 // game_players columns read for scoring (shared by scoreRun/scoreRuns).
-const _SCORE_COLS = 'gid, agent, team, won, dealt_role, end_role, calls, forfeits';
+const _SCORE_COLS = 'run_id, gid, agent, team, won, dealt_role, end_role, calls, forfeits';
 
 /**
  * Port of arena/score.py score_runs: agent -> scorecard aggregated across several runs (SPEC §6.3 /

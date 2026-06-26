@@ -14,6 +14,8 @@ import {
   rollupParentStatus,
   aggregateIndexRow,
   aggregateParentDetail,
+  parentGameDisplayRows,
+  parentGameSource,
   parentSignups,
   parentRecentEvents,
   isDiscoverableOpenRun,
@@ -111,6 +113,44 @@ test('aggregateParentDetail: games unioned & sorted by gid, wins/team_split summ
   assert.deepEqual(agg.team_split, { good: 2, evil: 1 });
   // status rolled up (one running -> running)
   assert.equal(agg.status, 'running');
+});
+
+test('aggregateParentDetail: overlapping child gids get stable display gids and source lookup', () => {
+  const parent = { id: 'p', run_kind: 'parent', status: 'open' };
+  const childRuns = [
+    {
+      id: 'frontier_a', status: 'done',
+      games: [
+        { gid: 1, seed: 101, winner_team: 'good', line: 'a1' },
+        { gid: 2, seed: 102, winner_team: 'evil', line: 'a2' },
+      ],
+      wins: { Alice: 1 },
+      team_split: { good: 1, evil: 1 },
+    },
+    {
+      id: 'frontier_b', status: 'done',
+      games: [
+        { gid: 1, seed: 201, winner_team: 'good', line: 'b1' },
+        { gid: 2, seed: 202, winner_team: 'good', line: 'b2' },
+      ],
+      wins: { Alice: 2 },
+      team_split: { good: 2, evil: 0 },
+    },
+  ];
+
+  const rows = parentGameDisplayRows(childRuns);
+  assert.deepEqual(rows.map((g) => [g.gid, g.source_run_id, g.source_gid]), [
+    [1, 'frontier_a', 1],
+    [2, 'frontier_a', 2],
+    [3, 'frontier_b', 1],
+    [4, 'frontier_b', 2],
+  ]);
+  assert.deepEqual(parentGameSource(childRuns, 4), { runId: 'frontier_b', gid: 2 });
+
+  const agg = aggregateParentDetail(parent, childRuns);
+  assert.deepEqual(agg.games.map((g) => g.gid), [1, 2, 3, 4]);
+  assert.deepEqual(agg.wins, { Alice: 3 });
+  assert.deepEqual(agg.team_split, { good: 3, evil: 1 });
 });
 
 // --- parentSignups: one logical signup per agent_id, most-advanced status ------------------------
@@ -223,6 +263,19 @@ test('aggregateScorecard: groups by gid; disjoint gids across shards are not dou
   assert.equal(sc.Bob.calls, 8);
   // forfeit_rate = 1/8
   assert.equal(sc.Bob.forfeit_rate, Math.round((1 / 8) * 1000) / 1000);
+});
+
+test('aggregateScorecard: overlapping gids from different runs stay distinct when run_id is present', () => {
+  const rows = [
+    { run_id: 'frontier_a', gid: 1, agent: 'Alice', team: 'good', won: 1, dealt_role: 'Seer', calls: 1, forfeits: 0 },
+    { run_id: 'frontier_a', gid: 1, agent: 'Bob', team: 'evil', won: 0, dealt_role: 'Werewolf', calls: 1, forfeits: 0 },
+    { run_id: 'frontier_b', gid: 1, agent: 'Alice', team: 'evil', won: 1, dealt_role: 'Werewolf', calls: 1, forfeits: 0 },
+    { run_id: 'frontier_b', gid: 1, agent: 'Bob', team: 'good', won: 0, dealt_role: 'Villager', calls: 1, forfeits: 0 },
+  ];
+  const sc = aggregateScorecard(rows);
+  assert.equal(sc.Alice.overall.w, 2);
+  assert.equal(sc.Alice.overall.n, 2);
+  assert.equal(sc.Bob.overall.n, 2);
 });
 
 test('aggregateScorecard: no-contest games (no evil seat, no winner) are dropped', () => {

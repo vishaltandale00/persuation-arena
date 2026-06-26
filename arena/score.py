@@ -36,12 +36,13 @@ def _cell(w: int, n: int) -> dict:
 def _aggregate_rows(rows: list[dict]) -> dict:
     """agent -> scorecard, from a flat list of game_players rows.
 
-    Rows are grouped by `gid`; child shards carry DISJOINT global gids (SPEC D8), so unioning
-    rows across multiple runs and grouping by gid is correct — no game is split or double-counted.
+    Rows are grouped by `(run_id, gid)` when `run_id` is available. True shard children carry
+    disjoint global gids, but manually consolidated historical runs may reuse local gids.
     """
-    games: dict[int, list[dict]] = {}
+    games: dict[object, list[dict]] = {}
     for r in rows:
-        games.setdefault(r["gid"], []).append(r)
+        key = (r.get("run_id"), r["gid"]) if r.get("run_id") is not None else r["gid"]
+        games.setdefault(key, []).append(r)
     agg: dict[str, dict] = {}
     for seats in games.values():
         if is_no_contest(seats):

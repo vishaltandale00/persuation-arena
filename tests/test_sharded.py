@@ -581,6 +581,57 @@ def _seed_parent_with_children(parent_id: str, k: int, games_per_child: int) -> 
     return child_ids
 
 
+def _save_labeled_child_game(child_id: str, gid: int, label: str, *, no_contest: bool = False) -> None:
+    """One 2-seat game whose transcript identifies the source child."""
+    if no_contest:
+        players = [
+            _seat(0, "Villager", "good", False),
+            _seat(1, "Seer", "good", False),
+        ]
+        winner = "void"
+    else:
+        players = [
+            _seat(0, "Villager", "good", True),
+            _seat(1, "Werewolf", "evil", False),
+        ]
+        winner = "good"
+    transcript = {
+        "seed": 3000 + gid,
+        "winner_team": winner,
+        "outcome": {"text": label, "team": winner},
+        "players": players,
+    }
+    agents = [
+        {"name": "A", "model": "connected-agent", "agent_id": "agent_A"},
+        {"name": "B", "model": "connected-agent", "agent_id": "agent_B"},
+    ]
+    store.save_game(child_id, gid, transcript, agents)
+
+
+def _seed_parent_with_overlapping_children(parent_id: str) -> list[str]:
+    """Seed a manual rollup shape: children are independent historical runs, so gids overlap."""
+    store.create_connected_run({
+        "id": parent_id, "game": "onuw", "label": "ONUW", "status": "open",
+        "n_games": 4, "players": 2, "seed_base": 7,
+        "created": "2026-06-25 00:00", "created_utc": "2026-06-25T00:00:00Z",
+        "run_kind": "parent", "num_shards": 2,
+    })
+    child_ids = []
+    for shard in range(2):
+        cid = f"{parent_id}_child_{shard}"
+        store.create_connected_run({
+            "id": cid, "game": "onuw", "label": "ONUW", "status": "done",
+            "n_games": 2, "players": 2, "seed_base": 7,
+            "created": "2026-06-25 00:00", "created_utc": "2026-06-25T00:00:00Z",
+            "run_kind": "child", "parent_run_id": parent_id,
+            "shard_index": shard, "num_shards": 2,
+        })
+        _save_labeled_child_game(cid, 1, f"{cid} game 1")
+        _save_labeled_child_game(cid, 2, f"{cid} game 2", no_contest=(shard == 1))
+        child_ids.append(cid)
+    return child_ids
+
+
 def test_api_runs_index_shows_parent_hides_children(tmp_path, monkeypatch):
     """SPEC D7 / §6.9(a): GET /api/runs lists the parent (presented as one normal run) and never the
     children; a plain normal run still appears, unchanged."""
@@ -644,6 +695,26 @@ def test_api_run_parent_game_transcript(tmp_path, monkeypatch):
         tx = client.get("/api/runs/parent_tx/games/2").json()
     assert tx["winner_team"] == "good"
     assert tx["outcome"]["text"] == "shard game 2"
+
+
+def test_api_run_parent_overlapping_child_gids_get_display_gids(tmp_path, monkeypatch):
+    """Manual rollups can link independent historical runs that reused local gids.
+
+    The parent should expose one 1..N display sequence, resolve display gids back to source
+    child/local gids, and keep no-contest handling scoped to the source game.
+    """
+    _sqlite_store(tmp_path, monkeypatch)
+    _seed_parent_with_overlapping_children("parent_overlap")
+
+    with TestClient(app) as client:
+        detail = client.get("/api/runs/parent_overlap").json()
+        tx = client.get("/api/runs/parent_overlap/games/4").json()
+
+    assert [g["gid"] for g in detail["games"]] == [1, 2, 3, 4]
+    assert tx["outcome"]["text"] == "parent_overlap_child_1 game 2"
+    # Child 1 / gid 2 is a no-contest, so only three source games count toward scorecard n.
+    assert detail["scores"]["A"]["overall"]["n"] == 3
+    assert detail["scores"]["B"]["overall"]["n"] == 3
 
 
 def test_api_create_run_routes_shards_to_sharded(tmp_path, monkeypatch):

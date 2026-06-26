@@ -716,7 +716,7 @@ def player_rows(run_id: str) -> list[dict]:
     ph = _ph()
     with conn() as c:
         rows = c.execute(
-            f"SELECT gid, seat, agent, agent_id, signup_id, model, team, won, dealt_role, end_role, calls, forfeits "
+            f"SELECT run_id, gid, seat, agent, agent_id, signup_id, model, team, won, dealt_role, end_role, calls, forfeits "
             f"FROM game_players WHERE run_id={ph}", (run_id,)).fetchall()
         return [dict(r) for r in rows]
 
