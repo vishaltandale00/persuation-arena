@@ -419,6 +419,22 @@
   .hardtag{font-family:var(--mono);font-size:9px;color:var(--evil);border:1px solid #ecccca;border-radius:4px;padding:0 4px;margin-left:6px}
   .fcell.tanner{background:#faf3e6;border-color:#ecdcc0} .fcell.tanner .fpct{color:#a9791f}
   .lb-empty{padding:20px 10px;color:var(--faint);font-size:13px}
+
+  /* creativity signal */
+  .creativity-note{font-size:12.5px;color:var(--ink-2);padding:4px 10px 12px;border-bottom:1px solid var(--line)}
+  .creativity-table{display:flex;flex-direction:column}
+  .cr-head,.cr-main{display:grid;grid-template-columns:30px 14px minmax(170px,1.5fr) 116px minmax(118px,.9fr) minmax(100px,.8fr);gap:10px;align-items:center}
+  .cr-head{padding:6px 10px;font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);border-bottom:1px solid var(--line)}
+  .cr-row{border-bottom:1px solid var(--line)} .cr-row:last-child{border-bottom:0}
+  .cr-main{padding:11px 10px;cursor:pointer;color:var(--ink)}
+  .cr-main:hover{background:var(--hover)} .cr-main:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .cr-rank,.cr-evidence{font-family:var(--mono);font-size:12px;color:var(--ink-2)}
+  .cr-caret{font-size:10px;color:var(--faint)}
+  .cr-name{font-weight:600}.cr-id{font-family:var(--mono);font-size:10px;color:var(--faint);margin-left:6px}
+  .cr-sub{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cr-score{font-family:var(--mono);font-weight:650;font-size:14px}.cr-score .pm{color:var(--faint);font-weight:400;font-size:11px;margin-left:3px}
+  .cr-roles{display:flex;gap:2px;align-items:center;flex-wrap:wrap}.cr-roles .tk{width:9px;height:15px;border-radius:2px;background:var(--line-2)}
+  .cr-detail{padding:6px 12px 16px 54px;background:var(--bg);border-top:1px solid var(--line)}
   @media(max-width:720px){ .lb-head .h-roles,.lb-heat{display:none} .lb-head,.lb-main{grid-template-columns:26px 14px 1fr 96px 44px} .lb-win{display:none} .lb-detail{padding-left:16px} }
 </style>
 </head>
@@ -446,6 +462,17 @@
         <div class="lbtable">
           <div class="lb-head"><span></span><span></span><span>Harness</span><span>Rating</span><span>Games</span><span>Win-rate · 95% CI</span><span>Roles</span></div>
           <div id="lbrows"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="collap" id="sec-creativity">
+      <button class="collap-h" aria-expanded="true"><span class="cv">▾</span><span class="ct">Creativity Signal</span><span class="cc" id="creativitycount"></span></button>
+      <div class="collap-b">
+        <div class="creativity-note">Role-conditioned self-variety from public speech only. Higher means the same agent plays the same role with more varied valid language.</div>
+        <div class="creativity-table">
+          <div class="cr-head"><span></span><span></span><span>Harness</span><span>Score</span><span>Evidence</span><span>Roles</span></div>
+          <div id="creativityrows"></div>
         </div>
       </div>
     </section>
@@ -797,8 +824,8 @@ async function show(s){
   ["index","run","game","newrun"].forEach(x=>document.getElementById("screen-"+x).classList.toggle("on",x===s));
   const navmap={run:"index",game:"index",newrun:"index"};
   document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("on",b.dataset.s===(navmap[s]||s)));
-  if(s==="index"){ renderIndex(); renderLeaderboard(); applyCollapse();   // show what we have, then refresh
-    loadRuns().then(renderIndex); loadLeaderboard().then(renderLeaderboard); }
+  if(s==="index"){ renderIndex(); renderLeaderboard(); renderCreativity(); applyCollapse();   // show what we have, then refresh
+    loadRuns().then(renderIndex); loadLeaderboard().then(renderLeaderboard); loadCreativity().then(renderCreativity); }
   if(s==="newrun") renderNewRun();
   if(was!==s) window.scrollTo(0,0);
 }
@@ -892,6 +919,74 @@ function renderLeaderboard(){
     const toggle=()=>{ const opening=det.hasAttribute("hidden");
       if(opening){ det.removeAttribute("hidden"); lbExpanded.add(key); car.textContent="▾"; }
       else{ det.setAttribute("hidden",""); lbExpanded.delete(key); car.textContent="▸"; }
+      main.setAttribute("aria-expanded", opening); };
+    main.onclick=toggle;
+    main.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); toggle(); } };
+  });
+}
+
+/* ===== CREATIVITY SIGNAL ===== */
+let CREATIVITY={version:null,competitors:[]}; const creativityExpanded=new Set();
+async function loadCreativity(){
+  try{ CREATIVITY=await jget("/creativity"); if(!Array.isArray(CREATIVITY.competitors)) CREATIVITY.competitors=[]; }
+  catch(e){ CREATIVITY={version:null,competitors:[]}; console.error("creativity load failed",e); }
+}
+function roleZColor(z){
+  if(z==null) return "var(--line-2)";
+  return z>0.25?"var(--good)":(z<-0.25?"var(--evil)":"var(--line-2)");
+}
+function creativityTicks(byRole){
+  return Object.keys(byRole).sort().slice(0,9).map(role=>{
+    const c=byRole[role], z=c.role_z;
+    const op=z==null?0.5:Math.min(1,0.45+Math.abs(z)*0.28);
+    const dist=c.raw_distance==null?"?":Math.round(c.raw_distance*100);
+    const title=role+": distance "+dist+" · z "+(z==null?"?":z.toFixed(2))+" · pairs "+c.valid_pairs;
+    return '<span class="tk" title="'+escAttr(title)+'" style="background:'+roleZColor(z)+';opacity:'+op.toFixed(2)+'"></span>';
+  }).join("");
+}
+function creativityRoleTable(byRole){
+  const rows=Object.keys(byRole).sort().map(role=>{
+    const c=byRole[role], z=c.role_z;
+    const cls=z==null?"":(z>0?"pos":(z<0?"neg":""));
+    const dist=c.raw_distance==null?"—":Math.round(c.raw_distance*100);
+    return '<tr><td class="nm">'+esc(role)+(c.provisional?'<span class="prov-pill">provisional</span>':'')+'</td>'+
+      '<td>'+dist+'</td><td class="spread '+cls+'">'+(z==null?"—":z.toFixed(2))+'</td>'+
+      '<td>'+c.valid_utterances+'</td><td>'+c.valid_pairs+'</td><td>'+c.excluded_pairs+'</td></tr>';
+  }).join("");
+  return '<table class="roletbl"><thead><tr><th>Role</th><th>Distance</th><th>z</th><th>Valid says</th><th>Pairs</th><th>Excluded</th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
+function creativityRow(c,rank){
+  const idChip=c.agent_id?esc(c.agent_id.slice(0,12)):"static";
+  const sub=esc((c.declared_model||c.identity_key.replace(/^static:/,"").replace(/:[^:]*$/,""))+
+    (c.declared_harness?" · "+c.declared_harness:""));
+  const open=creativityExpanded.has(c.identity_key);
+  const score=c.overall_z==null?"—":c.overall_z.toFixed(2);
+  const raw=c.raw_distance==null?"":"<span class=\"pm\">dist "+Math.round(c.raw_distance*100)+"</span>";
+  const flags=(c.insufficient?'<span class="prov-pill">insufficient</span>':(c.provisional?'<span class="prov-pill">provisional</span>':""));
+  return '<div class="cr-row" data-key="'+escAttr(c.identity_key)+'">'+
+    '<div class="cr-main" role="button" tabindex="0" aria-expanded="'+open+'">'+
+      '<span class="cr-rank">'+rank+'</span><span class="cr-caret">'+(open?'▾':'▸')+'</span>'+
+      '<span class="cr-who"><span class="cr-name">'+esc(c.display_name||c.identity_key)+'</span>'+
+        '<span class="cr-id">'+idChip+'</span>'+flags+'<span class="cr-sub">'+sub+'</span></span>'+
+      '<span class="cr-score">'+score+raw+'</span>'+
+      '<span class="cr-evidence">'+(c.valid_utterances||0)+' says · '+(c.valid_pairs||0)+' pairs</span>'+
+      '<span class="cr-roles">'+creativityTicks(c.by_role||{})+'</span>'+
+    '</div>'+
+    '<div class="cr-detail"'+(open?'':' hidden')+'>'+creativityRoleTable(c.by_role||{})+'</div></div>';
+}
+function renderCreativity(){
+  const el=document.getElementById("creativityrows"); if(!el) return;
+  const rows=CREATIVITY.competitors||[];
+  const cc=document.getElementById("creativitycount");
+  if(cc) cc.textContent=rows.length?(rows.length+" harnesses · "+(CREATIVITY.version||"latest")):"";
+  if(!rows.length){ el.innerHTML='<div class="lb-empty">No creativity snapshot yet — run the local creativity upload to populate this board.</div>'; return; }
+  el.innerHTML=rows.map((c,i)=>creativityRow(c,i+1)).join("");
+  el.querySelectorAll(".cr-row").forEach(row=>{
+    const key=row.dataset.key, main=row.querySelector(".cr-main"),
+          det=row.querySelector(".cr-detail"), car=row.querySelector(".cr-caret");
+    const toggle=()=>{ const opening=det.hasAttribute("hidden");
+      if(opening){ det.removeAttribute("hidden"); creativityExpanded.add(key); car.textContent="▾"; }
+      else{ det.setAttribute("hidden",""); creativityExpanded.delete(key); car.textContent="▸"; }
       main.setAttribute("aria-expanded", opening); };
     main.onclick=toggle;
     main.onkeydown=e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); toggle(); } };

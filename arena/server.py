@@ -396,6 +396,12 @@ def api_leaderboard():
     return {"competitors": rating.leaderboard()}
 
 
+@app.get("/api/creativity")
+def api_creativity(version: str | None = None):
+    """Derived linguistic self-variety board, precomputed from public say events."""
+    return store.creativity_leaderboard(version)
+
+
 @app.get("/api/agents/{agent_id:path}")
 def api_agent_detail(agent_id: str):
     """One competitor's scorecard + rating history + runs played. Keyed by bearer-token agent_id

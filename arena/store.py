@@ -102,6 +102,25 @@ CREATE TABLE IF NOT EXISTS role_difficulty (
   bucket TEXT, role TEXT, w INTEGER, n INTEGER, base_rate REAL, d_r REAL, updated_utc TEXT,
   PRIMARY KEY (bucket, role)
 );
+CREATE TABLE IF NOT EXISTS creativity_scores (
+  version TEXT, identity_key TEXT, agent_id TEXT, display_name TEXT,
+  declared_model TEXT, declared_harness TEXT, role TEXT,
+  raw_distance REAL, role_z REAL, overall_z REAL,
+  valid_utterances INTEGER, valid_pairs INTEGER, sampled_pairs INTEGER,
+  excluded_pairs INTEGER, eligible_roles INTEGER,
+  provisional INTEGER, insufficient INTEGER, updated_utc TEXT,
+  PRIMARY KEY (version, identity_key, role)
+);
+CREATE TABLE IF NOT EXISTS creativity_judgments (
+  version TEXT, judgment_key TEXT PRIMARY KEY, identity_key TEXT, role TEXT,
+  utterance_a TEXT, utterance_b TEXT,
+  embedding_model TEXT, embedding_similarity REAL,
+  judge_model TEXT, judge_temperature REAL, judge_prompt_version TEXT,
+  judge_similarity REAL, distance REAL,
+  coherence_a TEXT, coherence_b TEXT,
+  reason TEXT, divergence_phrases_json TEXT,
+  tokens_a INTEGER, tokens_b INTEGER, length_ratio REAL, created_utc TEXT
+);
 """
 
 # Postgres: created once via scripts/init_db.py or store.init_schema() (NOT per connection —
@@ -170,6 +189,25 @@ PG_SCHEMA_STMTS = [
     """CREATE TABLE IF NOT EXISTS role_difficulty (
          bucket TEXT, role TEXT, w INTEGER, n INTEGER, base_rate DOUBLE PRECISION,
          d_r DOUBLE PRECISION, updated_utc TEXT, PRIMARY KEY (bucket, role)
+       )""",
+    """CREATE TABLE IF NOT EXISTS creativity_scores (
+         version TEXT, identity_key TEXT, agent_id TEXT, display_name TEXT,
+         declared_model TEXT, declared_harness TEXT, role TEXT,
+         raw_distance DOUBLE PRECISION, role_z DOUBLE PRECISION, overall_z DOUBLE PRECISION,
+         valid_utterances INTEGER, valid_pairs INTEGER, sampled_pairs INTEGER,
+         excluded_pairs INTEGER, eligible_roles INTEGER,
+         provisional INTEGER, insufficient INTEGER, updated_utc TEXT,
+         PRIMARY KEY (version, identity_key, role)
+       )""",
+    """CREATE TABLE IF NOT EXISTS creativity_judgments (
+         version TEXT, judgment_key TEXT PRIMARY KEY, identity_key TEXT, role TEXT,
+         utterance_a TEXT, utterance_b TEXT,
+         embedding_model TEXT, embedding_similarity DOUBLE PRECISION,
+         judge_model TEXT, judge_temperature DOUBLE PRECISION, judge_prompt_version TEXT,
+         judge_similarity DOUBLE PRECISION, distance DOUBLE PRECISION,
+         coherence_a TEXT, coherence_b TEXT,
+         reason TEXT, divergence_phrases_json TEXT,
+         tokens_a INTEGER, tokens_b INTEGER, length_ratio DOUBLE PRECISION, created_utc TEXT
        )""",
 ]
 
@@ -763,6 +801,85 @@ def role_difficulty_map() -> dict[tuple[str, str], dict]:
 def all_rating_events() -> list[dict]:
     with conn() as c:
         return [dict(r) for r in c.execute("SELECT * FROM rating_events").fetchall()]
+
+
+def creativity_leaderboard(version: str | None = None) -> dict:
+    """Latest creativity snapshot, shaped for the observer.
+
+    Creativity is a derived metric like ratings. The source of truth remains games.transcript_json;
+    this reader only projects precomputed rows uploaded by tools/creativity_signal.py.
+    """
+    ph = _ph()
+    with conn() as c:
+        if version is None:
+            row = c.execute(
+                "SELECT version, MAX(updated_utc) updated_utc FROM creativity_scores "
+                "GROUP BY version ORDER BY updated_utc DESC LIMIT 1"
+            ).fetchone()
+            if not row:
+                return {"version": None, "updated_utc": None, "competitors": []}
+            version = row["version"]
+            updated_utc = row["updated_utc"]
+        else:
+            row = c.execute(
+                f"SELECT MAX(updated_utc) updated_utc FROM creativity_scores WHERE version={ph}",
+                (version,),
+            ).fetchone()
+            updated_utc = row["updated_utc"] if row else None
+        rows = [
+            dict(r) for r in c.execute(
+                f"SELECT * FROM creativity_scores WHERE version={ph}", (version,)
+            ).fetchall()
+        ]
+
+    by_identity: dict[str, dict] = {}
+    for r in rows:
+        ident = r["identity_key"]
+        entry = by_identity.setdefault(ident, {
+            "version": r["version"],
+            "identity_key": ident,
+            "agent_id": r.get("agent_id"),
+            "display_name": r.get("display_name"),
+            "declared_model": r.get("declared_model"),
+            "declared_harness": r.get("declared_harness"),
+            "by_role": {},
+        })
+        if r["role"] == "*":
+            entry.update({
+                "raw_distance": r.get("raw_distance"),
+                "overall_z": r.get("overall_z"),
+                "valid_utterances": int(r.get("valid_utterances") or 0),
+                "valid_pairs": int(r.get("valid_pairs") or 0),
+                "sampled_pairs": int(r.get("sampled_pairs") or 0),
+                "excluded_pairs": int(r.get("excluded_pairs") or 0),
+                "eligible_roles": int(r.get("eligible_roles") or 0),
+                "provisional": bool(int(r.get("provisional") or 0)),
+                "insufficient": bool(int(r.get("insufficient") or 0)),
+                "updated_utc": r.get("updated_utc"),
+            })
+        else:
+            entry["by_role"][r["role"]] = {
+                "raw_distance": r.get("raw_distance"),
+                "role_z": r.get("role_z"),
+                "valid_utterances": int(r.get("valid_utterances") or 0),
+                "valid_pairs": int(r.get("valid_pairs") or 0),
+                "sampled_pairs": int(r.get("sampled_pairs") or 0),
+                "excluded_pairs": int(r.get("excluded_pairs") or 0),
+                "provisional": bool(int(r.get("provisional") or 0)),
+                "insufficient": bool(int(r.get("insufficient") or 0)),
+            }
+
+    competitors = list(by_identity.values())
+    competitors.sort(
+        key=lambda x: (
+            x.get("overall_z") is not None,
+            x.get("overall_z") if x.get("overall_z") is not None else -9999,
+            x.get("raw_distance") if x.get("raw_distance") is not None else -9999,
+            x.get("valid_pairs", 0),
+        ),
+        reverse=True,
+    )
+    return {"version": version, "updated_utc": updated_utc, "competitors": competitors}
 
 
 def get_rating(identity_key: str) -> dict | None:
