@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import random
 from collections import Counter
 from typing import Any, Callable
 
@@ -27,7 +26,7 @@ from arena.identity import (
     roster_line,
     seat_for_participant_ref,
 )
-from .base import NO_KILL, Agent, agent_call_log, agent_stats, compute_winners, player_won, tally_votes, team_of
+from .base import NO_KILL, Agent, Game, agent_stats, compute_winners, player_won, tally_votes, team_of
 
 ROLE_DESC = {
     "Werewolf": "You are a Werewolf. At night you wake with other werewolves. Win if no werewolf is voted out.",
@@ -239,7 +238,7 @@ def deck_preset_options(n_players: int | None = None) -> list[dict]:
     return opts
 
 
-class ONUW:
+class ONUW(Game):
     GAME = "onuw"
     TITLE = "One Night Ultimate Werewolf"
     MIN_PLAYERS, MAX_PLAYERS = 5, 7
@@ -249,11 +248,7 @@ class ONUW:
                  deal_override: list[str] | None = None,
                  event_sink: Callable[..., None] | None = None,
                  event_driven: bool = False):
-        self.names = names
-        self.n = len(names)
-        self.seed = seed
-        self.rng = random.Random(seed)
-        self.discussion_rounds = discussion_rounds
+        super().__init__(names, seed, discussion_rounds)
         self.deck_preset = normalize_deck_preset(deck_preset)
         self.deck = deck or default_deck(len(names), self.deck_preset)
         self.deal_override = deal_override  # explicit 8-card layout for tests (players then center)
@@ -1025,13 +1020,11 @@ class ONUW:
             "won": player_won(self.current[i], wins),
             **agent_stats(agents[i]),
         } for i in range(self.n)]
-        return {
-            "game": self.GAME, "title": self.TITLE, "seed": self.seed,
-            "meta": f"{self.n} agents · {len(self.deck)} cards · 1 night, 1 vote · seed {self.seed}",
-            "deckPreset": self.deck_preset,
-            "players": players,
-            "agentCallLog": agent_call_log(agents),
-            "cardsInPlay": [[c, team_of(c)] for c in self.deck],
-            "center": [[c, team_of(c)] for c in self.center],
-            "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,
-        }
+        return self._transcript(
+            agents=agents, phases=phases, winner=winner,
+            meta=f"{self.n} agents · {len(self.deck)} cards · 1 night, 1 vote · seed {self.seed}",
+            players=players,
+            cards_in_play=[[c, team_of(c)] for c in self.deck],
+            center=[[c, team_of(c)] for c in self.center],
+            extra={"deckPreset": self.deck_preset},
+        )

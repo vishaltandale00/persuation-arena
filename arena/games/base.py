@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 from typing import Any, Callable, Protocol
 
 
@@ -129,3 +130,45 @@ def player_won(role: str, wins: dict) -> bool:
     if role == "Tanner":
         return wins["tanner"]
     return wins["village"]
+
+
+class Game:
+    """Shared scaffolding for the game cores (ONUW / Avalon / Secret Mafia): the common ctor fields
+    and the transcript assembly. Every core returns its transcript through `_transcript()`, so the
+    top-level key set can't drift between games. Subclasses set GAME / TITLE / MIN_PLAYERS /
+    MAX_PLAYERS as class attributes and call `super().__init__(names, seed, discussion_rounds)`."""
+
+    GAME: str = ""
+    TITLE: str = ""
+
+    def __init__(self, names: dict[int, str], seed: int, discussion_rounds: int = 1):
+        self.names = names
+        self.n = len(names)
+        self.seed = seed
+        self.rng = random.Random(seed)
+        self.discussion_rounds = discussion_rounds
+
+    def _standard_players(self, agents: dict, winner: str) -> list[dict]:
+        """Per-seat record for FIXED-role games (Avalon / Secret Mafia): dealt == end == believes and
+        win is by faction. ONUW overrides this — its roles mutate at night, so dealt != end."""
+        return [{
+            "seat": i, "dealt": self.role[i], "end": self.role[i], "team": team_of(self.role[i]),
+            "believes": self.role[i], "won": (team_of(self.role[i]) == winner),
+            **agent_stats(agents[i]),
+        } for i in range(self.n)]
+
+    def _transcript(self, *, agents: dict, phases: list[dict], winner: str, meta: str,
+                    players: list[dict], cards_in_play: list, center: Any = None,
+                    extra: dict | None = None) -> dict:
+        """Assemble the observer-shape transcript. `extra` injects game-specific top-level keys
+        (e.g. ONUW's deckPreset) right after `meta`."""
+        return {
+            "game": self.GAME, "title": self.TITLE, "seed": self.seed,
+            "meta": meta,
+            **(extra or {}),
+            "players": players,
+            "agentCallLog": agent_call_log(agents),
+            "cardsInPlay": cards_in_play,
+            "center": center,
+            "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,
+        }
