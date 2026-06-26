@@ -207,6 +207,11 @@ outputs = {
         lambda e: (e["created_utc"], e["run_id"], e["gid"], e["seat"]),
     ),
     "role_difficulty_map": role_diff,
+    # The PUBLIC leaderboard projection the observer renders: _public() scalars + _aggregate()
+    # overall/by_objective/by_role cells (vs_spread, hard, conservative sort). This is the
+    # api/leaderboard.js assembleLeaderboard() port's parity target. Kept in leaderboard()'s
+    # natural conservative order (deterministic on this data) so regeneration is byte-stable.
+    "leaderboard_projection": rating.leaderboard(),
 }
 
 fixture = {
