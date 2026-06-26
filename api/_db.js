@@ -4,6 +4,8 @@
 // atomic SQL statements, so no transactions/locking are needed across serverless invocations.
 import { neon } from '@neondatabase/serverless';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // Lazily construct the Neon client on first use. neon() throws when DATABASE_URL is unset, so
 // constructing it at import time would break any module that imports _db.js purely for its pure
@@ -35,7 +37,39 @@ export async function tx(queries) {
 }
 
 export const PROTOCOL_VERSION = 'arena-agent-v1';
-export const OPEN_RUN_STATUSES = ['open', 'waiting', 'ready_required'];
+
+// SINGLE SOURCE OF TRUTH for the named RUN/SIGNUP status sets: the SAME checked-in file the Python
+// coordinator loads (arena/store.py reads arena/statuses.json at import). fs-read here (rather than a
+// JSON import-assertion) keeps this CommonJS/ESM-agnostic and avoids the experimental import-attributes
+// flag. The JSON list ORDER is significant — sqlInList renders it into SQL IN(...) bodies that other
+// queries (and the parity tests) match as exact substrings, so it must stay in lockstep with Python.
+const STATUS_SETS = (() => {
+  const path = fileURLToPath(new URL('../arena/statuses.json', import.meta.url)); // .../arena/statuses.json
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) if (!k.startsWith('_')) out[k] = v;
+  return out;
+})();
+
+/** Render a named status set as a SQL IN(...) body: 'a','b','c' (JSON order, no spaces after commas). */
+export const sqlInList = (name) => STATUS_SETS[name].map((s) => `'${s}'`).join(',');
+
+export const OPEN_RUN_STATUSES = STATUS_SETS.open_run;
+export const ACTIVE_SIGNUP_STATUSES = STATUS_SETS.active_signup;
+export const TERMINAL_SIGNUP_STATUSES = STATUS_SETS.terminal_signup;
+export const SEATED_SIGNUP_STATUSES = STATUS_SETS.seated_signup;
+export const PROMOTABLE_SIGNUP_STATUSES = STATUS_SETS.promotable_signup;
+export const READY_OR_ACTIVE_SIGNUP_STATUSES = STATUS_SETS.ready_or_active_signup;
+
+// Pre-rendered IN(...) bodies for the sets that appear inside SQL strings in this module and the
+// per-route handlers, so every inlined literal routes through statuses.json.
+export const ACTIVE_SIGNUP_IN = sqlInList('active_signup');
+export const TERMINAL_SIGNUP_IN = sqlInList('terminal_signup');
+export const OPEN_RUN_IN = sqlInList('open_run');
+export const SEATED_SIGNUP_IN = sqlInList('seated_signup');
+export const PROMOTABLE_SIGNUP_IN = sqlInList('promotable_signup');
+export const READY_OR_ACTIVE_SIGNUP_IN = sqlInList('ready_or_active_signup');
+export const READY_TRANSITION_SIGNUP_IN = sqlInList('ready_transition_signup');
 
 // Timestamps: match Python's _utcnow (ISO, microsecond precision, trailing Z). JS gives millis, so we
 // pad to 6 digits — string-comparable and same shape as the Python writer/reader.
@@ -176,7 +210,7 @@ export async function advanceLobby(runId) {
               CASE WHEN bool_and(roster_index IS NOT NULL) OVER () THEN roster_index
                    ELSE (ROW_NUMBER() OVER (ORDER BY created_utc, id) - 1) END AS seat
        FROM run_signups
-       WHERE run_id = $1 AND status IN ('waiting','ready_required','ready','active')
+       WHERE run_id = $1 AND status IN (${ACTIVE_SIGNUP_IN})
      )
      UPDATE run_signups s
      SET seat = r.seat,
@@ -187,7 +221,7 @@ export async function advanceLobby(runId) {
      WHERE s.id = r.id
        AND r.seat < (SELECT players FROM runs WHERE id = $1)
        AND (SELECT COUNT(*) FROM run_signups WHERE run_id = $1
-              AND status IN ('waiting','ready_required','ready','active'))
+              AND status IN (${ACTIVE_SIGNUP_IN}))
            >= (SELECT players FROM runs WHERE id = $1)`,
     [runId, readyDeadline, now]
   );
@@ -196,9 +230,9 @@ export async function advanceLobby(runId) {
   await q(
     `UPDATE runs SET status = CASE
         WHEN (SELECT COUNT(*) FROM run_signups WHERE run_id = $1 AND seat IS NOT NULL
-                AND status IN ('ready_required','ready','active')) >= players THEN 'ready_required'
+                AND status IN (${SEATED_SIGNUP_IN})) >= players THEN 'ready_required'
         ELSE 'waiting' END
-     WHERE id = $1 AND status IN ('open','waiting','ready_required')`,
+     WHERE id = $1 AND status IN (${OPEN_RUN_IN})`,
     [runId]
   );
 
@@ -210,7 +244,7 @@ export async function advanceLobby(runId) {
                  'agent_id', s.agent_id, 'signup_id', s.id) ORDER BY s.seat)::text
         FROM run_signups s JOIN agents a ON a.id = s.agent_id
         WHERE s.run_id = $1 AND s.seat IS NOT NULL
-          AND s.status IN ('ready_required','ready','active')
+          AND s.status IN (${SEATED_SIGNUP_IN})
      ), agents_json)
      WHERE id = $1`,
     [runId]
@@ -219,8 +253,8 @@ export async function advanceLobby(runId) {
   // 3. activation: promote ready->active once enough seated agents are ready (atomic, race-free)
   const promoted = await q(
     `UPDATE run_signups SET status = 'active', updated_utc = $2
-     WHERE run_id = $1 AND status IN ('ready','ready_required')
-       AND (SELECT COUNT(*) FROM run_signups WHERE run_id = $1 AND status IN ('ready','active'))
+     WHERE run_id = $1 AND status IN (${PROMOTABLE_SIGNUP_IN})
+       AND (SELECT COUNT(*) FROM run_signups WHERE run_id = $1 AND status IN (${READY_OR_ACTIVE_SIGNUP_IN}))
            >= (SELECT players FROM runs WHERE id = $1)
      RETURNING id`,
     [runId, now]
