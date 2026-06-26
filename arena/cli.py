@@ -49,16 +49,15 @@ def _run_caps_from_args(args):
 
 
 def _use_local_store() -> None:
-    """Pin the LOCAL CLI commands (run/score/runs) to the local SQLite store by dropping
-    DATABASE_URL (which .env / the environment may set). These never touch the remote DB — the
-    only path to the prod leaderboard is `arena push`, which uses the Vercel JS API. Remote-by-design
-    commands (worker / serve / connected) are intentionally NOT routed through this."""
+    """Force the local SQLite store by dropping DATABASE_URL (config.load_dotenv injects .env's at
+    import). Applied CENTRALLY by _dispatch() to every subcommand except _REMOTE_STORE_FUNCS, so a
+    stray DATABASE_URL can never make a local command read/write prod Neon. The only path to the prod
+    leaderboard is `arena push`, which reads the local store and uploads over the Vercel HTTP API."""
     os.environ.pop("DATABASE_URL", None)
 
 
 def _run(args):
     from .batch import run_batch
-    _use_local_store()
     rid = args.run_id or f"run_{args.seed}"
     caps = _run_caps_from_args(args)
     run_batch(game=args.game, n_games=args.games, seed_base=args.seed, run_id=rid,
@@ -71,7 +70,6 @@ def _run(args):
 def _score(args):
     from .score import score_run
     from . import store
-    _use_local_store()
     run = store.get_run(args.run)
     if run is None:
         print("run not found")
@@ -103,7 +101,6 @@ def _score(args):
 
 def _runs(args):
     from . import store
-    _use_local_store()
     for r in store.list_runs():
         print(f"{r['id']:12} {r['game']:7} {r['status']:8} {r['n_games']:>3} games  "
               f"split {r['team_split']}  {r['created']}")
@@ -274,9 +271,8 @@ def _push(args):
         print("ERROR: pass --run RUN_ID (or --all to push every done/partial local run)")
         raise SystemExit(2)
 
-    # POP DATABASE_URL so the READ phase (store.get_run / get_game / distinct_gids) hits the LOCAL
-    # SQLite, not a prod Neon URL the env may carry. The client never connects to prod's DB.
-    os.environ.pop("DATABASE_URL", None)
+    # The READ phase (store.get_run / get_game / distinct_gids) hits the LOCAL SQLite — _dispatch()
+    # already dropped DATABASE_URL since push isn't in _REMOTE_STORE_FUNCS. Uploads go over HTTP.
     args.server = (args.server or os.environ.get("ARENA_SERVER_URL") or PROD_SERVER_URL).rstrip("/")
     token = push_token_or_register(args.server, getattr(args, "as_name", None))
 
@@ -307,7 +303,20 @@ def _push(args):
     return summaries
 
 
-def main():
+_REMOTE_STORE_FUNCS = {_serve}  # the ONLY subcommands allowed to use the remote (Neon) store
+
+
+def _dispatch(args) -> None:
+    """Fail-SAFE store routing: force local SQLite for every subcommand EXCEPT _REMOTE_STORE_FUNCS,
+    BEFORE it runs. config.load_dotenv injects .env's DATABASE_URL at import, so without this a
+    'local' command (run/score/runs/agents/push) could silently read or write prod Neon. New
+    subcommands are local-by-default — add to _REMOTE_STORE_FUNCS to opt into the remote store."""
+    if args.func not in _REMOTE_STORE_FUNCS:
+        _use_local_store()
+    args.func(args)
+
+
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="arena")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -364,8 +373,12 @@ def main():
                     help="central site URL (default $ARENA_SERVER_URL else the prod Vercel host)")
     pu.set_defaults(func=_push)
 
-    args = p.parse_args()
-    args.func(args)
+    return p
+
+
+def main():
+    args = build_parser().parse_args()
+    _dispatch(args)
 
 
 if __name__ == "__main__":

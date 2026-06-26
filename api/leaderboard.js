@@ -2,25 +2,9 @@
 // Rating math stays in Python; this endpoint only projects the precomputed Neon snapshot.
 import { q, send } from './_db.js';
 import { wilson } from './_read.js';
+import { roundHalfEven } from './_round.js';
 
 const ELO_SCALE = 173.0;
-
-function roundHalfEven(x, digits) {
-  if (!Number.isFinite(x)) return x;
-  const factor = 10 ** digits;
-  const y = x * factor;
-  const sign = Math.sign(y) || 1;
-  const abs = Math.abs(y);
-  const floor = Math.floor(abs);
-  const frac = abs - floor;
-  let rounded;
-  if (Math.abs(frac - 0.5) < 1e-9) {
-    rounded = floor % 2 === 0 ? floor : floor + 1;
-  } else {
-    rounded = Math.round(abs);
-  }
-  return (sign * rounded) / factor;
-}
 
 const r3 = (x) => roundHalfEven(x, 3);
 const r1 = (x) => roundHalfEven(x, 1);

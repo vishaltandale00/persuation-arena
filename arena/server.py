@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import copy
+import datetime as _dt
 import hashlib
+import json
 import os
 import secrets
 import threading
@@ -31,7 +33,9 @@ from . import store
 from .batch import GAME_CORES, default_deal_schedule
 from .games.onuw import DEFAULT_DECK_PRESET, deck_for_preset, deck_preset_options, normalize_deck_preset
 from .identity import NO_ONE_REF, participant, validate_public_name, validate_unique_public_names
-from .score import score_run
+from .score import score_run, score_runs
+from . import sharded
+from .sharded import rollup_parent_status
 
 WEB = ROOT / "web"
 GAME_LABELS = {
@@ -279,6 +283,26 @@ def _create_connected_run(payload: dict) -> dict:
             "run_config_overrides": _run_config_overrides(payload),
         },
     }
+    # SPEC §6.9(a) / D3: shards>1 fans the run out into a parent + K child shards; default/1 keeps
+    # today's single connected run byte-identical (INV-2). K is validated/capped in create_sharded_run.
+    shards = _payload_int(payload, ("shards", "num_shards"), 1, positive=True)
+    if shards > 1:
+        try:
+            child_ids = sharded.create_sharded_run(run_config, shards)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        join_token = None
+        for cid in child_ids:
+            child_run = store.get_run(cid)
+            # Every child carries the SAME per-parent secret (arena/sharded.py:create_sharded_run).
+            # Surface it so an API-driven orchestrator can sign agents into the child shards — the
+            # response only ever exposed child run ids, leaving externally-driven runs unjoinable.
+            join_token = child_run.get("join_token")
+            _spawn_coordinator(child_run, rounds)  # one coordinator per shard (no-op unless Modal)
+        return {"run_id": run_id, "status": "open", "game": game, "games": games,
+                "players": players, "rounds": rounds, "deck_preset": deck_preset,
+                "shards": shards, "child_run_ids": child_ids, "join_token": join_token,
+                "run_config": _run_config_meta(caps, rounds)}
     store.create_connected_run(run_config)
     _spawn_coordinator(run_config, rounds)  # no-op unless ARENA_MODAL_COORDINATOR
     return {"run_id": run_id, "status": "open", "game": game, "games": games,
@@ -290,10 +314,25 @@ def _create_connected_run(payload: dict) -> dict:
 def api_runs():
     out = []
     for r in store.list_runs():
+        # SPEC D7 / INV-4: child shards are invisible in the observer — the parent renders as one
+        # normal run. (Parents and plain runs are listed; only run_kind='child' is hidden.)
+        run_kind = (r.get("run_kind") or "normal")
+        if run_kind == "child":
+            continue
+        status, team_split = r["status"], r["team_split"]
+        if run_kind == "parent":
+            # SPEC D7 / §6.9(a): the index renders the parent as one normal run — its OWN row never
+            # gets child progress written back, so roll status up and aggregate the children's
+            # team-split here (the parent's own status is stale 'open' and its split is 0-0).
+            status = rollup_parent_status(r["id"])
+            team_split = {"good": 0, "evil": 0}
+            for cid in store.child_run_ids(r["id"]):
+                for team, n in (store.get_run(cid)["team_split"]).items():
+                    team_split[team] = team_split.get(team, 0) + n
         out.append({
-            "id": r["id"], "game": r["game"], "label": r["label"], "status": r["status"],
+            "id": r["id"], "game": r["game"], "label": r["label"], "status": status,
             "nGames": r["n_games"], "players": r["players"], "seed": r["seed_base"],
-            "when": r["created"], "teamSplit": r["team_split"],
+            "when": r["created"], "teamSplit": team_split,
             "deckPreset": r.get("deck_preset") or (DEFAULT_DECK_PRESET if r["game"] == "onuw" else None),
         })
     return out
@@ -401,11 +440,27 @@ def api_signup_run(run_id: str, payload: dict, authorization: str | None = Heade
     agent = _authorized_agent(authorization)
     if (payload.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
         raise HTTPException(400, "unsupported protocol_version")
-    signup, err = store.create_signup(run_id, agent["id"], int(payload.get("max_concurrent_turns") or 1))
+    # Optional explicit seat (roster index): the orchestrator's deterministic-seat request (SPEC
+    # D5/V-7). Absent for normal/discovered signups -> arrival-order seating (INV-2).
+    # FINDING #2 (codex round-6): pass the RAW seat through to store.create_signup, which owns seat
+    # validation (non-integer/out-of-range/duplicate -> 'invalid_seat' -> HTTP 400 below). int()-coercing
+    # here turned a non-integer seat ("x") into a 500 (ValueError) and silently coerced JSON true/1.7.
+    seat = payload.get("seat")
+    signup, err = store.create_signup(
+        run_id, agent["id"], int(payload.get("max_concurrent_turns") or 1),
+        seat=seat,
+        join_token=payload.get("join_token"),
+    )
     if err == "run_not_found":
         raise HTTPException(404, "run not found")
     if err == "run_full":
         raise HTTPException(409, "run_full")
+    if err == "run_not_joinable":
+        # INV-4: shard parents/children are not directly joinable by a stray agent.
+        raise HTTPException(403, "run_not_joinable")
+    if err == "invalid_seat":
+        # FINDING #3: an explicit seat must be an int in [0, players); reject out-of-range / non-int.
+        raise HTTPException(400, "invalid_seat")
     if err:
         raise HTTPException(409, err)
     return _signup_response(signup)
@@ -553,7 +608,8 @@ def api_turn_reply(turn_id: str, payload: dict, authorization: str | None = Head
     action = payload.get("action")
     if action is None:
         raise HTTPException(400, "action required")
-    reply, err = store.reply_to_turn(turn_id, agent["id"], action, payload.get("reasoning"),
+    declared_reasoning = payload.get("declared_reasoning", payload.get("reasoning"))
+    reply, err = store.reply_to_turn(turn_id, agent["id"], action, declared_reasoning,
                                      payload.get("client_ms"))
     if err == "not_found":
         raise HTTPException(404, "turn not found")
@@ -566,6 +622,42 @@ def api_turn_reply(turn_id: str, payload: dict, authorization: str | None = Head
     if err == "reply_already_recorded":
         return {"ok": True, "accepted": False, "reason": "reply_already_recorded"}
     return {"ok": True, "accepted": True}
+
+
+def _source_run_ids(run: dict) -> list[str]:
+    """The run ids whose games/scores/events back a run's observer view (SPEC D7).
+
+    A normal/child run is backed by itself. A sharded PARENT is backed by its children: the observer
+    sees a parent as one run whose games are the union across shards and whose scorecard is
+    score_runs(children). (A parent never has games of its own.)"""
+    if (run.get("run_kind") or "normal") == "parent":
+        return store.child_run_ids(run["id"]) or []
+    return [run["id"]]
+
+
+def _parent_signups(source_ids: list[str]) -> list[dict]:
+    """The roster for a sharded parent: the children share identities (REQ-5), so the same agent is
+    signed up on every shard. Present ONE logical signup per agent_id (the observer renders the
+    parent as one normal run, D7), picking the most-advanced status across shards so the roster row
+    reflects whether that competitor has reached ready/active/completed anywhere."""
+    rank = {"waiting": 0, "ready_required": 1, "ready": 2, "active": 3,
+            "completed": 4, "expired": -1, "cancelled": -1}
+    best: dict[str, dict] = {}
+    for cid in source_ids:
+        for s in store.list_run_signups(cid):
+            key = s["agent_id"]
+            cur = best.get(key)
+            if cur is None or rank.get(s["status"], 0) > rank.get(cur["status"], 0):
+                best[key] = s
+    return list(best.values())
+
+
+def _parent_recent_events(source_ids: list[str]) -> list[dict]:
+    """Union of the children's recent events, globally ordered (created time, then per-shard seq) and
+    capped like a single run's stream. The parent owns no events of its own (D7)."""
+    events = [e for cid in source_ids for e in store.list_run_events(cid, max_events=120)]
+    events.sort(key=lambda e: (e.get("created_utc") or "", e.get("seq") or 0))
+    return events[-120:]
 
 
 def _usage_cost_for_transcript(transcript: dict) -> dict:
@@ -616,8 +708,27 @@ def api_run(run_id: str):
     r = store.get_run(run_id)
     if not r:
         raise HTTPException(404, "run not found")
+    is_parent = (r.get("run_kind") or "normal") == "parent"
+    source_ids = _source_run_ids(r)
+    if is_parent:
+        # SPEC D7: present the parent as ONE normal run by sourcing EVERY aggregate field from the
+        # children (the parent row owns no games/signups/events/wins of its own). The children carry
+        # the same identities (shared creds, REQ-5), disjoint global gids (D8), and per-shard events.
+        child_runs = [store.get_run(cid) for cid in source_ids]
+        agg_games = [g for cr in child_runs for g in cr["games"]]
+        agg_games.sort(key=lambda g: g["gid"])
+        # per-name wins/team-split summed across shards (gids are disjoint, so no double counting).
+        agg_wins: dict[str, int] = {}
+        agg_split = {"good": 0, "evil": 0}
+        for cr in child_runs:
+            for name, w in cr["wins"].items():
+                agg_wins[name] = agg_wins.get(name, 0) + (w or 0)
+            for team, n in cr["team_split"].items():
+                agg_split[team] = agg_split.get(team, 0) + n
+        r = {**r, "games": agg_games, "wins": agg_wins, "team_split": agg_split,
+             "status": rollup_parent_status(run_id)}
     has_games = len(r["games"]) > 0
-    signups = store.list_run_signups(run_id)
+    signups = _parent_signups(source_ids) if is_parent else store.list_run_signups(run_id)
     signup_by_id = {s["id"]: s for s in signups}
     agents_src = r["agents"] or [
         {"name": s["display_name"], "model": "connected-agent", "harness": "connected",
@@ -642,9 +753,11 @@ def api_run(run_id: str):
         })
     games = [{"gid": g["gid"], "seed": g["seed"], "win": g["winner_team"], "line": g["line"], "full": True}
              for g in r["games"]]
-    # partial scores while a run is in progress, full when done
-    scores = score_run(run_id) if has_games else {}
-    recent_events = store.list_run_events(run_id, max_events=120) if r["status"] == "running" or signups else []
+    # partial scores while a run is in progress, full when done; a parent aggregates across shards.
+    scores = (score_runs(source_ids) if is_parent else score_run(run_id)) if has_games else {}
+    recent_events = (_parent_recent_events(source_ids) if is_parent
+                     else store.list_run_events(run_id, max_events=120)) \
+        if r["status"] == "running" or signups else []
     return {
         "id": r["id"], "game": r["game"], "label": r["label"], "status": r["status"],
         "nGames": r["n_games"], "players": r["players"], "seedBase": r["seed_base"],
@@ -735,6 +848,22 @@ def _enrich_transcript_turn_reasoning(run_id: str, gid: int, transcript: dict) -
         if seat is None or not phase:
             continue
         queues.setdefault((phase, int(seat)), []).append(payload)
+    call_logs = transcript.get("agentCallLog") or transcript.get("callLog") or {}
+    call_queues: dict[tuple[int, str], list[dict]] = {}
+    if isinstance(call_logs, dict):
+        for seat, calls in call_logs.items():
+            try:
+                seat_i = int(seat)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(calls, list):
+                continue
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                action_kind = call.get("action_kind")
+                if action_kind:
+                    call_queues.setdefault((seat_i, str(action_kind)), []).append(call)
 
     def normalized_text(value) -> str:
         return " ".join(str(value or "").split())
@@ -756,8 +885,52 @@ def _enrich_transcript_turn_reasoning(run_id: str, gid: int, transcript: dict) -
             except (TypeError, ValueError):
                 return False
         if event_type == "act":
-            return payload.get("ok") is True
+            return True
         return False
+
+    def matching_call_log(payload: dict, seat: int) -> dict:
+        action_kind = payload.get("action_kind")
+        if not action_kind:
+            return {}
+        queue = call_queues.get((seat, str(action_kind))) or []
+        if not queue:
+            return {}
+        payload_ms = payload.get("ms")
+        payload_raw = payload.get("raw")
+        payload_ok = payload.get("ok")
+        for idx, candidate in enumerate(queue):
+            same_raw = payload_raw is not None and candidate.get("raw") == payload_raw
+            same_ok = payload_ok is None or bool(candidate.get("ok", True)) == bool(payload_ok)
+            same_ms = False
+            try:
+                same_ms = abs(float(candidate.get("ms")) - float(payload_ms)) < 0.01
+            except (TypeError, ValueError):
+                pass
+            if same_ok and (same_ms or same_raw):
+                return queue.pop(idx)
+        return queue.pop(0)
+
+    def attach_turn_telemetry(event: dict, payload: dict, call: dict | None = None) -> None:
+        call = call or {}
+        ok = payload.get("ok", call.get("ok"))
+        if ok is not None:
+            event["model_call_ok"] = bool(ok)
+            if not ok:
+                event["defaulted"] = True
+        validation_error = payload.get("validation_error") or call.get("validation_error")
+        if validation_error:
+            event["validation_error"] = validation_error
+        raw = payload.get("raw") or call.get("raw")
+        if raw:
+            event["raw_model_output"] = raw
+        if payload.get("action_kind") or call.get("action_kind"):
+            event["action_kind"] = payload.get("action_kind") or call.get("action_kind")
+        if payload.get("model") or call.get("model"):
+            event["model"] = payload.get("model") or call.get("model")
+        if call.get("structured_output"):
+            event["structured_output"] = call["structured_output"]
+        if call.get("finish_reason") is not None:
+            event["finish_reason"] = call["finish_reason"]
 
     for phase in enriched.get("phases", []):
         phase_key = str(phase.get("name") or phase.get("kind") or "").lower()
@@ -785,6 +958,8 @@ def _enrich_transcript_turn_reasoning(run_id: str, gid: int, transcript: dict) -
                             "provider_reasoning",
                             "provider_reasoning_details",
                             "raw",
+                            "ok",
+                            "validation_error",
                             "action_kind",
                             "model",
                             "ms",
@@ -795,27 +970,160 @@ def _enrich_transcript_turn_reasoning(run_id: str, gid: int, transcript: dict) -
                 ]
             payload = queue[match_idx]
             del queue[:match_idx + 1]
+            call = matching_call_log(payload, int(pid))
             if payload.get("reasoning"):
                 event["declared_reasoning"] = payload["reasoning"]
             if payload.get("provider_reasoning") is not None:
                 event["provider_reasoning"] = payload["provider_reasoning"]
             if payload.get("provider_reasoning_details") is not None:
                 event["provider_reasoning_details"] = payload["provider_reasoning_details"]
-            if payload.get("raw"):
-                event["raw_model_output"] = payload["raw"]
-            if payload.get("action_kind"):
-                event["action_kind"] = payload["action_kind"]
-            if payload.get("model"):
-                event["model"] = payload["model"]
+            attach_turn_telemetry(event, payload, call)
     return enriched
 
 
 @app.get("/api/runs/{run_id}/games/{gid}")
 def api_game(run_id: str, gid: int):
-    t = store.get_game(run_id, gid)
-    if not t:
+    r = store.get_run(run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    # SPEC D7: a sharded parent's game lives on whichever child holds that global gid; resolve it
+    # there. A normal/child run resolves against itself.
+    for sid in _source_run_ids(r):
+        t = store.get_game(sid, gid)
+        if t:
+            return _enrich_transcript_turn_reasoning(sid, gid, t)
+    raise HTTPException(404, "game not found")
+
+GAME_SUMMARY_MODEL = os.environ.get("ARENA_GAME_SUMMARY_MODEL", "openai/gpt-5.5")
+GAME_SUMMARY_REASONING_EFFORT = os.environ.get("ARENA_GAME_SUMMARY_REASONING_EFFORT", "medium")
+
+
+def _clean_summary_text(value, max_chars: int = 1200) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:max_chars]
+
+
+def _game_summary_input(transcript: dict) -> dict:
+    names = {p.get("seat"): p.get("name") or f"Seat {p.get('seat')}" for p in transcript.get("players", [])}
+    phases = []
+    for phase in transcript.get("phases", []):
+        events = []
+        for event in phase.get("events", []):
+            if event.get("t") in {"sys", "round"}:
+                continue
+            pid = event.get("pid")
+            who = names.get(pid, f"Seat {pid}")
+            if event.get("t") == "result":
+                events.append(f"Result: {_clean_summary_text(event.get('text'), 500)}")
+            elif event.get("t") == "say":
+                events.append(f"{who}: {_clean_summary_text(event.get('text'), 500)}")
+            elif event.get("t") == "pass":
+                stance = f" ({event.get('stance')})" if event.get("stance") else ""
+                events.append(f"{who}: passed{stance}")
+            elif event.get("t") == "act":
+                events.append(f"{who}: {_clean_summary_text(event.get('text'), 500)}")
+            elif event.get("t") == "vote":
+                tgt = event.get("tgt")
+                target = "no one" if tgt == -1 else names.get(tgt, f"Seat {tgt}")
+                events.append(f"{who} voted for {target}: {_clean_summary_text(event.get('text'), 500)}")
+            if len(events) >= 80:
+                break
+        phases.append({"phase": phase.get("name") or phase.get("kind") or "Phase", "events": events})
+    return {
+        "meta": transcript.get("meta"),
+        "seed": transcript.get("seed"),
+        "winner_team": transcript.get("winner_team"),
+        "outcome": transcript.get("outcome"),
+        "players": [
+            {
+                "seat": p.get("seat"),
+                "name": p.get("name") or f"Seat {p.get('seat')}",
+                "dealt": p.get("dealt"),
+                "end": p.get("end"),
+                "team": p.get("team"),
+                "won": bool(p.get("won")),
+                "calls": p.get("calls", 0),
+                "forfeits": p.get("forfeits", 0),
+            }
+            for p in transcript.get("players", [])
+        ],
+        "phases": phases,
+    }
+
+
+def _normalize_game_summary(value: dict | str) -> dict:
+    src = value if isinstance(value, dict) else {"summary": str(value or "")}
+    highlights = src.get("highlights") if isinstance(src.get("highlights"), list) else []
+    turning_points = src.get("turning_points") if isinstance(src.get("turning_points"), list) else []
+    return {
+        "model": GAME_SUMMARY_MODEL,
+        "reasoning_effort": GAME_SUMMARY_REASONING_EFFORT,
+        "generated_at": _dt.datetime.now(_dt.UTC).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "text": _clean_summary_text(src.get("summary") or src.get("text") or "", 2000),
+        "result": _clean_summary_text(src.get("result"), 500),
+        "highlights": [_clean_summary_text(x, 280) for x in highlights[:5] if _clean_summary_text(x, 280)],
+        "turning_points": [_clean_summary_text(x, 280) for x in turning_points[:5] if _clean_summary_text(x, 280)],
+    }
+
+
+def _summarize_game(transcript: dict) -> dict:
+    if not config.has_api_key():
+        raise HTTPException(502, "OPENROUTER_API_KEY is required to generate game summaries")
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You summarize completed hidden-role game results for an observer UI. "
+                "Use only the supplied public actions, votes, final roles, and outcome. "
+                "Do not mention private reasoning, provider traces, hidden model logs, or raw JSON. "
+                "Return JSON with keys: summary, result, highlights, turning_points."
+            ),
+        },
+        {"role": "user", "content": json.dumps(_game_summary_input(transcript))},
+    ]
+    body = {
+        "model": GAME_SUMMARY_MODEL,
+        "messages": messages,
+        "max_tokens": 700,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+        "reasoning": {"effort": GAME_SUMMARY_REASONING_EFFORT, "exclude": True},
+    }
+    headers = {"Authorization": f"Bearer {config.get_api_key()}", "Content-Type": "application/json"}
+    try:
+        r = httpx.post(OPENROUTER_BASE_URL + "/chat/completions", headers=headers, json=body, timeout=90)
+        if r.status_code >= 400 and (
+            "response_format" in r.text.lower()
+            or "reasoning" in r.text.lower()
+            or "unsupported" in r.text.lower()
+        ):
+            body.pop("response_format", None)
+            body.pop("reasoning", None)
+            r = httpx.post(OPENROUTER_BASE_URL + "/chat/completions", headers=headers, json=body, timeout=90)
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"].get("content", "")
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", content, re.DOTALL)
+            parsed = json.loads(match.group(0)) if match else {"summary": content}
+        return _normalize_game_summary(parsed)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"summary generation failed: {exc}") from exc
+
+
+@app.post("/api/runs/{run_id}/games/{gid}/summary")
+def api_game_summary(run_id: str, gid: int):
+    transcript = store.get_game(run_id, gid)
+    if not transcript:
         raise HTTPException(404, "game not found")
-    return _enrich_transcript_turn_reasoning(run_id, gid, t)
+    if transcript.get("summary", {}).get("text"):
+        return {"ok": True, "cached": True, "summary": transcript["summary"]}
+    transcript["summary"] = _summarize_game(transcript)
+    store.update_game_transcript(run_id, gid, transcript)
+    return {"ok": True, "cached": False, "summary": transcript["summary"]}
+
 
 
 def _roster_models() -> list[str]:

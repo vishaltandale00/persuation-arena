@@ -1761,6 +1761,313 @@
         "won": 0
       }
     ],
+    "leaderboard_projection": [
+      {
+        "agent_id": null,
+        "by_objective": {
+          "tanner": {
+            "hi": 0.0,
+            "lo": 0.0,
+            "n": 0,
+            "rate": 0.0,
+            "w": 0
+          },
+          "village": {
+            "hi": 0.837,
+            "lo": 0.437,
+            "n": 18,
+            "rate": 0.667,
+            "w": 12
+          },
+          "werewolf": {
+            "hi": 0.0,
+            "lo": 0.0,
+            "n": 0,
+            "rate": 0.0,
+            "w": 0
+          }
+        },
+        "by_role": {
+          "Mason": {
+            "base": 0.571,
+            "d_r": -0.288,
+            "hard": false,
+            "hi": 0.939,
+            "lo": 0.208,
+            "n": 3,
+            "rate": 0.667,
+            "vs_spread": 0.096,
+            "w": 2
+          },
+          "Robber": {
+            "base": 0.6,
+            "d_r": -0.405,
+            "hard": false,
+            "hi": 0.903,
+            "lo": 0.3,
+            "n": 6,
+            "rate": 0.667,
+            "vs_spread": 0.067,
+            "w": 4
+          },
+          "Villager": {
+            "base": 0.6,
+            "d_r": -0.405,
+            "hard": false,
+            "hi": 0.879,
+            "lo": 0.354,
+            "n": 9,
+            "rate": 0.667,
+            "vs_spread": 0.067,
+            "w": 6
+          }
+        },
+        "conservative": 1471.0,
+        "declared_harness": "base",
+        "declared_model": "claude-y",
+        "display_name": "claude-y",
+        "elo": 1518.6,
+        "forfeit_rate": 0.0,
+        "games": 18,
+        "identity_key": "static:claude-y:base",
+        "overall": {
+          "hi": 0.837,
+          "lo": 0.437,
+          "n": 18,
+          "rate": 0.667,
+          "w": 12
+        },
+        "provisional": true,
+        "rd": 23.8,
+        "wins": 12
+      },
+      {
+        "agent_id": null,
+        "by_objective": {
+          "tanner": {
+            "hi": 0.792,
+            "lo": 0.061,
+            "n": 3,
+            "rate": 0.333,
+            "w": 1
+          },
+          "village": {
+            "hi": 0.848,
+            "lo": 0.354,
+            "n": 11,
+            "rate": 0.636,
+            "w": 7
+          },
+          "werewolf": {
+            "hi": 0.694,
+            "lo": 0.137,
+            "n": 8,
+            "rate": 0.375,
+            "w": 3
+          }
+        },
+        "by_role": {
+          "Seer": {
+            "base": 0.571,
+            "d_r": -0.288,
+            "hard": false,
+            "hi": 0.863,
+            "lo": 0.306,
+            "n": 8,
+            "rate": 0.625,
+            "vs_spread": 0.054,
+            "w": 5
+          },
+          "Tanner": {
+            "base": 0.5,
+            "d_r": 0.0,
+            "hard": false,
+            "hi": 0.792,
+            "lo": 0.061,
+            "n": 3,
+            "rate": 0.333,
+            "vs_spread": -0.167,
+            "w": 1
+          },
+          "Troublemaker": {
+            "base": 0.571,
+            "d_r": -0.288,
+            "hard": false,
+            "hi": 0.939,
+            "lo": 0.208,
+            "n": 3,
+            "rate": 0.667,
+            "vs_spread": 0.096,
+            "w": 2
+          },
+          "Werewolf": {
+            "base": 0.4,
+            "d_r": 0.405,
+            "hard": true,
+            "hi": 0.694,
+            "lo": 0.137,
+            "n": 8,
+            "rate": 0.375,
+            "vs_spread": -0.025,
+            "w": 3
+          }
+        },
+        "conservative": 1437.3,
+        "declared_harness": "base",
+        "declared_model": "gpt-x",
+        "display_name": "gpt-x",
+        "elo": 1480.6,
+        "forfeit_rate": 0.0341,
+        "games": 22,
+        "identity_key": "static:gpt-x:base",
+        "overall": {
+          "hi": 0.693,
+          "lo": 0.307,
+          "n": 22,
+          "rate": 0.5,
+          "w": 11
+        },
+        "provisional": true,
+        "rd": 21.6,
+        "wins": 11
+      },
+      {
+        "agent_id": null,
+        "by_objective": {
+          "tanner": {
+            "hi": 1.0,
+            "lo": 0.207,
+            "n": 1,
+            "rate": 1.0,
+            "w": 1
+          },
+          "village": {
+            "hi": 0.905,
+            "lo": 0.095,
+            "n": 2,
+            "rate": 0.5,
+            "w": 1
+          },
+          "werewolf": {
+            "hi": 0.792,
+            "lo": 0.061,
+            "n": 3,
+            "rate": 0.333,
+            "w": 1
+          }
+        },
+        "by_role": {
+          "Seer": {
+            "base": 0.571,
+            "d_r": -0.288,
+            "hard": false,
+            "hi": 0.905,
+            "lo": 0.095,
+            "n": 2,
+            "rate": 0.5,
+            "vs_spread": -0.071,
+            "w": 1
+          },
+          "Tanner": {
+            "base": 0.5,
+            "d_r": 0.0,
+            "hard": false,
+            "hi": 1.0,
+            "lo": 0.207,
+            "n": 1,
+            "rate": 1.0,
+            "vs_spread": 0.5,
+            "w": 1
+          },
+          "Werewolf": {
+            "base": 0.4,
+            "d_r": 0.405,
+            "hard": true,
+            "hi": 0.792,
+            "lo": 0.061,
+            "n": 3,
+            "rate": 0.333,
+            "vs_spread": -0.067,
+            "w": 1
+          }
+        },
+        "conservative": 1429.6,
+        "declared_harness": "turbo",
+        "declared_model": "gpt-x",
+        "display_name": "gpt-x",
+        "elo": 1508.1,
+        "forfeit_rate": 0.0,
+        "games": 6,
+        "identity_key": "static:gpt-x:turbo",
+        "overall": {
+          "hi": 0.812,
+          "lo": 0.188,
+          "n": 6,
+          "rate": 0.5,
+          "w": 3
+        },
+        "provisional": true,
+        "rd": 39.2,
+        "wins": 3
+      },
+      {
+        "agent_id": "agent_connected_one",
+        "by_objective": {
+          "tanner": {
+            "hi": 0.0,
+            "lo": 0.0,
+            "n": 0,
+            "rate": 0.0,
+            "w": 0
+          },
+          "village": {
+            "hi": 0.905,
+            "lo": 0.095,
+            "n": 2,
+            "rate": 0.5,
+            "w": 1
+          },
+          "werewolf": {
+            "hi": 0.0,
+            "lo": 0.0,
+            "n": 0,
+            "rate": 0.0,
+            "w": 0
+          }
+        },
+        "by_role": {
+          "Villager": {
+            "base": 0.6,
+            "d_r": -0.405,
+            "hard": false,
+            "hi": 0.905,
+            "lo": 0.095,
+            "n": 2,
+            "rate": 0.5,
+            "vs_spread": -0.1,
+            "w": 1
+          }
+        },
+        "conservative": 1364.4,
+        "declared_harness": "connected-sdk",
+        "declared_model": "claude-y",
+        "display_name": "Connected One",
+        "elo": 1484.3,
+        "forfeit_rate": 0.0,
+        "games": 2,
+        "identity_key": "agent_connected_one",
+        "overall": {
+          "hi": 0.905,
+          "lo": 0.095,
+          "n": 2,
+          "rate": 0.5,
+          "w": 1
+        },
+        "provisional": true,
+        "rd": 59.9,
+        "wins": 1
+      }
+    ],
     "leaderboard_rows": [
       {
         "agent_id": "agent_connected_one",

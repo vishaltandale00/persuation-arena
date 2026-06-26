@@ -126,10 +126,10 @@ def spawn_endpoint(body: dict):
         raise fastapi.HTTPException(status_code=400, detail="run_config.id required")
 
     # Idempotency: run_server unconditionally opens a tunnel and drives the game, so a retried or
-    # duplicate POST must be a no-op. Only spawn for a run that is still 'open' with no coordinator.
-    existing = store.get_run(run_id)
-    if existing and (existing.get("status") != "open" or existing.get("coordinator_url")):
-        return {"skipped": "already coordinated", "run_id": run_id, "status": existing.get("status")}
+    # duplicate POST must be a no-op. claim_coordinator_spawn is an ATOMIC lease claim (conditional
+    # UPDATE), so two concurrent spawn POSTs can't both pass it — exactly one wins and spawns.
+    if not store.claim_coordinator_spawn(run_id):
+        return {"skipped": "already claimed or coordinated", "run_id": run_id}
 
     call = run_server.spawn(run_config, int(body.get("rounds") or 5))
     print(f"[spawn] {run_id} -> {call.object_id}", flush=True)

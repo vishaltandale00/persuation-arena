@@ -47,6 +47,54 @@ def test_schedule_rotation_gives_each_agent_each_seat_once_per_cycle():
     assert all(seats == {0, 1, 2, 3, 4} for seats in seats_for_agent.values())
 
 
+def test_shard_slice_partitions_global_schedule():
+    """V-1 (REQ-1): slicing fresh_deal_schedule by (shard_index, num_shards) partitions the
+    GLOBAL schedule with no loss, no overlap, and global gid/seed/rot preserved."""
+    cases = [
+        (20, 5, 9000),  # N divisible by several K
+        (7, 5, 100),    # N not divisible by 5/3/4
+        (5, 5, 0),      # N == n_players
+        (13, 3, 42),    # prime-ish N, small player count
+    ]
+    for N, n, seed in cases:
+        full = batch.fresh_deal_schedule(N, n, seed)
+        full_by_gid = {gid: (seed_, rot) for gid, seed_, rot in full}
+
+        for K in {1, 2, 3, 4, N}:
+            slices = [
+                batch.fresh_deal_schedule(N, n, seed, shard_index=k, num_shards=K)
+                for k in range(K)
+            ]
+
+            # Every kept entry preserves the GLOBAL (seed, rot) for its gid (no renumbering),
+            # and its 0-indexed position g=gid-1 satisfies the stride predicate g % K == k.
+            for k, sl in enumerate(slices):
+                for gid, seed_, rot in sl:
+                    assert (seed_, rot) == full_by_gid[gid], (N, n, seed, K, k, gid)
+                    assert (gid - 1) % K == k, (N, n, seed, K, k, gid)
+
+            # Slices pairwise disjoint on gid.
+            gid_sets = [{gid for gid, _, _ in sl} for sl in slices]
+            for i in range(K):
+                for j in range(i + 1, K):
+                    assert gid_sets[i].isdisjoint(gid_sets[j]), (N, n, seed, K, i, j)
+
+            # Union of the K slices == full schedule (as a set of (gid, seed, rot)).
+            union = {entry for sl in slices for entry in sl}
+            assert union == set(full), (N, n, seed, K)
+
+            # Slice sizes differ by at most 1 (stride partition is as even as possible).
+            sizes = [len(sl) for sl in slices]
+            assert max(sizes) - min(sizes) <= 1, (N, n, seed, K, sizes)
+
+            if K == 1:
+                # K=1 slice == full schedule, in order.
+                assert slices[0] == full
+            if K == N:
+                # K=N ⇒ each slice has exactly one game.
+                assert all(len(sl) == 1 for sl in slices)
+
+
 def test_balanced_onuw_schedule_balances_model_role_exposure():
     deck = default_deck(5, "arena")
     sched = batch.balanced_onuw_deal_schedule(n_games=40, n_players=5, seed_base=9000, deck=deck)
@@ -384,15 +432,56 @@ def test_agent_requests_json_schema_structured_output_when_enabled(monkeypatch):
             "strict": True,
             "schema": {
                 "type": "object",
-                "required": ["reasoning", "action"],
+                "required": ["declared_reasoning", "action"],
                 "properties": {
-                    "reasoning": {"type": "string"},
+                    "declared_reasoning": {"type": "string"},
                     "action": action_schema,
                 },
                 "additionalProperties": False,
             },
         },
     }
+    assert a.calls[0]["structured_output"] == {
+        "configured": "json_schema",
+        "requested": "json_schema",
+        "used": "json_schema",
+        "fallback": False,
+    }
+
+
+def test_agent_defaults_to_json_schema_structured_output(monkeypatch):
+    from arena import openrouter
+
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":{"target":2}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "openai/gpt-4o")
+    resp = a.act(
+        "obs",
+        lambda action, raw: int(action["target"]),
+        default_action=0,
+        action_kind="onuw.vote",
+        legal_action={"schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "integer", "enum": [1, 2]}},
+            "additionalProperties": False,
+        }},
+    )
+
+    assert resp.ok is True and resp.action == 2
+    assert captured["response_format"]["type"] == "json_schema"
     assert a.calls[0]["structured_output"] == {
         "configured": "json_schema",
         "requested": "json_schema",

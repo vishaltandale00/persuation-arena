@@ -9,15 +9,15 @@ def _first_player(turn):
 def act(turn):
     kind = turn.action_kind
     if kind == "onuw.discussion.speak_or_pass":
-        return {"action": {"pass": True}, "reasoning": "Pass-only baseline."}
+        return {"action": {"pass": True}, "declared_reasoning": "Pass-only baseline."}
     if kind == "onuw.vote":
-        return {"action": {"target": NO_ONE_REF}, "reasoning": "Pass-only baseline votes for no one."}
+        return {"action": {"target": NO_ONE_REF}, "declared_reasoning": "Pass-only baseline votes for no one."}
     if kind == "onuw.seer.inspect":
-        return {"action": {"mode": "center", "indices": [0, 1]}, "reasoning": "Default center look."}
+        return {"action": {"mode": "center", "indices": [0, 1]}, "declared_reasoning": "Default center look."}
     if kind == "onuw.troublemaker.swap_two_or_decline":
-        return {"action": {"a": None, "b": None}, "reasoning": "Decline action."}
+        return {"action": {"a": None, "b": None}, "declared_reasoning": "Decline action."}
     if kind in {"onuw.doppelganger.copy_player", "onuw.robber.swap_or_decline"}:
-        return {"action": {"target": _first_player(turn)}, "reasoning": "Use first legal player."}
+        return {"action": {"target": _first_player(turn)}, "declared_reasoning": "Use first legal player."}
     if kind == "onuw.drunk.swap_center":
-        return {"action": {"index": 0}, "reasoning": "Use first center card."}
-    return {"action": {"pass": True}, "reasoning": "Fallback pass."}
+        return {"action": {"index": 0}, "declared_reasoning": "Use first center card."}
+    return {"action": {"pass": True}, "declared_reasoning": "Fallback pass."}

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import random
 from collections import Counter
 from typing import Any, Callable
 
@@ -27,7 +26,7 @@ from arena.identity import (
     roster_line,
     seat_for_participant_ref,
 )
-from .base import NO_KILL, Agent, agent_call_log, agent_stats, compute_winners, player_won, tally_votes, team_of
+from .base import NO_KILL, Agent, Game, agent_stats, compute_winners, player_won, tally_votes, team_of
 
 ROLE_DESC = {
     "Werewolf": "You are a Werewolf. At night you wake with other werewolves. Win if no werewolf is voted out.",
@@ -251,7 +250,7 @@ def deck_preset_options(n_players: int | None = None) -> list[dict]:
     return opts
 
 
-class ONUW:
+class ONUW(Game):
     GAME = "onuw"
     TITLE = "One Night Ultimate Werewolf"
     MIN_PLAYERS, MAX_PLAYERS = 5, 7
@@ -261,11 +260,7 @@ class ONUW:
                  deal_override: list[str] | None = None,
                  event_sink: Callable[..., None] | None = None,
                  event_driven: bool = False):
-        self.names = names
-        self.n = len(names)
-        self.seed = seed
-        self.rng = random.Random(seed)
-        self.discussion_rounds = discussion_rounds
+        super().__init__(names, seed, discussion_rounds)
         self.deck_preset = normalize_deck_preset(deck_preset)
         self.deck = deck or default_deck(len(names), self.deck_preset)
         self.deal_override = deal_override  # explicit 8-card layout for tests (players then center)
@@ -502,7 +497,7 @@ class ONUW:
         targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.doppelganger.copy_player") + (
             "\n\nNIGHT ACTION (Doppelganger): look at one player's card and become a copy of that role.\n"
-            'Reply JSON {"reasoning":"...","action":{"target":"@participant"}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"target":"@participant"}}.'
         )
 
         def parse(a, raw):
@@ -550,7 +545,7 @@ class ONUW:
             "\n\nNIGHT ACTION (Seer): choose ONE:\n"
             '  {"mode":"player","target":"@participant"}  view one other player\'s card, OR\n'
             '  {"mode":"center","indices":[a,b]}  view two of the three center cards (0-based).\n'
-            'Reply JSON {"reasoning":"...","action":{...}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{...}}.'
         )
 
         def parse(a, raw):
@@ -622,7 +617,7 @@ class ONUW:
         targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.robber.swap_or_decline") + (
             "\n\nNIGHT ACTION (Robber): swap your card with a player's and see your new role, or decline.\n"
-            'Reply JSON {"reasoning":"...","action":{"target":"@participant or null"}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"target":"@participant or null"}}.'
         )
 
         def parse(a, raw):
@@ -661,7 +656,7 @@ class ONUW:
         others = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.troublemaker.swap_two_or_decline") + (
             "\n\nNIGHT ACTION (Troublemaker): swap two OTHER players' cards (you don't see them), or decline.\n"
-            'Reply JSON {"reasoning":"...","action":{"a":"@participant or null","b":"@participant or null"}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"a":"@participant or null","b":"@participant or null"}}.'
         )
 
         def parse(a, raw):
@@ -724,7 +719,7 @@ class ONUW:
     def _drunk_action(self, pid: int, agent: Agent):
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.drunk.swap_center") + (
             "\n\nNIGHT ACTION (Drunk): swap your card with a center card (0-based) without looking.\n"
-            'Reply JSON {"reasoning":"...","action":{"index":<0,1,2>}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"index":<0,1,2>}}.'
         )
 
         def parse(a, raw):
@@ -841,8 +836,8 @@ class ONUW:
             "corrections, direct rebuttals, or critical claims; use 1 for low-priority contributions. "
             "You may pass with stance \"wait\" if you specifically want more discussion before voting, "
             "or stance \"done\" if you are ready to end discussion and vote.\n"
-            'Reply JSON {"reasoning":"...","action":{"speak":"<what you say>","urgency":1|2|3}} '
-            'or {"reasoning":"...","action":{"pass":true,"stance":"wait"|"done"}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"speak":"<what you say>","urgency":1|2|3}} '
+            'or {"declared_reasoning":"...","action":{"pass":true,"stance":"wait"|"done"}}.'
         )
 
         def parse(a, raw):
@@ -968,7 +963,7 @@ class ONUW:
             "Werewolf is eliminated, the Werewolf team wins. If no final-role Werewolf exists, "
             "Village wins only when nobody is eliminated. Tanner wins if the final-role Tanner is "
             "eliminated.\n"
-            f'Reply JSON {{"reasoning":"...","action":{{"target":"@participant"}}}} or {{"action":{{"target":"{NO_ONE_REF}"}}}} for no one.'
+            f'Reply JSON {{"declared_reasoning":"...","action":{{"target":"@participant"}}}} or {{"action":{{"target":"{NO_ONE_REF}"}}}} for no one.'
         )
 
         def parse(a, raw):
@@ -1042,13 +1037,11 @@ class ONUW:
             "won": player_won(self.current[i], wins),
             **agent_stats(agents[i]),
         } for i in range(self.n)]
-        return {
-            "game": self.GAME, "title": self.TITLE, "seed": self.seed,
-            "meta": f"{self.n} agents · {len(self.deck)} cards · 1 night, 1 vote · seed {self.seed}",
-            "deckPreset": self.deck_preset,
-            "players": players,
-            "agentCallLog": agent_call_log(agents),
-            "cardsInPlay": [[c, team_of(c)] for c in self.deck],
-            "center": [[c, team_of(c)] for c in self.center],
-            "phases": phases, "outcome": phases[-1]["outcome"], "winner_team": winner,
-        }
+        return self._transcript(
+            agents=agents, phases=phases, winner=winner,
+            meta=f"{self.n} agents · {len(self.deck)} cards · 1 night, 1 vote · seed {self.seed}",
+            players=players,
+            cards_in_play=[[c, team_of(c)] for c in self.deck],
+            center=[[c, team_of(c)] for c in self.center],
+            extra={"deckPreset": self.deck_preset},
+        )

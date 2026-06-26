@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -43,7 +45,8 @@ from examples.file_memory_agent import FileMemoryAgent
 
 from arena import store
 from arena.connected import run_connected_batch
-from arena.score import score_run
+from arena.score import score_run, score_runs
+from arena.sharded import create_sharded_run, rollup_parent_status
 
 
 # (display name -> a factory that builds a fresh harness instance). The three coding brains take their
@@ -65,15 +68,22 @@ def _log(msg: str) -> None:
     print(f"[coding-run] {msg}", flush=True)
 
 
-def _run_agent(name: str, make_harness, run_id: str, server: str, cred_path: str) -> None:
+def _run_agent(name: str, make_harness, run_id: str, server: str, cred_path: str,
+               join_token: str | None = None, seat: int | None = None) -> None:
     """One agent identity: register -> sign up -> ready -> poll/act until the run completes.
-    The harness owns its memory; the SDK only delivers the delta event stream."""
+    The harness owns its memory; the SDK only delivers the delta event stream.
+
+    `join_token` is the per-parent shard secret (INV-4); a shard host passes its child's token so the
+    signup is accepted. None for normal runs (token omitted from the request body, INV-2).
+
+    `seat` is the identity's roster index (SPEC D5/V-7): shard hosts pass it so every child seats by
+    the SAME deterministic schedule. None for normal runs (arrival-order seating, INV-2)."""
     try:
         agent = ArenaAgent(name=name, server=server, credentials=CredentialsStore(cred_path))
         h = make_harness()
         agent.on_event(h.on_event)   # fold each delta event into the harness's OWN memory
         agent.act(h.act)             # decide from the memory the harness built
-        signup = agent.signup(run_id=run_id)
+        signup = agent.signup(run_id=run_id, join_token=join_token, seat=seat)
         _log(f"{name} [{type(h).__name__}]: signed up ({signup.status}, seat={signup.seat})")
         agent.run_forever([signup])
         _log(f"{name}: done")
@@ -89,6 +99,177 @@ def _wait_for_active(run_id: str, need: int, timeout_s: float) -> int:
             return n
         time.sleep(0.5)
     return store.activate_run_if_ready(run_id)
+
+
+# --- sharded launcher (SPEC-parallel-shards.md §6.9(b), D9/D10) ----------------------------------
+#
+# K>1 fans the logical run into a parent + K child shards. Credential-sharing across an identity's K
+# shards is FILE-BASED (D9): the launcher pre-registers each identity ONCE into a cred file, then
+# every shard subprocess reads the same file -> the same agent_id, so one identity is one rating
+# competitor across all shards. Startup is independent (no cross-shard barrier, D10); the launcher
+# block-monitors `rollup_parent_status` as a non-load-bearing convenience.
+
+
+def _pre_register_creds(creds_dir: str, names: list[str], server: str) -> dict[str, str]:
+    """Pre-register each identity ONCE into its own cred file under creds_dir (shared across shards).
+
+    Returns {display_name: cred_path}. Registration is idempotent per the SDK (it writes the cred on
+    first register and reuses it thereafter), so a re-run with the same creds_dir keeps the agent_ids.
+    """
+    os.makedirs(creds_dir, exist_ok=True)
+    paths: dict[str, str] = {}
+    for idx, name in enumerate(names):
+        cred_path = os.path.join(creds_dir, f"identity_{idx}.json")
+        # register ONCE so the cred file exists before any shard reads it; the SDK registers on
+        # first use and persists the agent_id to this file (idempotent thereafter).
+        ArenaAgent(name=name, server=server, credentials=CredentialsStore(cred_path)).ensure_registered()
+        paths[name] = cred_path
+    return paths
+
+
+def _spawn_shard_hosts(child_ids: list[str], creds_dir: str, args) -> list[subprocess.Popen]:
+    """Spawn one single-shard host subprocess per child (process per shard, D9). Each re-invokes THIS
+    module in --shard-child mode pointed at one child run_id, reading the shared cred files."""
+    procs: list[subprocess.Popen] = []
+    for cid in child_ids:
+        cmd = [
+            sys.executable, os.path.abspath(__file__),
+            "--shard-child", cid, "--creds-dir", creds_dir,
+            "--run-id", cid, "--server", args.server,
+            "--games", str(args.games), "--rounds", str(args.rounds),
+            "--seed", str(args.seed), "--deck", args.deck,
+            "--ready-timeout", str(args.ready_timeout), "--deadline", str(args.deadline),
+        ]
+        procs.append(subprocess.Popen(cmd))
+        time.sleep(0.4)  # stagger so each shard's seat order is stable
+    return procs
+
+
+def _monitor_shards(parent_id: str, child_ids: list[str], procs: list[subprocess.Popen],
+                    timeout_s: float) -> str:
+    """Block-monitor the shards (non-load-bearing, D10): poll rollup_parent_status and per-shard
+    health until the parent rolls up to a terminal state or all hosts exit. Returns the final rollup.
+
+    A shard host can exit BEFORE its child run reaches a terminal state — e.g. `_run_shard_child`
+    returns nonzero because not enough agents activated, leaving the child 'waiting'/'ready_required'.
+    Once that host process is gone, nothing will ever advance that child, so the rollup would sit at
+    'running' forever and a naive wait would burn the whole games*rounds*deadline budget. So when ALL
+    host subprocesses have exited we stop waiting immediately: if the rollup is still non-terminal we
+    force the unfinished child(ren) to 'partial' (monotonic in the store, so a child that actually
+    reached 'done' is left untouched) and return the resolved rollup. The happy path — every host
+    exits cleanly and the children reach 'done' — still returns 'done'."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        status = rollup_parent_status(parent_id)
+        all_exited = all(p.poll() is not None for p in procs)
+        if status in {"done", "partial"} and all_exited:
+            return status
+        if all_exited:
+            # Every host is dead but the rollup is non-terminal -> some child is stranded
+            # (no live process can ever finish it). Resolve it now instead of hanging.
+            return _resolve_dead_shards(parent_id, child_ids)
+        time.sleep(1.0)
+    # Timed out with at least one host still running: terminate the stragglers, then resolve.
+    for p in procs:
+        if p.poll() is None:
+            p.terminate()
+    status = rollup_parent_status(parent_id)
+    if status in {"done", "partial"}:
+        return status
+    return _resolve_dead_shards(parent_id, child_ids)
+
+
+def _resolve_dead_shards(parent_id: str, child_ids: list[str]) -> str:
+    """Mark every not-yet-terminal child 'partial' so the parent rolls up to a terminal state.
+
+    `update_run_status` is monotonic (it never overwrites a 'done'), so a child that truly finished
+    keeps 'done'; only the stranded ones flip to 'partial'. Returns the post-resolution rollup."""
+    for cid in child_ids:
+        run = store.get_run(cid) or {}
+        if run.get("status") not in {"done", "partial"}:
+            store.update_run_status(cid, "partial")
+    return rollup_parent_status(parent_id)
+
+
+def _run_sharded(args) -> int:
+    """K>1: create parent+children, pre-register shared creds, spawn K shard hosts, block-monitor."""
+    players = len(SEATS)
+    backend = "NEON" if os.environ.get("DATABASE_URL") else "SQLite"
+    _log(f"creating SHARDED run {args.run_id} on {backend} (onuw, players={players}, "
+         f"games={args.games}, shards={args.shards}, rounds={args.rounds}, seed={args.seed})")
+    parent_cfg = {
+        "id": args.run_id,
+        "game": "onuw",
+        "label": "One Night Ultimate Werewolf",
+        "status": "open",
+        "n_games": args.games,  # GLOBAL N (D8); each child slices to its shard
+        "players": players,
+        "seed_base": args.seed,
+        "submitter": "coding-agent-run",
+        "deck_preset": args.deck,
+    }
+    child_ids = create_sharded_run(parent_cfg, args.shards)
+    _log(f"parent {args.run_id} -> {len(child_ids)} child shard(s): {', '.join(child_ids)}")
+
+    creds_dir = args.creds_dir or tempfile.mkdtemp(prefix=f"arena-shards-{args.run_id}-")
+    names = [name for name, _ in SEATS]
+    _pre_register_creds(creds_dir, names, args.server)
+    _log(f"pre-registered {len(names)} shared identities into {creds_dir}")
+
+    procs = _spawn_shard_hosts(child_ids, creds_dir, args)
+    _log(f"spawned {len(procs)} shard host process(es); block-monitoring rollup ...")
+    monitor_timeout = max(args.ready_timeout, 1.0) + args.games * args.rounds * args.deadline
+    status = _monitor_shards(args.run_id, child_ids, procs, monitor_timeout)
+    _log(f"parent rollup status = {status}")
+
+    scores = score_runs(child_ids)
+    _log("aggregated scorecard (overall win% [95% CI] n, forfeits):")
+    for name, d in sorted(scores.items(), key=lambda kv: -kv[1]["overall"]["rate"]):
+        o = d["overall"]
+        print(f"    {name:16} {int(o['rate']*100):3d}%  "
+              f"[{int(o['lo']*100)}-{int(o['hi']*100)}%]  n={o['n']:<3} "
+              f"forfeits={d['forfeits']}/{d['calls']}", flush=True)
+    return 0 if status == "done" else 1
+
+
+def _run_shard_child(args) -> int:
+    """INTERNAL single-shard host: sign this process's agents into ONE child run and coordinate it.
+
+    Each agent reads its SHARED cred file from --creds-dir (same agent_id across shards). The child
+    run already exists (created by the launcher via create_sharded_run); this process only seats +
+    coordinates it. Process isolation (D9) means this host holds signups for exactly one run."""
+    child_id = args.shard_child
+    creds_dir = args.creds_dir
+    players = len(SEATS)
+    # The child row carries the per-parent join_token (minted by create_sharded_run); a stray agent
+    # cannot guess it, so passing it here is what makes the child joinable for this host (INV-4).
+    child_run = store.get_run(child_id) or {}
+    join_token = child_run.get("join_token")
+    _log(f"[shard host] coordinating child {child_id} (players={players})")
+
+    threads = []
+    for idx, (name, make_harness) in enumerate(SEATS):
+        cred_path = os.path.join(creds_dir, f"identity_{idx}.json")
+        # Pass the enumeration index as the seat so every shard seats identically (SPEC D5/V-7).
+        t = threading.Thread(target=_run_agent,
+                             args=(name, make_harness, child_id, args.server, cred_path,
+                                   join_token, idx),
+                             daemon=True, name=f"{child_id}:{name}")
+        t.start()
+        threads.append(t)
+        time.sleep(0.4)
+
+    active = _wait_for_active(child_id, players, args.ready_timeout)
+    if active < players:
+        _log(f"[shard host] only {active}/{players} agents active for {child_id} — aborting")
+        return 1
+    run_connected_batch(child_id, discussion_rounds=args.rounds, deadline_seconds=args.deadline)
+    for t in threads:
+        t.join(timeout=30)
+    run = store.get_run(child_id)
+    _log(f"[shard host] {child_id} status={run['status']} "
+         f"games_saved={len(store.distinct_gids(child_id))}")
+    return 0 if run["status"] == "done" else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,7 +290,34 @@ def main(argv: list[str] | None = None) -> int:
                    help="reserve N seats for externally-run agents: the host launches players-N agents "
                         "and coordinates; you run the other N yourself via `arena-agent play`. The last N "
                         "SEATS entries are the reserved ones.")
+    p.add_argument("--shards", type=int, default=1,
+                   help="split the run into K concurrent child shards (SPEC-parallel-shards.md, D3; "
+                        "default 1 = today's single run, hard cap from ARENA_MAX_SHARDS). With K>1 the "
+                        "launcher creates a parent + K children, pre-registers the N identities ONCE "
+                        "each to shared cred files, spawns K single-shard host subprocesses, then "
+                        "block-monitors rollup_parent_status and prints the aggregated scorecard.")
+    p.add_argument("--shard-child", default=None,
+                   help="INTERNAL single-shard host mode: sign this process's agents into ONE child "
+                        "run_id and run it to completion (spawned by the launcher per shard).")
+    p.add_argument("--creds-dir", default=None,
+                   help="INTERNAL: directory of pre-registered per-identity cred files shared across "
+                        "shards (shared creds => one rating competitor per identity across all K).")
     args = p.parse_args(argv)
+
+    # INTERNAL single-shard host mode: this process owns exactly one child run (process isolation,
+    # D9). It reads the pre-registered cred files (shared across shards => same agent_id), signs its
+    # agents into that one child, and coordinates it to completion.
+    if args.shard_child:
+        return _run_shard_child(args)
+
+    if args.shards and args.shards > 1:
+        # External seat reservation is out of scope for sharded runs (SPEC §7): _run_sharded seats
+        # every player itself, so an --external request here would be silently ignored. Fail fast.
+        if args.external and args.external > 0:
+            _log("error: external reservations are not supported with sharded runs (--shards>1); "
+                 "external sharding is out of scope")
+            return 1
+        return _run_sharded(args)
 
     players = len(SEATS)
     backend = "NEON" if os.environ.get("DATABASE_URL") else "SQLite"

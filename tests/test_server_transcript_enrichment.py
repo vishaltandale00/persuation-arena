@@ -221,3 +221,92 @@ def test_transcript_enrichment_skips_hidden_losing_bids(monkeypatch):
 
     assert passed["declared_reasoning"] == "actual pass reason"
     assert '"pass"' in passed["raw_model_output"]
+
+
+def test_transcript_enrichment_surfaces_defaulted_vote_errors_from_agent_call_log(monkeypatch):
+    transcript = {
+        "agentCallLog": {
+            "1": [
+                {
+                    "ok": False,
+                    "ms": 12.5,
+                    "raw": "<error: APIStatusError>",
+                    "action_kind": "onuw.vote",
+                    "validation_error": "APIStatusError: prompt tokens limit exceeded",
+                    "structured_output": {"configured": "off"},
+                    "finish_reason": None,
+                },
+            ],
+        },
+        "phases": [
+            {
+                "name": "Vote",
+                "events": [
+                    {"t": "vote", "pid": 1, "tgt": 3, "ms": 12.5},
+                ],
+            }
+        ],
+    }
+    completed = [
+        {
+            "game_instance_id": "run_x_game_001",
+            "type": "model_turn_completed",
+            "phase": "vote",
+            "payload": {
+                "seat": 1,
+                "action_kind": "onuw.vote",
+                "ok": False,
+                "ms": 12.5,
+                "action": 3,
+                "reasoning": "",
+                "raw": "<error: APIStatusError>",
+            },
+        },
+    ]
+    monkeypatch.setattr(server.store, "list_run_events", lambda run_id, max_events=1000: completed)
+
+    enriched = server._enrich_transcript_turn_reasoning("run_x", 1, transcript)
+    vote = enriched["phases"][0]["events"][0]
+
+    assert vote["model_call_ok"] is False
+    assert vote["defaulted"] is True
+    assert vote["validation_error"] == "APIStatusError: prompt tokens limit exceeded"
+    assert vote["raw_model_output"] == "<error: APIStatusError>"
+    assert vote["action_kind"] == "onuw.vote"
+    assert vote["structured_output"] == {"configured": "off"}
+
+
+def test_transcript_enrichment_surfaces_event_validation_errors_without_call_log(monkeypatch):
+    transcript = {
+        "phases": [
+            {
+                "name": "Vote",
+                "events": [
+                    {"t": "vote", "pid": 2, "tgt": 0, "ms": 4},
+                ],
+            }
+        ],
+    }
+    completed = [
+        {
+            "game_instance_id": "run_x_game_001",
+            "type": "model_turn_completed",
+            "phase": "vote",
+            "payload": {
+                "seat": 2,
+                "action_kind": "onuw.vote",
+                "ok": False,
+                "ms": 4,
+                "action": 0,
+                "validation_error": "ValueError: bad target",
+            },
+        },
+    ]
+    monkeypatch.setattr(server.store, "list_run_events", lambda run_id, max_events=1000: completed)
+
+    enriched = server._enrich_transcript_turn_reasoning("run_x", 1, transcript)
+    vote = enriched["phases"][0]["events"][0]
+
+    assert vote["model_call_ok"] is False
+    assert vote["defaulted"] is True
+    assert vote["validation_error"] == "ValueError: bad target"

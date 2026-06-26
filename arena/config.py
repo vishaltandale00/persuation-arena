@@ -120,7 +120,7 @@ class Caps:
     prior_message_turns: int = _env_prior_message_turns("ARENA_PRIOR_MESSAGE_TURNS", -1)
     openrouter_structured_output: str = _env_structured_output(
         "ARENA_OPENROUTER_STRUCTURED_OUTPUT",
-        "off",
+        "json_schema",
     )
 
 
