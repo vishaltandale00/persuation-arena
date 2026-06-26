@@ -215,6 +215,13 @@ PG_MIGRATION_STMTS = [
     "WHERE a.ctid < b.ctid AND a.run_id=b.run_id AND a.gid=b.gid AND a.seat=b.seat",
     "CREATE UNIQUE INDEX IF NOT EXISTS game_players_rgs_uq "
     "ON game_players (run_id,gid,seat)",
+    # One row per (run_id,seq) on run_events: seq must be a monotonic DISTINCT cursor, else a polling
+    # agent skips its turn prompt -> forfeit. Dedup (keep the lowest ctid per (run_id,seq)) THEN add
+    # the unique index; append_event_tx allocates seq with retry-on-conflict against it.
+    "DELETE FROM run_events a USING run_events b "
+    "WHERE a.ctid < b.ctid AND a.run_id=b.run_id AND a.seq=b.seq",
+    "CREATE UNIQUE INDEX IF NOT EXISTS run_events_run_seq_uq "
+    "ON run_events (run_id,seq)",
 ]
 
 
@@ -249,6 +256,14 @@ def _is_seat_index_violation(exc: BaseException) -> bool:
     error (codex round-9)."""
     msg = str(exc).lower()
     return "roster_index" in msg or "uq_run_signups_run_roster" in msg
+
+
+def _is_run_seq_violation(exc: BaseException) -> bool:
+    """True iff `exc` is the run_events (run_id, seq) unique-index violation (vs the id primary key).
+    PG names the index 'run_events_run_seq_uq'; SQLite says 'UNIQUE constraint failed: run_events.run_id,
+    run_events.seq'. Lets append_event_tx retry a racing seq collision instead of failing the append."""
+    msg = str(exc).lower()
+    return "run_events_run_seq_uq" in msg or ("run_events" in msg and "seq" in msg)
 
 
 def _utcnow() -> str:
@@ -320,6 +335,19 @@ def _migrate(c: sqlite3.Connection) -> None:
         c.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS game_players_rgs_uq "
             "ON game_players (run_id,gid,seat)"
+        )
+    # One row per (run_id,seq) on run_events (mirrors PG_MIGRATION_STMTS). Dedup once on first creation.
+    have_seq_idx = c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='run_events_run_seq_uq'"
+    ).fetchone()
+    if not have_seq_idx:
+        c.execute(
+            "DELETE FROM run_events WHERE rowid NOT IN ("
+            "  SELECT MIN(rowid) FROM run_events GROUP BY run_id,seq)"
+        )
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS run_events_run_seq_uq "
+            "ON run_events (run_id,seq)"
         )
 
 
@@ -1247,24 +1275,47 @@ def update_run_signups_status(run_id: str, status: str,
                       (status, now, run_id))
 
 
+_SEQ_RETRIES = 8  # racing appenders contend for COALESCE(MAX(seq),0)+1; UNIQUE(run_id,seq) + retry
+
+
 def append_event_tx(c, run_id: str, event_type: str, payload: dict,
                     visibility: str = "public", target_signup_id: str | None = None,
                     game_instance_id: str | None = None, phase: str | None = None) -> dict:
+    """Append an event with a per-run monotonic seq. seq = MAX+1 is allocated under READ COMMITTED, so
+    two concurrent appenders (the HTTP thread via append_event and the coordinator thread calling this
+    directly) can pick the same seq. UNIQUE(run_id,seq) rejects the loser and we retry with a fresh
+    MAX+1. Postgres aborts the whole tx on the violation, so wrap the INSERT in a SAVEPOINT there;
+    SQLite aborts only the statement, so a plain retry in the same tx suffices."""
     ph = _ph()
-    row = c.execute(f"SELECT COALESCE(MAX(seq),0) + 1 n FROM run_events WHERE run_id={ph}",
-                    (run_id,)).fetchone()
-    seq = int(row["n"])
     now = _utcnow()
     event_id = f"evt_{uuid.uuid4().hex[:16]}"
-    c.execute(
-        f"INSERT INTO run_events (id,run_id,game_instance_id,seq,visibility,target_signup_id,phase,type,payload_json,created_utc) "
-        f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
-        (event_id, run_id, game_instance_id, seq, visibility, target_signup_id, phase,
-         event_type, json.dumps(payload), now),
-    )
-    return {"id": event_id, "run_id": run_id, "game_instance_id": game_instance_id,
-            "seq": seq, "visibility": visibility, "target_signup_id": target_signup_id,
-            "phase": phase, "type": event_type, "payload": payload, "created_utc": now}
+    unique_exc = _seat_unique_violation()  # the backend's IntegrityError type (PG/SQLite)
+    use_savepoint = _is_pg()
+    for attempt in range(_SEQ_RETRIES):
+        row = c.execute(f"SELECT COALESCE(MAX(seq),0) + 1 n FROM run_events WHERE run_id={ph}",
+                        (run_id,)).fetchone()
+        seq = int(row["n"])
+        if use_savepoint:
+            c.execute("SAVEPOINT ev_seq")
+        try:
+            c.execute(
+                f"INSERT INTO run_events (id,run_id,game_instance_id,seq,visibility,target_signup_id,phase,type,payload_json,created_utc) "
+                f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                (event_id, run_id, game_instance_id, seq, visibility, target_signup_id, phase,
+                 event_type, json.dumps(payload), now),
+            )
+        except unique_exc as exc:
+            if use_savepoint:
+                c.execute("ROLLBACK TO SAVEPOINT ev_seq")
+            if _is_run_seq_violation(exc) and attempt < _SEQ_RETRIES - 1:
+                continue  # a concurrent append took this seq — recompute MAX+1 and retry
+            raise
+        if use_savepoint:
+            c.execute("RELEASE SAVEPOINT ev_seq")
+        return {"id": event_id, "run_id": run_id, "game_instance_id": game_instance_id,
+                "seq": seq, "visibility": visibility, "target_signup_id": target_signup_id,
+                "phase": phase, "type": event_type, "payload": payload, "created_utc": now}
+    raise RuntimeError(f"append_event: exhausted {_SEQ_RETRIES} seq retries for run {run_id}")
 
 
 def append_event(run_id: str, event_type: str, payload: dict,
