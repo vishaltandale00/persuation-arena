@@ -56,13 +56,6 @@ CREATE TABLE IF NOT EXISTS game_players (
   calls INTEGER DEFAULT 0, forfeits INTEGER DEFAULT 0,
   agent_id TEXT, signup_id TEXT
 );
-CREATE TABLE IF NOT EXISTS jobs (
-  id TEXT PRIMARY KEY, run_id TEXT UNIQUE, owner TEXT, status TEXT,
-  game TEXT, n_games INTEGER, seed_base INTEGER, rounds INTEGER, players INTEGER,
-  agents_json TEXT, created_utc TEXT, updated_utc TEXT,
-  lease_expires_utc TEXT, heartbeat_utc TEXT, worker_id TEXT, last_error TEXT,
-  deck_preset TEXT
-);
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY, display_name TEXT, token_hash TEXT UNIQUE,
   protocol_version TEXT, sdk_version TEXT, created_utc TEXT, last_seen_utc TEXT, status TEXT,
@@ -130,13 +123,6 @@ PG_SCHEMA_STMTS = [
          calls INTEGER DEFAULT 0, forfeits INTEGER DEFAULT 0,
          agent_id TEXT, signup_id TEXT
        )""",
-    """CREATE TABLE IF NOT EXISTS jobs (
-         id TEXT PRIMARY KEY, run_id TEXT UNIQUE, owner TEXT, status TEXT,
-         game TEXT, n_games INTEGER, seed_base BIGINT, rounds INTEGER, players INTEGER,
-         agents_json TEXT, created_utc TEXT, updated_utc TEXT,
-         lease_expires_utc TEXT, heartbeat_utc TEXT, worker_id TEXT, last_error TEXT,
-         deck_preset TEXT
-       )""",
     """CREATE TABLE IF NOT EXISTS agents (
          id TEXT PRIMARY KEY, display_name TEXT, token_hash TEXT UNIQUE,
          protocol_version TEXT, sdk_version TEXT, created_utc TEXT, last_seen_utc TEXT, status TEXT,
@@ -193,7 +179,6 @@ _MIGRATIONS = {
              ("coordinator_url", "TEXT"), ("metadata_json", "TEXT"),
              ("run_kind", "TEXT DEFAULT 'normal'"), ("parent_run_id", "TEXT"),
              ("shard_index", "INTEGER"), ("num_shards", "INTEGER"), ("join_token", "TEXT")],
-    "jobs": [("deck_preset", "TEXT")],
     "agents": [("declared_model", "TEXT"), ("declared_harness", "TEXT")],
     "run_signups": [("roster_index", "INTEGER")],
 }
@@ -207,7 +192,7 @@ PG_MIGRATION_STMTS = [
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS shard_index INTEGER",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS num_shards INTEGER",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS join_token TEXT",
-    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deck_preset TEXT",
+    "DROP TABLE IF EXISTS jobs",   # retired worker/queue model (see the diagonal refactor)
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS agent_id TEXT",
     "ALTER TABLE game_players ADD COLUMN IF NOT EXISTS signup_id TEXT",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS declared_model TEXT",
