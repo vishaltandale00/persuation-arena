@@ -8,7 +8,9 @@
     "node": "22.x"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.1.0"
+    "@neondatabase/serverless": "^1.1.0",
+    "@vercel/blob": "^2.5.0",
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
     "@chenglou/pretext": "^0.0.8"
