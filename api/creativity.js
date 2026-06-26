@@ -6,6 +6,13 @@
 import { q, send } from './_db.js';
 import { roundHalfEven } from './_round.js';
 
+const CURRENT_CREATIVITY_VERSION = 'creativity_v2_gpt54mini_embed3large';
+const VERSION_LABELS = {
+  creativity_v2_gpt54mini_embed3large: { label: 'RVS v2 current', status: 'current' },
+  creativity_v1_defaulttemp: { label: 'RVS v1 legacy', status: 'legacy' },
+  creativity_v1: { label: 'RVS v1 legacy', status: 'legacy' },
+};
+
 const r3 = (x) => (x == null ? null : roundHalfEven(Number(x), 3));
 
 function boolish(value) {
@@ -25,6 +32,26 @@ function parsePhrases(value) {
   } catch {
     return [];
   }
+}
+
+function publicVersion(row, judgmentMeta = {}) {
+  const known = VERSION_LABELS[row.version] || {};
+  return {
+    version: row.version,
+    label: known.label || row.version,
+    status: known.status || 'experimental',
+    updated_utc: row.updated_utc,
+    score_rows: intish(row.score_rows),
+    judgment_count: intish(judgmentMeta.judgment_count),
+    embedding_model: judgmentMeta.embedding_model || null,
+    judge_model: judgmentMeta.judge_model || null,
+    judge_temperature: judgmentMeta.judge_temperature ?? null,
+    judge_prompt_version: judgmentMeta.judge_prompt_version || null,
+  };
+}
+
+function defaultCreativityVersion(versions) {
+  return versions.find(v => v.version === CURRENT_CREATIVITY_VERSION)?.version || versions[0]?.version || null;
 }
 
 function publicRole(row) {
@@ -55,7 +82,7 @@ function publicSample(row) {
   };
 }
 
-export function assembleCreativity(rows, version = null, updatedUtc = null, sampleRows = []) {
+export function assembleCreativity(rows, version = null, updatedUtc = null, sampleRows = [], versions = []) {
   const byIdentity = {};
   for (const row of rows) {
     const entry = (byIdentity[row.identity_key] ||= {
@@ -102,7 +129,13 @@ export function assembleCreativity(rows, version = null, updatedUtc = null, samp
     return (b.valid_pairs || 0) - (a.valid_pairs || 0);
   });
 
-  return { version, updated_utc: updatedUtc, competitors };
+  return {
+    version,
+    version_meta: versions.find(v => v.version === version) || null,
+    versions,
+    updated_utc: updatedUtc,
+    competitors,
+  };
 }
 
 async function creativityTableExists() {
@@ -115,38 +148,52 @@ async function creativityJudgmentsTableExists() {
   return Boolean(rows[0]?.table_name);
 }
 
+async function creativityVersions(hasJudgments) {
+  const scoreRows = await q(
+    'SELECT version, MAX(updated_utc) AS updated_utc, COUNT(*) AS score_rows ' +
+      'FROM creativity_scores GROUP BY version ORDER BY updated_utc DESC',
+  );
+  const judgmentByVersion = new Map();
+  if (hasJudgments) {
+    const judgmentRows = await q(
+      'SELECT version, embedding_model, judge_model, judge_temperature, judge_prompt_version, COUNT(*) AS judgment_count ' +
+        'FROM creativity_judgments ' +
+        'GROUP BY version, embedding_model, judge_model, judge_temperature, judge_prompt_version ' +
+        'ORDER BY version, judgment_count DESC',
+    );
+    for (const row of judgmentRows) {
+      if (!judgmentByVersion.has(row.version)) judgmentByVersion.set(row.version, row);
+    }
+  }
+  return scoreRows.map(row => publicVersion(row, judgmentByVersion.get(row.version)));
+}
+
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return send(res, 204, {});
 
   if (req.method === 'GET') {
     try {
       if (!(await creativityTableExists())) {
-        return send(res, 200, { version: null, updated_utc: null, competitors: [] });
+        return send(res, 200, { version: null, version_meta: null, versions: [], updated_utc: null, competitors: [] });
       }
 
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-      let version = url.searchParams.get('version');
-      let updatedUtc = null;
-      if (!version) {
-        const latest = await q(
-          'SELECT version, MAX(updated_utc) AS updated_utc FROM creativity_scores ' +
-            'GROUP BY version ORDER BY updated_utc DESC LIMIT 1',
-        );
-        if (!latest.length) {
-          return send(res, 200, { version: null, updated_utc: null, competitors: [] });
-        }
-        version = latest[0].version;
-        updatedUtc = latest[0].updated_utc;
-      } else {
-        const stamp = await q('SELECT MAX(updated_utc) AS updated_utc FROM creativity_scores WHERE version = $1', [
-          version,
-        ]);
-        updatedUtc = stamp[0]?.updated_utc || null;
+      const hasJudgments = await creativityJudgmentsTableExists();
+      const versions = await creativityVersions(hasJudgments);
+      if (!versions.length) {
+        return send(res, 200, { version: null, version_meta: null, versions: [], updated_utc: null, competitors: [] });
       }
+      let version = url.searchParams.get('version');
+      if (!versions.some(v => v.version === version)) version = defaultCreativityVersion(versions);
+      let updatedUtc = null;
+      const stamp = await q('SELECT MAX(updated_utc) AS updated_utc FROM creativity_scores WHERE version = $1', [
+        version,
+      ]);
+      updatedUtc = stamp[0]?.updated_utc || null;
 
       const rows = await q('SELECT * FROM creativity_scores WHERE version = $1', [version]);
       let samples = [];
-      if (await creativityJudgmentsTableExists()) {
+      if (hasJudgments) {
         const sampleRows = await q(
           'SELECT identity_key, role, utterance_a, utterance_b, embedding_similarity, judge_similarity, distance, ' +
             'coherence_a, coherence_b, reason, divergence_phrases_json ' +
@@ -165,9 +212,11 @@ export default async function handler(req, res) {
           return true;
         });
       }
-      return send(res, 200, assembleCreativity(rows, version, updatedUtc, samples));
+      return send(res, 200, assembleCreativity(rows, version, updatedUtc, samples, versions));
     } catch (err) {
-      if (err?.code === '42P01') return send(res, 200, { version: null, updated_utc: null, competitors: [] });
+      if (err?.code === '42P01') {
+        return send(res, 200, { version: null, version_meta: null, versions: [], updated_utc: null, competitors: [] });
+      }
       throw err;
     }
   }

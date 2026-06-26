@@ -27,7 +27,10 @@ from openai import OpenAI
 TOKEN_RE = re.compile(r"[A-Za-z0-9_@']+")
 VALID_COHERENCE = {"valid", "underinformative", "off_task"}
 PROMPT_VERSION = "creativity_judge_v1"
-EMBEDDING_MODEL = "local_tfidf_v0"
+LEGACY_EMBEDDING_MODEL = "local_tfidf_v0"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
+DEFAULT_JUDGE_MODEL = "openai/gpt-5.4-mini"
+DEFAULT_VERSION = "creativity_v2_gpt54mini_embed3large"
 
 SCORES_DDL = """
 CREATE TABLE IF NOT EXISTS creativity_scores (
@@ -84,7 +87,7 @@ class Utterance:
     role: str
     text: str
     masked_text: str
-    vector: dict[str, float] | None = None
+    vector: Any = None
 
 
 @dataclass
@@ -94,6 +97,7 @@ class Pair:
     role: str
     a: Utterance
     b: Utterance
+    embedding_model: str
     embedding_similarity: float
 
 
@@ -133,8 +137,12 @@ def mask_names(text: str, names: list[str]) -> str:
     return " ".join(out.split())
 
 
-def cosine(a: dict[str, float], b: dict[str, float]) -> float:
-    return max(0.0, min(1.0, sum(v * b.get(k, 0.0) for k, v in a.items())))
+def cosine(a: Any, b: Any) -> float:
+    if isinstance(a, list) and isinstance(b, list):
+        return max(0.0, min(1.0, sum(float(x) * float(y) for x, y in zip(a, b))))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return max(0.0, min(1.0, sum(v * b.get(k, 0.0) for k, v in a.items())))
+    return 0.0
 
 
 def attach_tfidf(utterances: list[Utterance]) -> None:
@@ -149,6 +157,39 @@ def attach_tfidf(utterances: list[Utterance]) -> None:
             vec[term] = (1 + math.log(count)) * math.log((n + 1) / (df[term] + 1)) + 1
         norm = math.sqrt(sum(v * v for v in vec.values())) or 1.0
         u.vector = {k: v / norm for k, v in vec.items()}
+
+
+def attach_openai_embeddings(utterances: list[Utterance], *, env: dict[str, str],
+                             embedding_model: str, batch_size: int) -> None:
+    key = env.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError(f"OPENAI_API_KEY is required for embedding_model={embedding_model}")
+    client = OpenAI(api_key=key)
+    batch_size = max(1, batch_size)
+    for start in range(0, len(utterances), batch_size):
+        batch = utterances[start:start + batch_size]
+        resp = client.embeddings.create(model=embedding_model, input=[u.masked_text for u in batch])
+        if len(resp.data) != len(batch):
+            raise RuntimeError(f"embedding response length mismatch: expected {len(batch)} got {len(resp.data)}")
+        ordered = sorted(resp.data, key=lambda item: item.index)
+        for utterance, item in zip(batch, ordered):
+            vec = [float(x) for x in item.embedding]
+            norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+            utterance.vector = [x / norm for x in vec]
+        print(f"embedded {min(start + batch_size, len(utterances))}/{len(utterances)} utterances", flush=True)
+
+
+def attach_embeddings(utterances: list[Utterance], *, env: dict[str, str],
+                      embedding_model: str, batch_size: int) -> None:
+    if embedding_model == LEGACY_EMBEDDING_MODEL:
+        attach_tfidf(utterances)
+    else:
+        attach_openai_embeddings(
+            utterances,
+            env=env,
+            embedding_model=embedding_model,
+            batch_size=batch_size,
+        )
 
 
 def identity_for(row: sqlite3.Row, roster_harness: dict[tuple[str, str], str],
@@ -238,9 +279,15 @@ def load_utterances(sqlite_path: Path) -> list[Utterance]:
         con.close()
 
 
-def select_pairs(utterances: list[Utterance], max_pairs_per_bucket: int,
+def select_pairs(utterances: list[Utterance], max_pairs_per_bucket: int, *,
+                 env: dict[str, str], embedding_model: str, embedding_batch_size: int,
                  limit_buckets: int | None = None) -> tuple[list[Pair], dict[tuple[str, str], list[Utterance]]]:
-    attach_tfidf(utterances)
+    attach_embeddings(
+        utterances,
+        env=env,
+        embedding_model=embedding_model,
+        batch_size=embedding_batch_size,
+    )
     buckets: dict[tuple[str, str], list[Utterance]] = defaultdict(list)
     for u in utterances:
         buckets[(u.identity.identity_key, u.role)].append(u)
@@ -278,6 +325,7 @@ def select_pairs(utterances: list[Utterance], max_pairs_per_bucket: int,
                 role=a.role,
                 a=a,
                 b=b,
+                embedding_model=embedding_model,
                 embedding_similarity=cosine(a.vector or {}, b.vector or {}),
             ))
     return pairs, kept_buckets
@@ -290,7 +338,7 @@ def pair_hash(version: str, pair: Pair, judge_model: str, judge_temperature: flo
         "role": pair.role,
         "utterance_a": pair.a.masked_text,
         "utterance_b": pair.b.masked_text,
-        "embedding_model": EMBEDDING_MODEL,
+        "embedding_model": pair.embedding_model,
         "embedding_similarity": round(pair.embedding_similarity, 6),
         "judge_model": judge_model,
         "judge_temperature": judge_temperature,
@@ -370,7 +418,7 @@ def judge_pairs(pairs: list[Pair], *, env: dict[str, str], judge_model: str, jud
                     "role": p.role,
                     "utterance_a": p.a.masked_text,
                     "utterance_b": p.b.masked_text,
-                    "embedding_model": EMBEDDING_MODEL,
+                    "embedding_model": p.embedding_model,
                     "embedding_similarity": p.embedding_similarity,
                     "judge_model": judge_model,
                     "judge_temperature": judge_temperature,
@@ -583,8 +631,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Compute the Persuasion Arena creativity signal")
     parser.add_argument("--sqlite", type=Path, default=Path("store/arena.db"))
     parser.add_argument("--env-file", type=Path)
-    parser.add_argument("--version", default="creativity_v1")
-    parser.add_argument("--judge-model", default="openai/gpt-4o-mini")
+    parser.add_argument("--version", default=DEFAULT_VERSION)
+    parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
+    parser.add_argument("--embedding-model", default=DEFAULT_EMBEDDING_MODEL)
+    parser.add_argument("--embedding-batch-size", type=int, default=128)
     parser.add_argument(
         "--judge-temperature",
         type=float,
@@ -608,6 +658,9 @@ def main() -> None:
     pairs, kept_buckets = select_pairs(
         utterances,
         max_pairs_per_bucket=args.max_pairs_per_bucket,
+        env=env,
+        embedding_model=args.embedding_model,
+        embedding_batch_size=args.embedding_batch_size,
         limit_buckets=args.limit_buckets or None,
     )
     print(f"utterances={len(utterances)} buckets={len(kept_buckets)} sampled_pairs={len(pairs)}")
