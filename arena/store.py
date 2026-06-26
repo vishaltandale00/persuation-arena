@@ -744,9 +744,38 @@ def game_player_count() -> int:
 
 
 # --- connected-agent run protocol -------------------------------------------
-OPEN_RUN_STATUSES = {"open", "waiting", "ready_required"}
-ACTIVE_SIGNUP_STATUSES = {"waiting", "ready_required", "ready", "active"}
-TERMINAL_SIGNUP_STATUSES = {"completed", "rejected", "expired", "cancelled"}
+# Named RUN/SIGNUP status sets live in ONE checked-in file (arena/statuses.json) so the Python
+# coordinator (here) and the JS lobby (api/_db.js) agree byte-for-byte. Loaded once at import. The
+# JSON list ORDER is significant: it is the order emitted into SQL IN(...) fragments by _sql_in_list
+# below (and mirrored by sqlInList in _db.js), which other queries match as exact substrings.
+_STATUSES_PATH = Path(__file__).with_name("statuses.json")
+with open(_STATUSES_PATH, encoding="utf-8") as _f:
+    _STATUS_SETS: dict[str, list[str]] = {
+        k: v for k, v in json.load(_f).items() if not k.startswith("_")
+    }
+
+OPEN_RUN_STATUSES = set(_STATUS_SETS["open_run"])
+ACTIVE_SIGNUP_STATUSES = set(_STATUS_SETS["active_signup"])
+TERMINAL_SIGNUP_STATUSES = set(_STATUS_SETS["terminal_signup"])
+SEATED_SIGNUP_STATUSES = set(_STATUS_SETS["seated_signup"])
+PROMOTABLE_SIGNUP_STATUSES = set(_STATUS_SETS["promotable_signup"])
+READY_OR_ACTIVE_SIGNUP_STATUSES = set(_STATUS_SETS["ready_or_active_signup"])
+
+
+def _sql_in_list(name: str) -> str:
+    """Render a named status set from statuses.json as a SQL IN(...) body: 'a','b','c'.
+
+    Preserves the JSON member order (no spaces after commas) so the produced fragment is the exact
+    text other queries — and the JS parity tests — match. Use as: f"status IN ({_sql_in_list('...')})".
+    """
+    return ",".join(f"'{s}'" for s in _STATUS_SETS[name])
+
+
+# Pre-rendered IN(...) bodies for the sets that appear inside SQL strings, so every inlined literal
+# routes through statuses.json instead of being retyped.
+_ACTIVE_SIGNUP_IN = _sql_in_list("active_signup")
+_TERMINAL_SIGNUP_IN = _sql_in_list("terminal_signup")
+_PROMOTABLE_SIGNUP_IN = _sql_in_list("promotable_signup")
 
 
 def _rowdict(row) -> dict | None:
@@ -909,7 +938,7 @@ def list_open_runs(game: str | None = None) -> list[dict]:
                 continue
             signed = c.execute(
                 f"SELECT COUNT(*) n FROM run_signups WHERE run_id={ph} "
-                f"AND status IN ('waiting','ready_required','ready','active')",
+                f"AND status IN ({_ACTIVE_SIGNUP_IN})",
                 (r["id"],),
             ).fetchone()["n"]
             if signed >= int(r["players"]):
@@ -973,7 +1002,7 @@ def _active_signups(c, run_id: str) -> list[dict]:
     ph = _ph()
     rows = c.execute(
         f"SELECT s.*, a.display_name FROM run_signups s JOIN agents a ON a.id=s.agent_id "
-        f"WHERE s.run_id={ph} AND s.status IN ('waiting','ready_required','ready','active') "
+        f"WHERE s.run_id={ph} AND s.status IN ({_ACTIVE_SIGNUP_IN}) "
         f"ORDER BY s.created_utc, s.id",
         (run_id,),
     ).fetchall()
@@ -1078,14 +1107,14 @@ def create_signup(run_id: str, agent_id: str, max_concurrent_turns: int = 1,
             taken = c.execute(
                 f"SELECT 1 FROM run_signups WHERE run_id={ph} AND agent_id!={ph} "
                 f"AND roster_index={ph} "
-                f"AND status IN ('waiting','ready_required','ready','active')",
+                f"AND status IN ({_ACTIVE_SIGNUP_IN})",
                 (run_id, agent_id, seat_idx),
             ).fetchone()
             if taken:
                 return None, "invalid_seat"
         existing = c.execute(
             f"SELECT * FROM run_signups WHERE run_id={ph} AND agent_id={ph} "
-            f"AND status NOT IN ('completed','rejected','expired','cancelled')",
+            f"AND status NOT IN ({_TERMINAL_SIGNUP_IN})",
             (run_id, agent_id),
         ).fetchone()
         if existing:
@@ -1190,18 +1219,18 @@ def mark_signup_ready(signup_id: str, agent_id: str) -> tuple[dict | None, str |
         if not row:
             return None, "not_found"
         signup = _expire_signup_if_needed(c, dict(row))
-        if signup["status"] not in {"ready_required", "ready", "active"}:
+        if signup["status"] not in SEATED_SIGNUP_STATUSES:
             return signup, "not_ready_required"
         if signup["status"] == "ready_required":
             c.execute(f"UPDATE run_signups SET status={ph}, updated_utc={ph} WHERE id={ph}",
                       ("ready", now, signup_id))
         run_id = signup["run_id"]
         signups = _active_signups(c, run_id)
-        all_ready = signups and all(s["status"] in {"ready", "active"} for s in signups)
+        all_ready = signups and all(s["status"] in READY_OR_ACTIVE_SIGNUP_STATUSES for s in signups)
         run = c.execute(f"SELECT players FROM runs WHERE id={ph}", (run_id,)).fetchone()
         if all_ready and run and len(signups) >= int(run["players"]):
             c.execute(f"UPDATE run_signups SET status={ph}, updated_utc={ph} "
-                      f"WHERE run_id={ph} AND status IN ('ready','ready_required')",
+                      f"WHERE run_id={ph} AND status IN ({_PROMOTABLE_SIGNUP_IN})",
                       ("active", now, run_id))
             c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'", ("running", run_id))
             append_event_tx(c, run_id, "run_status", {"status": "active"}, phase="run")
@@ -1250,11 +1279,11 @@ def activate_run_if_ready(run_id: str) -> int:
         if not run:
             return 0
         signups = _active_signups(c, run_id)
-        ready = [s for s in signups if s.get("seat") is not None and s["status"] in ("ready", "active")]
+        ready = [s for s in signups if s.get("seat") is not None and s["status"] in READY_OR_ACTIVE_SIGNUP_STATUSES]
         if len(ready) >= int(run["players"]):
             cur = c.execute(
                 f"UPDATE run_signups SET status={ph}, updated_utc={ph} "
-                f"WHERE run_id={ph} AND status IN ('ready','ready_required')",
+                f"WHERE run_id={ph} AND status IN ({_PROMOTABLE_SIGNUP_IN})",
                 ("active", now, run_id))
             if (cur.rowcount or 0) > 0:
                 c.execute(f"UPDATE runs SET status={ph} WHERE id={ph} AND status!='done'",

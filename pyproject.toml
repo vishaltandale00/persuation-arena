@@ -31,3 +31,20 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["arena*", "persuasion_arena_agent*", "api*", "app*"]
+
+[tool.ruff]
+# Lint config for the NON-BLOCKING CI lint job (see .github/workflows/ci.yml).
+# Findings are advisory today; the owner can flip the lint job to required later.
+# Tuned to the existing style — do NOT mass-reformat the codebase to satisfy it.
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# Default ruff rule set (E/W/F) minus a few stylistic codes that are noisy
+# against the current codebase and are not correctness bugs:
+#   E702  multiple statements on one line (semicolon)
+#   E731  lambda assignment
+#   F541  f-string without placeholders
+# The genuinely useful rules (F401 unused import, F841 unused var, F821
+# undefined name, etc.) stay on so they surface as advisory findings.
+ignore = ["E702", "E731", "F541"]

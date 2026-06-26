@@ -1,0 +1,10 @@
+{
+  "_comment": "SINGLE SOURCE OF TRUTH for the named RUN and SIGNUP status sets used by the connected-agent run protocol. Loaded by arena/store.py (module-level) and api/_db.js (fs-read) so the Python coordinator and the JS lobby agree byte-for-byte. Member ORDER is significant: it is the order emitted into SQL IN(...) lists, which other code (and tests) match as exact substrings. Do NOT reorder without updating both readers and their tests. NOTE (out of scope here): the DDL/CREATE-TABLE column lists are still hand-written; generating those from a manifest is a separate L-effort follow-up.",
+  "open_run": ["open", "waiting", "ready_required"],
+  "active_signup": ["waiting", "ready_required", "ready", "active"],
+  "terminal_signup": ["completed", "rejected", "expired", "cancelled"],
+  "seated_signup": ["ready_required", "ready", "active"],
+  "promotable_signup": ["ready", "ready_required"],
+  "ready_or_active_signup": ["ready", "active"],
+  "ready_transition_signup": ["ready_required", "ready"]
+}

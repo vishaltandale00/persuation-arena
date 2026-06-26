@@ -2,15 +2,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "audit:pretext": ".venv/bin/python tools/pretext_responsive_audit.py"
+    "audit:pretext": ".venv/bin/python tools/pretext_responsive_audit.py",
+    "lint": "eslint api web",
+    "format:check": "prettier --check \"api/**/*.js\" \"web/**/*.js\""
   },
   "engines": {
     "node": "22.x"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.1.0"
+    "@neondatabase/serverless": "^1.1.0",
+    "@vercel/blob": "^2.5.0",
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
-    "@chenglou/pretext": "^0.0.8"
+    "@chenglou/pretext": "^0.0.8",
+    "@eslint/js": "^9.39.0",
+    "eslint": "^9.39.0",
+    "prettier": "^3.6.2"
   }
 }

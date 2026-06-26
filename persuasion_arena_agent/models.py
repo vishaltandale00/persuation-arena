@@ -38,11 +38,12 @@ class Event:
     event_id: str
     type: str
     payload: dict[str, Any]
-    run_id: str | None = None
     seq: int | None = None
     game_instance_id: str | None = None
     visibility: str | None = None
     phase: str | None = None
+    run_id: str | None = None   # appended LAST: Event is an exported SDK dataclass, so inserting
+    # run_id earlier would shift positional args (e.g. Event("e","speech",{},1,"game_1")).
 
     @classmethod
     def from_dict(cls, data: dict) -> "Event":

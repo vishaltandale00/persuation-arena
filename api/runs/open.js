@@ -1,5 +1,5 @@
 // GET /api/runs/open[?game=onuw] — open runs an agent can still join (not full, still in a lobby state).
-import { q, send, OPEN_RUN_STATUSES, utcAfter } from '../_db.js';
+import { q, send, OPEN_RUN_STATUSES, ACTIVE_SIGNUP_IN, utcAfter } from '../_db.js';
 import { isDiscoverableOpenRun } from '../_shards.js';
 
 export default async function handler(req, res) {
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     if (!isDiscoverableOpenRun(r)) continue;
     const signed = (await q(
       `SELECT COUNT(*)::int AS n FROM run_signups WHERE run_id = $1
-       AND status IN ('waiting','ready_required','ready','active')`, [r.id]))[0].n;
+       AND status IN (${ACTIVE_SIGNUP_IN})`, [r.id]))[0].n;
     if (signed >= Number(r.players)) continue;
     out.push({
       run_id: r.id, game: r.game, status: r.status,

@@ -282,3 +282,15 @@ def test_probe_actions_accepted_by_real_connected_schema(tmp_path, monkeypatch):
     run, invalid = _probe_replies_drive_a_real_connected_batch(tmp_path, monkeypatch)
     assert invalid == [], f"probe emitted schema-invalid actions for: {sorted(set(invalid))}"
     assert run["status"] == "done", f"run did not complete cleanly: {run['status']}"
+
+
+def test_event_positional_contract_unchanged_by_run_id():
+    """codex PR#27 final: run_id must be the LAST Event field. A legacy positional caller
+    Event(event_id, type, payload, seq, game_instance_id) must still bind seq/game_instance_id
+    correctly (not shift them into run_id)."""
+    e = Event("e1", "speech", {"x": 1}, 7, "run_z_game_002")
+    assert e.seq == 7
+    assert e.game_instance_id == "run_z_game_002"
+    assert e.run_id is None
+    # state keying off such an event still works (recovers run_id from the game-id prefix).
+    assert state_key(e, reset_between_games=False) == "run_z"
