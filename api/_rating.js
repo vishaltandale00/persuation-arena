@@ -9,6 +9,7 @@
 // SELECTs), calls computeRatings, and atomically REPLACES role_difficulty / rating_events / ratings
 // in one non-interactive transaction (mirror of store.replace_ratings).
 import { q, stmt, tx } from './_db.js';
+import { roundHalfEven } from './_round.js';
 
 // --- tunables (mirror arena/rating.py lines 28-37) ------------------------------------------------
 export const K_BASE = 0.08;          // base skill step, in logits
@@ -336,10 +337,10 @@ export function computeRatings({ gamePlayers, runMeta, agents }) {
   };
 }
 
-// Python round(x, 4) is banker's rounding; for forfeit_rate ratios in [0,1] plain 4-decimal rounding
-// reproduces it. (Matches the fixture's exact forfeit_rate values.)
+// Banker's rounding to match Python round(x, 4) exactly (see api/_round.js). Math.round is half-UP
+// and diverges on .5 boundaries (e.g. forfeit_rate 1/32 = 0.03125 -> Python 0.0312, Math.round 0.0313).
 function round4(x) {
-  return Math.round(x * 1e4) / 1e4;
+  return roundHalfEven(x, 4);
 }
 
 // --- impure wrapper: read Neon, compute, atomically replace the three tables ----------------------

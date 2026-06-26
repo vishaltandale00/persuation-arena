@@ -3,11 +3,11 @@
 // Everything here is read-only / derived: scoring, event shaping for the API, the ONUW deck
 // presets, and the OpenRouter model catalog. All DB access goes through q() from ./_db.js.
 import { q } from './_db.js';
+import { roundHalfEven } from './_round.js';
 
-// --- round-to-3 matching Python round() -----------------------------------------------------------
-// Python's round() is banker's rounding, but the codebase's intent here is plain 3-decimal display;
-// Math.round(x*1000)/1000 reproduces it for the values we produce (rates/CI bounds in [0,1]).
-const r3 = (x) => Math.round(x * 1000) / 1000;
+// Banker's rounding to match Python round() exactly (see api/_round.js). Math.round is half-UP and
+// diverges on .5 boundaries (e.g. a Wilson bound 0.0625 -> Python 0.062, Math.round 0.063).
+const r3 = (x) => roundHalfEven(x, 3);
 
 // === 1. scoreRun — port of arena/score.py ========================================================
 
