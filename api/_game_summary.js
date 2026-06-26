@@ -1,6 +1,7 @@
 export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 export const GAME_SUMMARY_MODEL = process.env.ARENA_GAME_SUMMARY_MODEL || 'openai/gpt-5.5';
 export const GAME_SUMMARY_REASONING_EFFORT = process.env.ARENA_GAME_SUMMARY_REASONING_EFFORT || 'medium';
+export const LOCAL_SUMMARY_MODEL = 'local-extractive';
 
 function cleanText(value, max = 1200) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -75,6 +76,37 @@ function normalizeSummary(value, model, generatedAt) {
   };
 }
 
+export function summarizeGameLocally(transcript, { generatedAt = new Date().toISOString().replace(/(\.\d{3})Z$/, '$1000Z') } = {}) {
+  const input = gameSummaryInput(transcript);
+  const players = input.players.map((p) => `${p.name} (${p.end || p.dealt || 'unknown role'})`);
+  const winner = cleanText(
+    input.outcome?.text
+      || transcript.line
+      || (input.winner_team ? `${input.winner_team} team won.` : 'The game completed.'),
+    500,
+  );
+  const notable = [];
+  for (const phase of input.phases) {
+    for (const event of phase.events) {
+      if (/voted for|Result:|checked|claimed|accused|eliminat/i.test(event)) notable.push(`${phase.phase}: ${event}`);
+      if (notable.length >= 5) break;
+    }
+    if (notable.length >= 5) break;
+  }
+  const phaseCount = input.phases.filter((p) => p.events.length).length;
+  const summary = [
+    `Game ${input.seed != null ? `seed ${input.seed} ` : ''}ended with ${winner}`,
+    players.length ? `Final table: ${players.join('; ')}.` : '',
+    phaseCount ? `The summary is generated from ${phaseCount} public phase${phaseCount === 1 ? '' : 's'} of actions, discussion, votes, and results.` : '',
+  ].filter(Boolean).join(' ');
+  return normalizeSummary({
+    summary,
+    result: winner,
+    highlights: notable.slice(0, 3),
+    turning_points: notable.slice(3, 5),
+  }, LOCAL_SUMMARY_MODEL, generatedAt);
+}
+
 function parseSummary(content) {
   try {
     return JSON.parse(content);
@@ -130,10 +162,17 @@ export async function summarizeGame(transcript) {
     data = await completion(messages, { structured: true, reasoning: true });
   } catch (err) {
     const text = String(err && err.message ? err.message : err).toLowerCase();
-    if (!text.includes('response_format') && !text.includes('reasoning') && !text.includes('unsupported')) throw err;
-    data = await completion(messages, { structured: false, reasoning: false });
+    if (!text.includes('response_format') && !text.includes('reasoning') && !text.includes('unsupported')) {
+      return summarizeGameLocally(transcript);
+    }
+    try {
+      data = await completion(messages, { structured: false, reasoning: false });
+    } catch {
+      return summarizeGameLocally(transcript);
+    }
   }
   const content = data?.choices?.[0]?.message?.content || '';
   const generatedAt = new Date().toISOString().replace(/(\.\d{3})Z$/, '$1000Z');
-  return normalizeSummary(parseSummary(content), GAME_SUMMARY_MODEL, generatedAt);
+  const summary = normalizeSummary(parseSummary(content), GAME_SUMMARY_MODEL, generatedAt);
+  return summary.text ? summary : summarizeGameLocally(transcript, { generatedAt });
 }

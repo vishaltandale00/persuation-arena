@@ -2,7 +2,7 @@
 process.env.DATABASE_URL ||= 'postgres://u:p@localhost/db';
 
 import assert from 'node:assert/strict';
-import { gameSummaryInput } from '../api/_game_summary.js';
+import { gameSummaryInput, summarizeGameLocally } from '../api/_game_summary.js';
 
 const transcript = {
   seed: 9001,
@@ -48,5 +48,11 @@ assert.deepEqual(shaped.phases[0].events, [
   'Bob: passed (done)',
 ]);
 assert.ok(!JSON.stringify(shaped).includes('private text must not matter'));
+
+const local = summarizeGameLocally(transcript, { generatedAt: '2026-06-25T00:00:00.000000Z' });
+assert.equal(local.model, 'local-extractive');
+assert.equal(local.generated_at, '2026-06-25T00:00:00.000000Z');
+assert.ok(local.text.includes('Village wins by eliminating the werewolf.'));
+assert.ok(local.highlights.some((x) => x.includes('Bob is the wolf.')));
 
 console.log('game_summary.test.mjs: assertions passed');

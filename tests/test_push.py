@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from fastapi.testclient import TestClient
 
 from arena import cli, rating, store
 
@@ -145,6 +146,54 @@ def test_build_import_payload_skips_missing_transcript(tmp_path, monkeypatch):
     run = store.get_run("r1")
     payload = cli.build_import_payload(run, [0, 7], store.get_game)  # gid 7 not stored
     assert [g["gid"] for g in payload["games"]] == [0]
+
+
+def test_local_upload_endpoint_uploads_only_missing_games(tmp_path, monkeypatch):
+    _sqlite(tmp_path, monkeypatch)
+    _save_run("r_ui", n_players=3)
+    _save_game("r_ui", 0)
+    _save_game("r_ui", 1)
+    monkeypatch.setattr(cli, "push_token_or_register", lambda server, display_name=None: "pa_live_test")
+    monkeypatch.setattr(cli, "_worker_get",
+                        lambda server, path, token=None: {"games": [{"gid": 0}]})
+    posted = {}
+
+    def fake_post(server, path, token, body):
+        posted.update(server=server, path=path, token=token, body=body)
+        return {"ok": True, "games_inserted": len(body["games"]), "recompute": "ok"}
+
+    monkeypatch.setattr(cli, "_worker_post", fake_post)
+    from arena.server import app
+
+    r = TestClient(app).post("/api/runs/r_ui/upload", json={"server": "https://remote.test"})
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["uploaded"] == 1
+    assert data["gids"] == [1]
+    assert data["remote"]["recompute"] == "ok"
+    assert posted["path"] == "/api/runs/import"
+    assert [g["gid"] for g in posted["body"]["games"]] == [1]
+
+
+def test_local_upload_endpoint_noops_when_remote_has_all_games(tmp_path, monkeypatch):
+    _sqlite(tmp_path, monkeypatch)
+    _save_run("r_done", n_players=3)
+    _save_game("r_done", 0)
+    monkeypatch.setattr(cli, "push_token_or_register", lambda server, display_name=None: "pa_live_test")
+    monkeypatch.setattr(cli, "_worker_get",
+                        lambda server, path, token=None: {"games": [{"gid": 0}]})
+    monkeypatch.setattr(cli, "_worker_post",
+                        lambda *args, **kwargs: pytest.fail("posted despite no missing games"))
+    from arena.server import app
+
+    r = TestClient(app).post("/api/runs/r_done/upload", json={"server": "https://remote.test"})
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["uploaded"] == 0
+    assert data["missing"] == 0
+    assert data["gids"] == []
 
 
 # --- unique index / idempotent re-push --------------------------------------

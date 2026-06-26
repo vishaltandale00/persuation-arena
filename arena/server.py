@@ -15,6 +15,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -780,6 +781,61 @@ def api_run(run_id: str):
     }
 
 
+@app.post("/api/runs/{run_id}/upload")
+def api_upload_run(run_id: str, payload: dict | None = None):
+    """Upload a completed local run to the remote arena via the same path as `arena push`."""
+    if _hosted():
+        raise HTTPException(403, "local run upload is only available from the local observer")
+    if os.environ.get("DATABASE_URL"):
+        raise HTTPException(400, "local run upload requires the local SQLite store, not DATABASE_URL")
+
+    from . import cli
+
+    payload = payload or {}
+    run = store.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    if run["status"] not in cli.PUSHABLE_RUN_STATUSES:
+        raise HTTPException(400, "only done or partial runs can be uploaded")
+
+    server = (payload.get("server") or os.environ.get("ARENA_SERVER_URL") or cli.PROD_SERVER_URL).rstrip("/")
+    force = bool(payload.get("force"))
+    dry_run = bool(payload.get("dry_run") or payload.get("dryRun"))
+    as_name = payload.get("as_name") or payload.get("asName")
+
+    try:
+        token = cli.push_token_or_register(server, as_name)
+        local_gids = store.distinct_gids(run_id)
+        try:
+            remote = cli._worker_get(server, f"/api/runs/{run_id}", token)
+        except Exception:
+            remote = None
+        missing = cli.gid_diff(local_gids, remote, force=force)
+        upload_payload = cli.build_import_payload(run, missing, store.get_game)
+        result = {
+            "ok": True,
+            "run_id": run_id,
+            "server": server,
+            "status": run["status"],
+            "local": len(local_gids),
+            "missing": len(missing),
+            "gids": [g["gid"] for g in upload_payload["games"]],
+            "uploaded": 0,
+            "dry_run": dry_run,
+            "remote": None,
+        }
+        if dry_run or not upload_payload["games"]:
+            return result
+        remote_result = cli._worker_post(server, "/api/runs/import", token, upload_payload)
+        result["uploaded"] = len(upload_payload["games"])
+        result["remote"] = remote_result
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"upload failed: {e}") from e
+
+
 @app.get("/api/runs/{run_id}/debug")
 def api_run_debug(run_id: str):
     r = store.get_run(run_id)
@@ -996,6 +1052,7 @@ def api_game(run_id: str, gid: int):
 
 GAME_SUMMARY_MODEL = os.environ.get("ARENA_GAME_SUMMARY_MODEL", "openai/gpt-5.5")
 GAME_SUMMARY_REASONING_EFFORT = os.environ.get("ARENA_GAME_SUMMARY_REASONING_EFFORT", "medium")
+LOCAL_SUMMARY_MODEL = "local-extractive"
 
 
 def _clean_summary_text(value, max_chars: int = 1200) -> str:
@@ -1065,9 +1122,53 @@ def _normalize_game_summary(value: dict | str) -> dict:
     }
 
 
+def _summarize_game_locally(transcript: dict) -> dict:
+    src = _game_summary_input(transcript)
+    players = [
+        f"{p.get('name')} ({p.get('end') or p.get('dealt') or 'unknown role'})"
+        for p in src.get("players", [])
+    ]
+    outcome = src.get("outcome") if isinstance(src.get("outcome"), dict) else {}
+    winner = _clean_summary_text(
+        outcome.get("text")
+        or transcript.get("line")
+        or (f"{src.get('winner_team')} team won." if src.get("winner_team") else "The game completed."),
+        500,
+    )
+    notable = []
+    for phase in src.get("phases", []):
+        for event in phase.get("events", []):
+            if re.search(r"voted for|Result:|checked|claimed|accused|eliminat", event, re.I):
+                notable.append(f"{phase.get('phase')}: {event}")
+            if len(notable) >= 5:
+                break
+        if len(notable) >= 5:
+            break
+    phase_count = len([p for p in src.get("phases", []) if p.get("events")])
+    summary = " ".join(
+        [
+            f"Game seed {src.get('seed')} ended with {winner}" if src.get("seed") is not None else f"Game ended with {winner}",
+            f"Final table: {'; '.join(players)}." if players else "",
+            (
+                "The summary is generated from "
+                f"{phase_count} public phase{'s' if phase_count != 1 else ''} of actions, discussion, votes, and results."
+            ) if phase_count else "",
+        ]
+    ).strip()
+    out = _normalize_game_summary({
+        "summary": summary,
+        "result": winner,
+        "highlights": notable[:3],
+        "turning_points": notable[3:5],
+    })
+    out["model"] = LOCAL_SUMMARY_MODEL
+    out["reasoning_effort"] = ""
+    return out
+
+
 def _summarize_game(transcript: dict) -> dict:
     if not config.has_api_key():
-        raise HTTPException(502, "OPENROUTER_API_KEY is required to generate game summaries")
+        return _summarize_game_locally(transcript)
     messages = [
         {
             "role": "system",
@@ -1106,22 +1207,32 @@ def _summarize_game(transcript: dict) -> dict:
         except json.JSONDecodeError:
             match = re.search(r"\{.*\}", content, re.DOTALL)
             parsed = json.loads(match.group(0)) if match else {"summary": content}
-        return _normalize_game_summary(parsed)
+        summary = _normalize_game_summary(parsed)
+        return summary if summary.get("text") else _summarize_game_locally(transcript)
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(502, f"summary generation failed: {exc}") from exc
+        return _summarize_game_locally(transcript)
 
 
 @app.post("/api/runs/{run_id}/games/{gid}/summary")
 def api_game_summary(run_id: str, gid: int):
-    transcript = store.get_game(run_id, gid)
+    run = store.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    transcript = None
+    source_run_id = run_id
+    for sid in _source_run_ids(run):
+        transcript = store.get_game(sid, gid)
+        if transcript:
+            source_run_id = sid
+            break
     if not transcript:
         raise HTTPException(404, "game not found")
     if transcript.get("summary", {}).get("text"):
         return {"ok": True, "cached": True, "summary": transcript["summary"]}
     transcript["summary"] = _summarize_game(transcript)
-    store.update_game_transcript(run_id, gid, transcript)
+    store.update_game_transcript(source_run_id, gid, transcript)
     return {"ok": True, "cached": False, "summary": transcript["summary"]}
 
 

@@ -30,6 +30,7 @@
   .grow{flex:1}
   .btn{all:unset;cursor:pointer;font-size:13px;padding:7px 13px;border-radius:7px;border:1px solid var(--line-2);color:var(--ink);background:var(--panel)}
   .btn:hover{background:var(--hover)} .btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .btn[disabled]{opacity:.55;cursor:not-allowed}
   .btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)} .btn.primary:hover{opacity:.92}
 
   .screen{display:none} .screen.on{display:block}
@@ -68,6 +69,11 @@
   .panel{border:1px solid var(--line);border-radius:11px;background:var(--panel)}
   .panel h3{margin:0;padding:13px 16px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600}
   .panel .body{padding:14px 16px}
+  .ovhead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
+  .ovhead .pagehead{margin-bottom:0;min-width:0}
+  .ovactions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end;max-width:360px}
+  .upload-status{font-family:var(--mono);font-size:11px;color:var(--faint);text-align:right;line-height:1.35;min-height:15px}
+  .upload-status.ok{color:var(--good)} .upload-status.no{color:var(--evil)}
   .livepanel{margin-top:18px}
   .ovside{display:flex;flex-direction:column;gap:16px}
   .results-panel{margin-top:18px}
@@ -464,7 +470,10 @@
       <button class="back" id="oback">‹ Runs</button>
       <span class="rid" id="ovid"></span>
     </div>
-    <div class="pagehead"><h1 id="ovtitle"></h1><p id="ovsub"></p></div>
+    <div class="ovhead">
+      <div class="pagehead"><h1 id="ovtitle"></h1><p id="ovsub"></p></div>
+      <div class="ovactions" id="ovactions"></div>
+    </div>
     <div class="ovgrid">
       <div>
         <div class="section-h" style="margin:22px 0 8px"><span class="lbl" id="gameslbl"></span></div>
@@ -654,12 +663,17 @@ let RUNS={}, RUN_ORDER=[];
 let curDebug=null;
 const TRANSCRIPTS={};
 const SUMMARY_LOADING=new Set();
+const SUMMARY_ERRORS={};
+const UPLOAD_STATE={};
 async function jget(u){ const r=await fetch(API+u); if(!r.ok) throw new Error(u+" "+r.status); return r.json(); }
 async function jpost(u,body){
   const r=await fetch(API+u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
   if(!r.ok){
     let msg=u+" "+r.status;
-    try{ const d=await r.json(); msg=d.error||d.detail||msg; }catch(_){}
+    try{
+      const d=await r.json();
+      msg=d.detail?(d.error?d.error+": "+d.detail:d.detail):(d.error||msg);
+    }catch(_){}
     const e=new Error(msg); e.status=r.status; throw e;
   }
   return r.json();
@@ -940,6 +954,7 @@ function renderRunOverview(){
   document.getElementById("ovid").textContent=curRun.id;
   document.getElementById("ovtitle").textContent=curRun.label;
   document.getElementById("ovsub").textContent=(running?(prog+" games"):(curRun.nGames+" games"))+" · "+curRun.players+" agents · "+runStatusLabel(curRun);
+  renderUploadAction();
   document.getElementById("ovagents").innerHTML=curRun.agents.map(agentRow).join("");
   document.getElementById("ovcfg").innerHTML=
     cfgItem("Game",curRun.label)+cfgItem("Players",curRun.players)+cfgItem("Games to play",curRun.nGames)+
@@ -1002,9 +1017,44 @@ function renderRunOverview(){
 	  if(!curRun.games.length && !running) rows='<div style="padding:16px"><span class="lbl">No games yet — run is '+curRun.status+'.</span></div>';
 	  gl.innerHTML=rows;
 	  document.querySelectorAll(".grow2[data-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.g));
-	  document.querySelectorAll(".grow2[data-live-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.liveG));
-		  renderConnectedDebug();
-		}
+		  document.querySelectorAll(".grow2[data-live-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.liveG));
+			  renderConnectedDebug();
+			}
+function renderUploadAction(){
+  const el=document.getElementById("ovactions");
+  if(!el) return;
+  const canUpload=IS_LOCAL && curRun && !curRun.connected && (curRun.status==="done"||curRun.status==="partial") && (curRun.games||[]).length>0;
+  if(!canUpload){ el.innerHTML=""; return; }
+  const st=UPLOAD_STATE[curRun.id]||{};
+  const busy=st.state==="uploading";
+  const cls=st.state==="ok"?" ok":st.state==="error"?" no":"";
+  const msg=st.message||"";
+  el.innerHTML='<button class="btn primary" id="ov-upload" type="button" '+(busy?"disabled":"")+'>'+(busy?"Uploading…":"Upload")+'</button>'+
+    '<div class="upload-status'+cls+'" id="ov-upload-status">'+esc(msg)+'</div>';
+  document.getElementById("ov-upload").onclick=uploadCurrentRun;
+}
+async function uploadCurrentRun(){
+  if(!curRun) return;
+  const id=curRun.id;
+  UPLOAD_STATE[id]={state:"uploading",message:"Uploading to remote arena…"};
+  renderUploadAction();
+  try{
+    const d=await jpost("/runs/"+id+"/upload",{});
+    const remote=d.remote||{};
+    const recompute=remote.recompute?(" · recompute "+remote.recompute):"";
+    const msg=d.uploaded>0
+      ? ("Uploaded "+d.uploaded+" game"+(d.uploaded===1?"":"s")+recompute)
+      : "Already on remote arena";
+    UPLOAD_STATE[id]={state:"ok",message:msg};
+    toast(msg);
+    await openRun(id,{show:false});
+  }catch(e){
+    const msg=e.message||"Upload failed.";
+    UPLOAD_STATE[id]={state:"error",message:msg};
+    toast(msg);
+    renderUploadAction();
+  }
+}
 function agentRow(a){
   const connected=curRun.connected||a.signup_id||a.status;
   const status=a.status||"waiting";
@@ -1156,6 +1206,7 @@ function renderGameSummary(error){
   const el=document.getElementById("gamesummary"); if(!el||!hasT()) return;
   const s=T().summary;
   const key=summaryKey();
+  const err=error||SUMMARY_ERRORS[key]||"";
   let inner;
   if(s&&s.text){
     const meta=[s.model,s.reasoning_effort?("reasoning "+s.reasoning_effort):"",s.generated_at?new Date(s.generated_at).toLocaleString():""].filter(Boolean).join(" · ");
@@ -1165,9 +1216,9 @@ function renderGameSummary(error){
       '<div class="game-summary-grid">'+summaryList("Highlights",s.highlights)+summaryList("Turning points",s.turning_points)+'</div>';
   } else {
     const loading=SUMMARY_LOADING.has(key);
-    inner='<div class="game-summary-empty"><span>'+(loading?"Generating GPT-5.5 medium summary…":"No generated summary yet.")+'</span>'+
+    inner='<div class="game-summary-empty"><span>'+(loading?"Generating game summary…":"No generated summary yet.")+'</span>'+
       '<button class="btn" id="summary-generate" '+(loading?"disabled":"")+'>Generate summary</button></div>'+
-      (error?'<div class="game-summary-error">'+esc(error)+'</div>':"");
+      (err?'<div class="game-summary-error">'+esc(err)+'</div>':"");
   }
   el.innerHTML='<section class="game-summary"><div class="game-summary-inner">'+inner+'</div></section>';
   const btn=document.getElementById("summary-generate");
@@ -1178,6 +1229,7 @@ async function ensureGameSummary(force){
   const key=summaryKey();
   if(!force && T().summary && T().summary.text) return;
   if(SUMMARY_LOADING.has(key)) return;
+  SUMMARY_ERRORS[key]="";
   SUMMARY_LOADING.add(key);
   renderGameSummary();
   try{
@@ -1187,7 +1239,8 @@ async function ensureGameSummary(force){
     renderGameSummary();
   }catch(e){
     SUMMARY_LOADING.delete(key);
-    renderGameSummary(e.message||"Summary generation failed.");
+    SUMMARY_ERRORS[key]=e.message||"Summary generation failed.";
+    renderGameSummary();
   }
 }
 // Moves the lens (state panel, player strip, phase highlight) to the current phase without
