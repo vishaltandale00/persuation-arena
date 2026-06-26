@@ -230,6 +230,15 @@ def _is_pg() -> bool:
     return bool(os.environ.get("DATABASE_URL"))
 
 
+def active_backend_label() -> str:
+    """A SAFE, log-friendly identifier of the active store backend for this process: either
+    `postgres` or `sqlite:<absolute db path>`. Never includes the Postgres URL (which may carry
+    credentials). Use this so a runner and server can confirm they share one backend."""
+    if _is_pg():
+        return "postgres"
+    return f"sqlite:{Path(DB_PATH).resolve()}"
+
+
 def _ph() -> str:
     return "%s" if _is_pg() else "?"
 
