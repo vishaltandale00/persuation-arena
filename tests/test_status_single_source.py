@@ -18,6 +18,7 @@ from arena import store
 REPO_ROOT = Path(__file__).resolve().parents[1]
 STATUSES_PATH = REPO_ROOT / "arena" / "statuses.json"
 DB_JS_PATH = REPO_ROOT / "api" / "_db.js"
+VERCELIGNORE_PATH = REPO_ROOT / ".vercelignore"
 
 
 def _load_json_sets() -> dict[str, list[str]]:
@@ -76,3 +77,17 @@ def test_js_reads_the_same_checked_in_file():
     assert "'waiting','ready_required','ready','active'" not in src, (
         "_db.js still inlines the active-signup literal instead of referencing statuses.json"
     )
+
+
+def test_vercel_bundle_keeps_statuses_json():
+    """Vercel deploys only the JS API, but _db.js needs arena/statuses.json at runtime.
+    Keep the rest of arena ignored while explicitly including that manifest."""
+    lines = [
+        line.strip()
+        for line in VERCELIGNORE_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert "arena" not in lines, "bare arena ignore drops arena/statuses.json from Vercel functions"
+    assert "arena/*" in lines
+    assert "!arena/statuses.json" in lines
+    assert lines.index("arena/*") < lines.index("!arena/statuses.json")

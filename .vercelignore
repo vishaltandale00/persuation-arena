@@ -10,7 +10,8 @@ store
 tests
 tools
 examples
-arena
+arena/*
+!arena/statuses.json
 persuasion_arena_agent
 agents.yaml
 requirements.txt
