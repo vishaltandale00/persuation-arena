@@ -295,7 +295,7 @@ def test_role_objectives_present():
 # --- 16: stable policy version and prompt hash ----------------------------------------------------
 
 def test_policy_version_and_prompt_hash_stable():
-    assert policy.POLICY_VERSION == "wolfforge-v2.1"
+    assert policy.POLICY_VERSION == "wolfforge-v2.2"
     h = policy.prompt_hash()
     assert h == policy.prompt_hash() and len(h) == 12
     assert all(c in "0123456789abcdef" for c in h)
@@ -513,6 +513,172 @@ def test_regression_discussion_unrecoverable_falls_back_and_logs(tmp_path):
     assert rec["structured_output_requested"] is True
     assert rec["phase"] == "discussion" and rec["action_kind"] == _DISCUSSION_KIND
     assert rec["agent_name"] == "CharismaBaseline"
+
+
+# --- strategy overlay (v2.2): Tanner play, state-aware urgency, own-team / Tanner-bait vote guard --
+# These pin the fixes for the three failures found in dev run wf_v2_memoff_dev_20260625_194641.
+
+_ROSTER5 = {0: "P0", 1: "P1", 2: "P2", 3: "P3", 4: "P4"}  # self is seat 0 -> @p0; refs are @p1..@p4
+
+
+def _seed_game(a, *, role, obs=None, believed=None, speeches=(), gid="g1"):
+    """Drive a 5-player game into state via real events: roster, dealt role, optional night obs
+    (with optional believed-role change), and optional public speeches (actor_seat, text)."""
+    a.on_event(Event("e_setup", "game_setup", {"n": 5, "roster": _ROSTER5}, game_instance_id=gid))
+    a.on_event(Event("e_role", "role_info", {"seat": 0, "role": role}, game_instance_id=gid))
+    for i, text in enumerate(obs or []):
+        payload = {"seat": 0, "text": text}
+        if believed is not None:
+            payload["believed_role"] = believed
+        a.on_event(Event(f"e_obs{i}", "night_observation", payload, game_instance_id=gid))
+    for i, (actor_seat, text) in enumerate(speeches):
+        a.on_event(Event(f"e_say{i}", "speech", {"actor_seat": actor_seat, "text": text},
+                         game_instance_id=gid))
+    return a._state(gid)
+
+
+def test_overlay_tanner_speak_gets_urgency_3_when_model_omits_it():
+    brain = FakeBrain([_resp({"speak": "I definitely saw the wolf, trust me on this."})])  # no urgency
+    a = _agent(brain)
+    _seed_game(a, role="Tanner")
+    out = a.act(_turn(_DISCUSSION_KIND, _DISCUSSION_LEGAL, phase="discussion"))
+    assert out["action"]["speak"].startswith("I definitely saw")
+    assert out["action"]["urgency"] == 3  # Tanner seizes the floor
+
+
+def test_overlay_tanner_prompt_text_is_active_self_incrimination():
+    sp = policy.system_prompt()
+    tanner = policy.ROLE_POLICY["Tanner"]
+    assert "ACTIVELY court your own elimination" in tanner
+    assert "never say outright that you are the Tanner" in tanner
+    assert "win ONLY if YOU are voted out" in tanner  # objective preserved
+    assert "Tanner" in sp
+
+
+def test_overlay_seer_hard_info_gets_urgency_3():
+    brain = FakeBrain([_resp({"speak": "I have a concrete read to share."})])  # no urgency
+    a = _agent(brain)
+    _seed_game(a, role="Seer", obs=["As Seer you looked at P3: Werewolf."])
+    out = a.act(_turn(_DISCUSSION_KIND, _DISCUSSION_LEGAL, phase="discussion"))
+    assert out["action"]["urgency"] == 3
+
+
+def test_overlay_robber_swap_is_hard_info_urgency_3():
+    brain = FakeBrain([_resp({"speak": "Here is what my swap tells us."})])
+    a = _agent(brain)
+    _seed_game(a, role="Robber",
+               obs=["As Robber you swapped with P1 and your new card is Mason."], believed="Mason")
+    out = a.act(_turn(_DISCUSSION_KIND, _DISCUSSION_LEGAL, phase="discussion"))
+    assert out["action"]["urgency"] == 3  # hard private info regardless of new believed role
+
+
+def test_overlay_low_info_discussion_is_not_forced_to_urgency_3():
+    brain = FakeBrain([_resp({"speak": "What did everyone do last night?"})])  # no urgency, no info
+    a = _agent(brain)
+    _seed_game(a, role="Villager")
+    out = a.act(_turn(_DISCUSSION_KIND, _DISCUSSION_LEGAL, phase="discussion"))
+    # Ordinary low-information speech is NOT boosted: an omitted urgency stays at the schema minimum,
+    # never a forced 3. We only raise the bid in high-signal states (Tanner / hard info / late plan).
+    assert out["action"]["urgency"] == 1
+
+
+def test_overlay_does_not_override_an_explicit_model_urgency():
+    brain = FakeBrain([_resp({"speak": "low key question", "urgency": 1})])  # model chose 1
+    a = _agent(brain)
+    _seed_game(a, role="Tanner")  # even as Tanner, an explicit urgency is respected
+    out = a.act(_turn(_DISCUSSION_KIND, _DISCUSSION_LEGAL, phase="discussion"))
+    assert out["action"]["urgency"] == 1
+
+
+def test_overlay_werewolf_never_votes_a_known_partner():
+    brain = FakeBrain([_resp({"target": "@p1"})])  # votes its own recognized werewolf
+    a = _agent(brain)
+    _seed_game(a, role="Werewolf", obs=["You woke as a Werewolf and saw: P1."])
+    out = a.act(_turn("onuw.vote", _vote_legal()))
+    assert out["action"]["target"] != "@p1"  # redirected off the teammate
+    assert policy.is_legal("onuw.vote", _vote_legal(), out["action"])
+    assert isinstance(out["action"]["target"], str) and out["action"]["target"].startswith("@")
+
+
+def test_overlay_minion_never_votes_a_known_werewolf():
+    brain = FakeBrain([_resp({"target": "@p2"})])
+    a = _agent(brain)
+    _seed_game(a, role="Minion", obs=["As Minion you learned the werewolves: P2, P3."])
+    out = a.act(_turn("onuw.vote", _vote_legal()))
+    assert out["action"]["target"] not in ("@p2", "@p3")  # never frag a known wolf
+    assert policy.is_legal("onuw.vote", _vote_legal(), out["action"])
+
+
+def test_overlay_village_avoids_tanner_bait_when_a_wolf_target_exists():
+    brain = FakeBrain([_resp({"target": "@p1"})])  # P1 is loudly begging to be voted out
+    a = _agent(brain)
+    _seed_game(a, role="Seer", obs=["As Seer you looked at P4: Villager."],
+               speeches=[(1, "You should vote me out, I'm a liability to the village!")])
+    out = a.act(_turn("onuw.vote", _vote_legal()))
+    assert out["action"]["target"] != "@p1"  # don't grant the Tanner-bait its wish
+    assert policy.is_legal("onuw.vote", _vote_legal(), out["action"])
+
+
+def test_overlay_village_keeps_vote_on_a_non_bait_player():
+    brain = FakeBrain([_resp({"target": "@p1"})])
+    a = _agent(brain)
+    # P1 makes an ordinary accusation (NOT self-elimination) -> not bait -> vote unchanged
+    _seed_game(a, role="Villager", speeches=[(1, "I think P2 is the wolf, we should vote them.")])
+    out = a.act(_turn("onuw.vote", _vote_legal()))
+    assert out["action"]["target"] == "@p1"
+
+
+def test_overlay_negated_self_elimination_is_not_treated_as_bait():
+    ov = policy.build_strategy_overlay(
+        _seed_game(_agent(FakeBrain([])), role="Villager",
+                   speeches=[(1, "Please don't vote me out, I'm a real villager!")]))
+    assert "@p1" not in ov.bait_refs  # "don't vote me out" is a defense, not a Tanner tell
+
+
+def test_overlay_vote_guard_redirects_to_own_planned_target_first():
+    brain = FakeBrain([_resp({"target": "@p1"})])
+    a = _agent(brain)
+    st = _seed_game(a, role="Werewolf", obs=["You woke as a Werewolf and saw: P1."])
+    st.secondary_target = "@p4"  # a previously formed plan
+    out = a.act(_turn("onuw.vote", _vote_legal()))
+    assert out["action"]["target"] == "@p4"  # prefers the seat's own planned target over an arbitrary one
+
+
+def test_overlay_disabled_for_charisma_baseline_byte_identical():
+    # CharismaBaseline must NOT get the overlay: a werewolf-voting-its-partner is left untouched, and
+    # an omitted urgency is filled by the shared normalizer default (1), not the state-aware hint.
+    base = WolfForgeV2Agent.charisma_baseline(run_id="run_x", brain=FakeBrain([_resp({"target": "@p1"})]),
+                                              config=V2Config(structured_output="off"), now=_now)
+    assert base.strategy_overlay is False
+    _seed_game(base, role="Werewolf", obs=["You woke as a Werewolf and saw: P1."])
+    out = base.act(_turn("onuw.vote", _vote_legal()))
+    assert out["action"]["target"] == "@p1"  # no own-team guard for the frozen baseline
+
+    base2 = WolfForgeV2Agent.charisma_baseline(run_id="run_x",
+                                               brain=FakeBrain([_resp({"speak": "hi all"})]),
+                                               config=V2Config(structured_output="off"), now=_now)
+    _seed_game(base2, role="Tanner", gid="g2")
+    out2 = base2.act(_turn(_DISCUSSION_KIND, _DISCUSSION_LEGAL, phase="discussion", gid="g2"))
+    assert out2["action"]["urgency"] == 1  # normalizer default, unchanged baseline behavior
+
+
+def test_overlay_baseline_prompt_hash_unchanged_byte_identical():
+    # The Charisma arm's identity (version + prompt text) must be exactly what it was pre-overlay.
+    assert policy.BASELINE_POLICY_VERSION == "charisma-baseline-1.1"
+    assert policy.baseline_prompt_hash() == "22e1b52d960e"
+    assert "Tanner trap" not in policy.charisma_baseline_system_prompt()
+    assert "ACTIVELY court" not in policy.charisma_baseline_system_prompt()
+
+
+def test_overlay_vote_targets_stay_participant_refs_never_ints():
+    # Participant-ref protocol: a guarded vote is always an "@handle" (or "@no-one"), never an int/-1.
+    brain = FakeBrain([_resp({"target": "@p1"})])
+    a = _agent(brain)
+    _seed_game(a, role="Minion", obs=["As Minion you learned the werewolves: P1, P2."])
+    out = a.act(_turn("onuw.vote", _vote_legal()))
+    tgt = out["action"]["target"]
+    assert isinstance(tgt, str) and tgt.startswith("@")
+    assert tgt not in (-1, "-1")
 
 
 # --- 19 + 20: connected identity / credential lifecycle + session resume --------------------------
