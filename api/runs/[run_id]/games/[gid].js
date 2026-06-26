@@ -3,7 +3,7 @@
 // object verbatim. `transcript_json` is a TEXT column holding JSON, so it must be JSON.parse'd
 // before returning. 404 {error:"game not found"} when the row is missing.
 import { q, send } from '../../../_db.js';
-import { runKind, sourceRunIds } from '../../../_shards.js';
+import { parentGameSource, runKind, sourceRunIds } from '../../../_shards.js';
 
 function gameInstanceId(runId, gid) {
   return `${runId}_game_${String(gid).padStart(3, '0')}`;
@@ -142,20 +142,31 @@ export default async function handler(req, res) {
   const run = (await q('SELECT id, run_kind FROM runs WHERE id = $1', [runId]))[0];
   if (!run) return send(res, 404, { error: 'run not found' });
 
-  // SPEC D7: a sharded parent's game lives on whichever child holds that GLOBAL gid (gids are
-  // disjoint across shards, D8); resolve it there. A normal/child run resolves against itself.
+  // SPEC D7: a sharded parent's game lives on a child. Normal shards use disjoint global gids; manual
+  // rollups of historical runs may use display gids that map back to a source child/local gid.
   let sourceIds = [runId];
+  let mappedSource = null;
   if (runKind(run) === 'parent') {
     const childIds = (await q(
       'SELECT id FROM runs WHERE parent_run_id = $1 ORDER BY shard_index', [runId],
     )).map((c) => c.id);
     sourceIds = sourceRunIds(run, childIds);
+    const childRuns = [];
+    for (const childId of sourceIds) {
+      const games = await q('SELECT gid FROM games WHERE run_id = $1 ORDER BY gid', [childId]);
+      childRuns.push({ id: childId, games });
+    }
+    mappedSource = parentGameSource(childRuns, gid);
   }
 
+  if (mappedSource) {
+    sourceIds = [mappedSource.runId];
+  }
   for (const srcId of sourceIds) {
+    const sourceGid = mappedSource ? mappedSource.gid : gid;
     const rows = await q(
       'SELECT transcript_json FROM games WHERE run_id = $1 AND gid = $2',
-      [srcId, gid],
+      [srcId, sourceGid],
     );
     const row = rows[0];
     if (!row) continue;
@@ -164,7 +175,7 @@ export default async function handler(req, res) {
       'SELECT * FROM run_events WHERE run_id = $1 ORDER BY seq ASC LIMIT 1000',
       [srcId],
     );
-    return send(res, 200, enrichTranscriptTurnReasoning(transcript, events, srcId, gid));
+    return send(res, 200, enrichTranscriptTurnReasoning(transcript, events, srcId, sourceGid));
   }
   return send(res, 404, { error: 'game not found' });
 }

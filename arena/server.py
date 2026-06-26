@@ -667,6 +667,58 @@ def _parent_recent_events(source_ids: list[str]) -> list[dict]:
     return events[-120:]
 
 
+def _parent_game_display_rows(child_runs: list[dict]) -> list[dict]:
+    """Parent game rows for observer display.
+
+    True sharded runs already have disjoint global gids. Manual rollups of older independent runs may
+    reuse local gids, so assign sequential display gids while retaining source run/gid for lookup.
+    """
+    by_child = []
+    seen: set[int] = set()
+    has_duplicate = False
+    for cr in child_runs:
+        games = sorted(cr.get("games") or [], key=lambda g: g["gid"])
+        by_child.append((cr["id"], games))
+        for game in games:
+            gid = int(game["gid"])
+            if gid in seen:
+                has_duplicate = True
+            seen.add(gid)
+
+    if not has_duplicate:
+        rows = [
+            {**game, "source_run_id": child_id, "source_gid": game["gid"]}
+            for child_id, games in by_child
+            for game in games
+        ]
+        rows.sort(key=lambda g: g["gid"])
+        return rows
+
+    rows = []
+    display_gid = 1
+    for child_id, games in by_child:
+        for game in games:
+            rows.append({**game, "source_run_id": child_id, "source_gid": game["gid"], "gid": display_gid})
+            display_gid += 1
+    return rows
+
+
+def _parent_game_source(child_runs: list[dict], display_gid: int) -> tuple[str, int] | None:
+    for game in _parent_game_display_rows(child_runs):
+        if int(game["gid"]) == int(display_gid):
+            return game["source_run_id"], int(game["source_gid"])
+    return None
+
+
+def _game_source_candidates(run: dict, gid: int) -> list[tuple[str, int]]:
+    source_ids = _source_run_ids(run)
+    if (run.get("run_kind") or "normal") == "parent":
+        child_runs = [store.get_run(cid) for cid in source_ids]
+        source = _parent_game_source([cr for cr in child_runs if cr], gid)
+        return [source] if source else []
+    return [(sid, gid) for sid in source_ids]
+
+
 def _usage_cost_for_transcript(transcript: dict) -> dict:
     logs = transcript.get("agentCallLog") or transcript.get("callLog") or {}
     total = 0.0
@@ -719,12 +771,11 @@ def api_run(run_id: str):
     source_ids = _source_run_ids(r)
     if is_parent:
         # SPEC D7: present the parent as ONE normal run by sourcing EVERY aggregate field from the
-        # children (the parent row owns no games/signups/events/wins of its own). The children carry
-        # the same identities (shared creds, REQ-5), disjoint global gids (D8), and per-shard events.
+        # children (the parent row owns no games/signups/events/wins of its own). True shards carry
+        # disjoint global gids; manual rollups may reuse child-local gids and get display gids here.
         child_runs = [store.get_run(cid) for cid in source_ids]
-        agg_games = [g for cr in child_runs for g in cr["games"]]
-        agg_games.sort(key=lambda g: g["gid"])
-        # per-name wins/team-split summed across shards (gids are disjoint, so no double counting).
+        agg_games = _parent_game_display_rows([cr for cr in child_runs if cr])
+        # per-name wins/team-split summed across children.
         agg_wins: dict[str, int] = {}
         agg_split = {"good": 0, "evil": 0}
         for cr in child_runs:
@@ -1048,12 +1099,12 @@ def api_game(run_id: str, gid: int):
     r = store.get_run(run_id)
     if not r:
         raise HTTPException(404, "run not found")
-    # SPEC D7: a sharded parent's game lives on whichever child holds that global gid; resolve it
-    # there. A normal/child run resolves against itself.
-    for sid in _source_run_ids(r):
-        t = store.get_game(sid, gid)
+    # SPEC D7: a sharded parent's game lives on a child. Manual rollups may expose display gids that
+    # map back to a source child/local gid.
+    for sid, source_gid in _game_source_candidates(r, gid):
+        t = store.get_game(sid, source_gid)
         if t:
-            return _enrich_transcript_turn_reasoning(sid, gid, t)
+            return _enrich_transcript_turn_reasoning(sid, source_gid, t)
     raise HTTPException(404, "game not found")
 
 GAME_SUMMARY_MODEL = os.environ.get("ARENA_GAME_SUMMARY_MODEL", "openai/gpt-5.5")
@@ -1228,17 +1279,19 @@ def api_game_summary(run_id: str, gid: int):
         raise HTTPException(404, "run not found")
     transcript = None
     source_run_id = run_id
-    for sid in _source_run_ids(run):
-        transcript = store.get_game(sid, gid)
+    source_gid = gid
+    for sid, candidate_gid in _game_source_candidates(run, gid):
+        transcript = store.get_game(sid, candidate_gid)
         if transcript:
             source_run_id = sid
+            source_gid = candidate_gid
             break
     if not transcript:
         raise HTTPException(404, "game not found")
     if transcript.get("summary", {}).get("text"):
         return {"ok": True, "cached": True, "summary": transcript["summary"]}
     transcript["summary"] = _summarize_game(transcript)
-    store.update_game_transcript(source_run_id, gid, transcript)
+    store.update_game_transcript(source_run_id, source_gid, transcript)
     return {"ok": True, "cached": False, "summary": transcript["summary"]}
 
 

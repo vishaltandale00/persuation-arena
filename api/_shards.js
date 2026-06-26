@@ -72,11 +72,10 @@ export function aggregateIndexRow(parent, childRuns) {
  * `team_split` {good,evil}, `status`).
  */
 export function aggregateParentDetail(parent, childRuns) {
-  const games = [];
+  const games = parentGameDisplayRows(childRuns);
   const wins = {};
   const teamSplit = { good: 0, evil: 0 };
   for (const cr of childRuns) {
-    for (const g of cr.games || []) games.push(g);
     for (const [name, w] of Object.entries(cr.wins || {})) {
       wins[name] = (wins[name] || 0) + (w || 0);
     }
@@ -84,13 +83,59 @@ export function aggregateParentDetail(parent, childRuns) {
       teamSplit[team] = (teamSplit[team] || 0) + (n || 0);
     }
   }
-  games.sort((a, b) => a.gid - b.gid);
   return {
     games,
     wins,
     team_split: teamSplit,
     status: rollupParentStatus(childRuns.map((c) => c.status)),
   };
+}
+
+/**
+ * Parent game rows for the observer. Normal sharded children have disjoint global gids, so preserve
+ * them. Manual rollups of older independent runs can reuse gids; in that case assign display gids in
+ * child order while retaining the source run/gid for transcript lookup.
+ */
+export function parentGameDisplayRows(childRuns) {
+  const seen = new Set();
+  let hasDuplicate = false;
+  const byChild = childRuns.map((cr) => ({
+    id: cr.id,
+    games: [...(cr.games || [])].sort((a, b) => a.gid - b.gid),
+  }));
+  for (const cr of byChild) {
+    for (const g of cr.games) {
+      const key = String(g.gid);
+      if (seen.has(key)) hasDuplicate = true;
+      seen.add(key);
+    }
+  }
+
+  if (!hasDuplicate) {
+    const rows = [];
+    for (const cr of byChild) {
+      for (const g of cr.games) rows.push({ ...g, source_run_id: cr.id, source_gid: g.gid });
+    }
+    rows.sort((a, b) => a.gid - b.gid);
+    return rows;
+  }
+
+  const rows = [];
+  let displayGid = 1;
+  for (const cr of byChild) {
+    for (const g of cr.games) {
+      rows.push({ ...g, source_run_id: cr.id, source_gid: g.gid, gid: displayGid });
+      displayGid += 1;
+    }
+  }
+  return rows;
+}
+
+export function parentGameSource(childRuns, displayGid) {
+  const target = Number(displayGid);
+  const row = parentGameDisplayRows(childRuns).find((g) => Number(g.gid) === target);
+  if (!row) return null;
+  return { runId: row.source_run_id, gid: row.source_gid };
 }
 
 // Status rank for collapsing a sharded parent's per-shard signups to one logical signup per agent
