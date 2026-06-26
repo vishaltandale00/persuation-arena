@@ -464,6 +464,15 @@
 	  .scatter .grid{stroke:var(--line);stroke-width:1}
 	  .scatter .point{fill:var(--accent);opacity:.82}
 	  .scatter .point.prov{fill:var(--faint);opacity:.55}
+	  .scatter .point.context{fill:var(--line-2);opacity:.48}
+	  .scatter .point.focus{fill:var(--accent);opacity:.96;stroke:var(--panel);stroke-width:1.5}
+	  .scatter .point-label{font-family:var(--mono);font-size:10.5px;fill:var(--ink-2)}
+	  .run-scatter-note{font-size:12.5px;color:var(--ink-2);margin-bottom:10px}
+	  .scatter-wrap.run-scatter{padding:0 0 2px;border-bottom:0;overflow-x:auto}
+	  .rvs-elo-panel .scatter{height:300px;min-width:640px}
+	  .run-scatter-legend{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+	  .run-scatter-legend span{font-family:var(--mono);font-size:11px;color:var(--ink-2);border:1px solid var(--line);border-radius:6px;background:#fcfcfc;padding:3px 6px;max-width:100%;overflow-wrap:anywhere}
+	  .run-scatter-legend b{color:var(--ink);font-weight:650}
 	  @media(max-width:720px){ .lb-toolbar{align-items:flex-start}.lb-mode{width:100%;display:grid;grid-template-columns:repeat(3,1fr)}.lb-mode button{text-align:center;padding:7px 6px}.rvs-version{width:100%;justify-content:space-between}.rvs-version select{max-width:210px}.lb-head{display:none}.lb-heat{display:none}.lb-main{grid-template-columns:24px 12px minmax(0,1fr) auto;gap:4px 8px;align-items:start}.lb-who{grid-column:3/-1;grid-row:1}.lb-main>:nth-child(4){grid-column:3;grid-row:2}.lb-main>:nth-child(5){grid-column:4;grid-row:2;justify-self:start}.lb-win{grid-column:3/-1;grid-row:3;font-size:10.5px;white-space:normal}.lb-detail{padding-left:16px;overflow-x:auto}.roletbl th,.roletbl td{padding:3px 4px;font-size:10px}.sample .top{flex-direction:column}.sample .sample-meta{justify-content:flex-start}.sample-pair{grid-template-columns:1fr}.score-recipe .recipe-body{grid-template-columns:1fr}.scatter{height:300px} }
 </style>
 </head>
@@ -540,6 +549,7 @@
           <div id="ovgames"></div>
         </div>
         <div class="panel results-panel"><h3>Results</h3><div class="body" id="ovresults"></div></div>
+        <div class="panel results-panel rvs-elo-panel"><h3>RVS x Elo</h3><div class="body" id="ovrvselo"></div></div>
       </div>
       <div class="ovside">
         <div class="panel"><h3>Agents</h3><div class="body"><div class="agtable" id="ovagents"></div><div id="ovpending"></div></div></div>
@@ -857,6 +867,7 @@ async function show(s){
   document.querySelectorAll("#nav button").forEach(b=>b.classList.toggle("on",b.dataset.s===(navmap[s]||s)));
 	  if(s==="index"){ renderIndex(); renderLeaderboard(); applyCollapse();   // show what we have, then refresh
 	    loadRuns().then(renderIndex); loadLeaderboard().then(renderLeaderboard); loadCreativity().then(renderLeaderboard); }
+  if(s==="run") renderRunRvsElo();
   if(s==="newrun") renderNewRun();
   if(was!==s) window.scrollTo(0,0);
 }
@@ -885,6 +896,7 @@ function renderIndex(){
 
 	/* ===== LEADERBOARD ===== */
 	let LB=[]; let CREATIVITY={version:null,version_meta:null,versions:[],competitors:[]};
+	let LB_LOADED=false, CREATIVITY_LOADED=false, SCORE_DATA_PROMISE=null;
 	const lbExpanded=new Set();
 	let LB_MODE=localStorage.getItem("leaderboard.mode")||"elo";
 	if(!["elo","rvs","scatter"].includes(LB_MODE)) LB_MODE="elo";
@@ -892,6 +904,7 @@ function renderIndex(){
 	async function loadLeaderboard(){
 	  try{ const d=await jget("/leaderboard"); LB=d.competitors||[]; }
 	  catch(e){ LB=[]; console.error("leaderboard load failed",e); }
+	  finally{ LB_LOADED=true; }
 	}
 	async function loadCreativity(version=RVS_VERSION){
 	  try{
@@ -902,6 +915,17 @@ function renderIndex(){
 	    if(CREATIVITY.version){ RVS_VERSION=CREATIVITY.version; localStorage.setItem("leaderboard.rvsVersion", RVS_VERSION); }
 	  }
 	  catch(e){ CREATIVITY={version:null,version_meta:null,versions:[],competitors:[]}; console.error("creativity load failed",e); }
+	  finally{ CREATIVITY_LOADED=true; }
+	}
+	function ensureScoreDataForRun(){
+	  if((LB_LOADED&&CREATIVITY_LOADED)||SCORE_DATA_PROMISE) return;
+	  const jobs=[];
+	  if(!LB_LOADED) jobs.push(loadLeaderboard());
+	  if(!CREATIVITY_LOADED) jobs.push(loadCreativity());
+	  SCORE_DATA_PROMISE=Promise.allSettled(jobs).then(()=>{
+	    SCORE_DATA_PROMISE=null;
+	    if(curRun) renderRunRvsElo();
+	  });
 	}
 	function rvsVersionMeta(){
 	  return CREATIVITY.version_meta || (CREATIVITY.versions||[]).find(v=>v.version===CREATIVITY.version) || null;
@@ -982,6 +1006,47 @@ function renderIndex(){
 	    item.declared_harness=c.declared_harness;
 	    return item;
 	  });
+	}
+	function runAgentIdentityKey(agent){
+	  if(agent.agent_id) return agent.agent_id;
+	  if(agent.model) return "static:"+agent.model+":"+(agent.harness||"base");
+	  return null;
+	}
+	function runRvsEloItems(){
+	  const keys=new Set((curRun&&curRun.agents||[]).map(runAgentIdentityKey).filter(Boolean));
+	  const all=boardItems().filter(x=>x.elo&&x.rvs&&x.rvs.overall_z!=null);
+	  const matched=all.filter(x=>keys.has(x.identity_key)).sort((a,b)=>(b.elo.elo??-9999)-(a.elo.elo??-9999));
+	  return {keys, all, matched};
+	}
+	function renderRunRvsElo(){
+	  const el=document.getElementById("ovrvselo");
+	  if(!el||!curRun) return;
+	  if(!LB_LOADED||!CREATIVITY_LOADED){
+	    el.innerHTML='<div class="lb-empty">Loading RVS and Elo data…</div>';
+	    ensureScoreDataForRun();
+	    return;
+	  }
+	  const {keys, all, matched}=runRvsEloItems();
+	  if(!all.length){
+	    el.innerHTML='<div class="lb-empty">No overlapping Elo and RVS data yet.</div>';
+	    return;
+	  }
+	  if(!matched.length){
+	    el.innerHTML='<div class="lb-empty">No RVS and Elo overlap for this run roster yet.</div>';
+	    return;
+	  }
+	  const meta=rvsVersionMeta();
+	  const svg=scatterSvg(all, {
+	    highlightKeys: keys,
+	    labelHighlights: true,
+	    ariaLabel: "Run agents on Elo by RVS scatter plot",
+	  });
+	  const legend=matched.map(item=>
+	    '<span><b>'+esc(item.display_name)+'</b> Elo '+Math.round(item.elo.elo)+' · RVS '+item.rvs.overall_z.toFixed(2)+'</span>'
+	  ).join("");
+	  el.innerHTML='<div class="run-scatter-note">'+matched.length+' run agents highlighted · '+esc(meta?.label||CREATIVITY.version||"RVS")+'</div>'+
+	    '<div class="scatter-wrap run-scatter">'+svg+'</div>'+
+	    '<div class="run-scatter-legend">'+legend+'</div>';
 	}
 	function sortedBoardItems(){
 	  const items=boardItems();
@@ -1118,29 +1183,61 @@ function renderIndex(){
 	    : (LB_MODE==="scatter"?["","","Harness","Elo","RVS","Evidence","Roles"]:["","","Harness","Rating","RVS","Win-rate · 95% CI","Roles"]);
 	  document.getElementById("lbhead").innerHTML=heads.map((h,i)=>'<span'+(i===6?' class="h-roles"':'')+'>'+h+'</span>').join("");
 	}
-	function renderScatter(items){
-	  const wrap=document.getElementById("scatterwrap");
-	  if(LB_MODE!=="scatter"){ wrap.setAttribute("hidden",""); wrap.innerHTML=""; return; }
-	  wrap.removeAttribute("hidden");
+	function scatterDomain(values){
+	  let min=Math.min(...values), max=Math.max(...values);
+	  if(min===max){
+	    const delta=Math.max(1, Math.abs(min)*0.02);
+	    return [min-delta, max+delta];
+	  }
+	  const pad=(max-min)*0.08;
+	  return [min-pad, max+pad];
+	}
+	function shortPointLabel(name){
+	  const s=String(name||"").trim();
+	  return s.length>18?s.slice(0,17)+"…":s;
+	}
+	function scatterSvg(items, opts={}){
+	  const highlightKeys=opts.highlightKeys||new Set();
+	  const labelHighlights=Boolean(opts.labelHighlights);
 	  const pts=items.filter(x=>x.elo&&x.rvs&&x.rvs.overall_z!=null);
-	  if(!pts.length){ wrap.innerHTML='<div class="lb-empty">No overlapping Elo and RVS data yet.</div>'; return; }
+	  if(!pts.length) return "";
 	  const xs=pts.map(x=>x.elo.elo), ys=pts.map(x=>x.rvs.overall_z);
-	  const xmin=Math.min(...xs), xmax=Math.max(...xs), ymin=Math.min(...ys), ymax=Math.max(...ys);
+	  const [xmin,xmax]=scatterDomain(xs), [ymin,ymax]=scatterDomain(ys);
 	  const pad=44, w=760, h=330;
 	  const sx=x=>pad+(x-xmin)/(xmax-xmin||1)*(w-pad*2);
 	  const sy=y=>h-pad-(y-ymin)/(ymax-ymin||1)*(h-pad*2);
-	  const circles=pts.map(item=>{
+	  const hasHighlights=highlightKeys.size>0;
+	  const point=(item, cls, r)=>{
 	    const x=sx(item.elo.elo), y=sy(item.rvs.overall_z);
-	    return '<circle class="point'+(item.elo.provisional||item.rvs.provisional?' prov':'')+'" cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="5">'+
+	    return '<circle class="point '+cls+(item.elo.provisional||item.rvs.provisional?' prov':'')+'" cx="'+x.toFixed(1)+'" cy="'+y.toFixed(1)+'" r="'+r+'">'+
 	      '<title>'+esc(item.display_name)+' · Elo '+Math.round(item.elo.elo)+' · RVS '+item.rvs.overall_z.toFixed(2)+'</title></circle>';
-	  }).join("");
-	  wrap.innerHTML='<svg class="scatter" viewBox="0 0 '+w+' '+h+'" role="img" aria-label="Elo by RVS scatter plot">'+
+	  };
+	  const base=pts.filter(item=>!hasHighlights||!highlightKeys.has(item.identity_key))
+	    .map(item=>point(item, hasHighlights?"context":"", 5)).join("");
+	  const focus=hasHighlights
+	    ? pts.filter(item=>highlightKeys.has(item.identity_key)).map(item=>point(item, "focus", 6.5)).join("")
+	    : "";
+	  const labels=labelHighlights
+	    ? pts.filter(item=>highlightKeys.has(item.identity_key)).map(item=>{
+	      const x=sx(item.elo.elo), y=sy(item.rvs.overall_z);
+	      const nearRight=x>w-150;
+	      return '<text class="point-label" x="'+(x+(nearRight?-9:9)).toFixed(1)+'" y="'+(y-8).toFixed(1)+'" text-anchor="'+(nearRight?'end':'start')+'">'+esc(shortPointLabel(item.display_name))+'</text>';
+	    }).join("")
+	    : "";
+	  return '<svg class="scatter" viewBox="0 0 '+w+' '+h+'" role="img" aria-label="'+escAttr(opts.ariaLabel||"Elo by RVS scatter plot")+'">'+
 	    '<line class="axis" x1="'+pad+'" y1="'+(h-pad)+'" x2="'+(w-pad)+'" y2="'+(h-pad)+'"></line>'+
 	    '<line class="axis" x1="'+pad+'" y1="'+pad+'" x2="'+pad+'" y2="'+(h-pad)+'"></line>'+
 	    '<line class="grid" x1="'+(w/2)+'" y1="'+pad+'" x2="'+(w/2)+'" y2="'+(h-pad)+'"></line>'+
 	    '<line class="grid" x1="'+pad+'" y1="'+(h/2)+'" x2="'+(w-pad)+'" y2="'+(h/2)+'"></line>'+
 	    '<text x="'+pad+'" y="'+(h-12)+'">Lower Elo</text><text x="'+(w-pad-68)+'" y="'+(h-12)+'">Higher Elo</text>'+
-	    '<text x="10" y="'+(pad+6)+'">Higher RVS</text><text x="10" y="'+(h-pad)+'">Lower RVS</text>'+circles+'</svg>';
+	    '<text x="10" y="'+(pad+6)+'">Higher RVS</text><text x="10" y="'+(h-pad)+'">Lower RVS</text>'+base+focus+labels+'</svg>';
+	}
+	function renderScatter(items){
+	  const wrap=document.getElementById("scatterwrap");
+	  if(LB_MODE!=="scatter"){ wrap.setAttribute("hidden",""); wrap.innerHTML=""; return; }
+	  wrap.removeAttribute("hidden");
+	  const svg=scatterSvg(items);
+	  wrap.innerHTML=svg||'<div class="lb-empty">No overlapping Elo and RVS data yet.</div>';
 	}
 	function renderLeaderboard(){
 	  const el=document.getElementById("lbrows"); if(!el) return;
@@ -1294,6 +1391,7 @@ function renderRunOverview(){
 	  document.querySelectorAll(".grow2[data-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.g));
 		  document.querySelectorAll(".grow2[data-live-g]").forEach(b=>b.onclick=()=>openGame(+b.dataset.liveG));
 			  renderConnectedDebug();
+			  renderRunRvsElo();
 			}
 function renderUploadAction(){
   const el=document.getElementById("ovactions");
