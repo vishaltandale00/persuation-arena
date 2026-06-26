@@ -9,24 +9,49 @@ On a malformed/failed response we retry once, then fall back to a safe default t
 """
 from __future__ import annotations
 
-import json
 import re
 import time
 from typing import Any, Callable
 
 from openai import OpenAI
 
+from ._jsonparse import extract_json
 from .config import Caps, OPENROUTER_BASE_URL, SETTINGS, get_api_key
 from .wolf_profiles import prompt_for
 
 _client: OpenAI | None = None
 
 
-def client() -> OpenAI:
+def openrouter_client(api_key: str | None = None) -> OpenAI:
+    """The single OpenRouter-backed OpenAI client. Shared by this module and the example
+    harnesses so the base URL + key resolution live in exactly one place. `api_key` lets a
+    caller (e.g. a harness reading OPENROUTER_API_KEY directly) supply its own key; when omitted
+    we fall back to the arena config's resolver."""
     global _client
     if _client is None:
-        _client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=get_api_key())
+        _client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=api_key or get_api_key())
     return _client
+
+
+def client() -> OpenAI:
+    return openrouter_client()
+
+
+def reasoning_extra_body(effort: str, *, compression: bool = False) -> dict[str, Any]:
+    """The `extra_body` we send OpenRouter: reasoning config, and optionally the
+    context-compression plugin. Compression is an EXPLICIT opt-in so callers that unify on this
+    helper do not silently change their request shape."""
+    body: dict[str, Any] = {
+        "reasoning": {
+            "effort": effort,
+            "exclude": False,
+        },
+    }
+    if compression:
+        body["plugins"] = [
+            {"id": "context-compression", "enabled": True},
+        ]
+    return body
 
 
 # Compatibility alias for code or tests that import SYSTEM directly.
@@ -63,24 +88,6 @@ class AgentResponse:
         self.provider_reasoning = provider_reasoning
         self.provider_reasoning_details = provider_reasoning_details
         self.validation_error = validation_error
-
-
-def _extract_json(text: str) -> dict | None:
-    # tolerate code fences / surrounding prose: grab the first {...} block
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
-        # try trimming trailing junk
-        frag = m.group(0)
-        for end in range(len(frag), 0, -1):
-            try:
-                return json.loads(frag[:end])
-            except json.JSONDecodeError:
-                continue
-    return None
 
 
 def _model_provider(model: str) -> str:
@@ -175,16 +182,10 @@ class OpenRouterAgent:
         ])
 
     def _request_extra_body(self) -> dict[str, Any]:
-        caps = self.caps
-        return {
-            "reasoning": {
-                "effort": caps.reasoning_effort,
-                "exclude": False,
-            },
-            "plugins": [
-                {"id": "context-compression", "enabled": True},
-            ],
-        }
+        # The arena client opts INTO context-compression; harnesses keep it off (see
+        # reasoning_extra_body). Keeping the opt-in explicit means unifying the helper does not
+        # silently change either caller's request shape.
+        return reasoning_extra_body(self.caps.reasoning_effort, compression=True)
 
     def _response_format(self, action_kind: str | None, action_schema: dict[str, Any] | None) -> dict[str, Any] | None:
         mode = getattr(self.caps, "openrouter_structured_output", "off")
@@ -299,7 +300,7 @@ class OpenRouterAgent:
                 last_error = f"{type(e).__name__}: {e}"
                 continue
 
-            obj = _extract_json(last_raw)
+            obj = extract_json(last_raw)
             if obj is None:
                 last_validation_error = "response did not contain a JSON object"
                 continue
