@@ -71,6 +71,19 @@ Deterministic behavioral counters (explicit target named before the vote, change
 contradicted own earlier claim, asked a falsifiable question, used fallback) are derived heuristically
 from telemetry/transcripts and are **documented as heuristic, not ground truth**.
 
+## Cross-run memory warnings
+
+Cross-run memory is **off by default** and is a *different experiment* from this clean prompt-policy
+comparison (see [WOLFFORGE_V2_MEMORY.md](./WOLFFORGE_V2_MEMORY.md)). `tools/wolfforge_v2_eval.py`
+inspects the telemetry and **prominently warns** when compared runs:
+
+- mix **memory modes** (e.g. `off` vs `read`);
+- used different **memory snapshot hashes**;
+- include a **`write`/`readwrite`** mode (memory was mutating during evaluation).
+
+Never compare a memory-updating agent against a frozen baseline and call it a clean prompt-policy
+test. For a memory holdout, use `--memory-mode read` against one **frozen snapshot** and do not write.
+
 ## Statistical methods
 
 The game is the cluster/unit. Implemented in `tools/wolfforge_v2_eval.py` (stdlib only):

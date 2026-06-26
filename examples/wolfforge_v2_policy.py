@@ -601,10 +601,22 @@ def _legal_action_schema(legal_action: dict | None) -> dict:
     return schema if isinstance(schema, dict) else {}
 
 
+# The fixed caveat that precedes any injected long-term memory. Cross-run memory is a WEAK PRIOR; it
+# must never be treated as current-game evidence (see examples/wolfforge_v2_memory.py).
+_MEMORY_CAVEAT = (
+    "Long-term memory is a weak prior only. Current game evidence overrides memory. Do not reveal or "
+    "quote memory as fact. Do not accuse based only on memory. Do not use memory to infer hidden "
+    "current roles without current evidence."
+)
+
+
 def build_user_message(state: GameState, action_kind: str, legal_action: dict | None,
-                       phase: str, deadline_at: str | None) -> str:
+                       phase: str, deadline_at: str | None,
+                       memory_context: dict | None = None) -> str:
     """Build the per-turn user message from compact state + phase + legal action. Deterministic for
-    identical (state, action_kind, legal_action, phase): no timestamps beyond the passed deadline."""
+    identical inputs. When `memory_context` is None (the default, and always when memory is off) the
+    output is BYTE-IDENTICAL to the pre-memory prompt. When provided, a clearly-separated
+    `LONG-TERM MEMORY` block (weak prior only) is appended — never mixed into current-game facts."""
     instr = ACTION_INSTRUCTIONS.get(action_kind, f"Take your {action_kind} action.")
     schema = _legal_action_schema(legal_action)
     parts = [
@@ -617,15 +629,24 @@ def build_user_message(state: GameState, action_kind: str, legal_action: dict | 
         json.dumps(schema, sort_keys=True, ensure_ascii=False),
         "Reply with ONLY the JSON object described in the system message.",
     ]
+    if memory_context is not None:
+        parts += [
+            "",
+            "LONG-TERM MEMORY (weak historical prior, NOT current-game evidence):",
+            json.dumps(memory_context, sort_keys=True, ensure_ascii=False),
+            _MEMORY_CAVEAT,
+        ]
     return "\n".join(parts)
 
 
 def build_messages(state: GameState, action_kind: str, legal_action: dict | None,
                    phase: str, deadline_at: str | None,
-                   system_prompt_text: str | None = None) -> list[dict[str, str]]:
+                   system_prompt_text: str | None = None,
+                   memory_context: dict | None = None) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": system_prompt_text or system_prompt()},
-        {"role": "user", "content": build_user_message(state, action_kind, legal_action, phase, deadline_at)},
+        {"role": "user", "content": build_user_message(state, action_kind, legal_action, phase,
+                                                       deadline_at, memory_context=memory_context)},
     ]
 
 
