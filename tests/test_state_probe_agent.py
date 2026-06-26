@@ -84,7 +84,9 @@ def test_state_key_game_scope_separates_games_in_one_run():
     k1 = state_key(t1, reset_between_games=True)
     k2 = state_key(t2, reset_between_games=True)
     assert k1 != k2                                         # each game its own key
-    assert k1 == f"{RUN_A}:{_gid(RUN_A, 1)}"
+    # codex PR#27 r2: game scope is the raw (already-unique) game id, NOT run_id-prefixed —
+    # re-prefixing would double an uncapped run id and risk the 255-byte filename limit.
+    assert k1 == _gid(RUN_A, 1)
 
 
 def test_state_key_run_scope_carries_within_run_separates_runs():
@@ -168,6 +170,31 @@ def test_state_path_name_is_injective_for_distinct_keys():
     assert state_path_name("run:a") == state_path_name("run:a")
 
 
+def test_game_scope_key_does_not_double_run_id():
+    """codex PR#27 r2: in the arena shape gid == f'{run_id}_game_NNN'. The default per-game key must
+    be the raw gid, NOT run_id-prefixed — re-prefixing doubles an (uncapped) run id into the key."""
+    run_id = "my_long_run_id_2026"
+    gid = f"{run_id}_game_007"
+    t = Turn.from_dict({
+        "turn_id": "t", "game_instance_id": gid, "game": "onuw", "seat": 0, "phase": "p",
+        "action_kind": "k", "deadline_at": "d", "observation": {}, "legal_action": {},
+        "run_id": run_id,
+    })
+    assert state_key(t, reset_between_games=True) == gid          # raw gid, no "run_id:" prefix
+    assert run_id + ":" not in state_key(t, reset_between_games=True)
+
+
+def test_state_path_name_is_length_bounded_for_long_keys():
+    """codex PR#27 r2: run/game ids are not length-capped upstream, so a raw key can blow the
+    255-byte filename limit. The path segment must stay well under it for any key."""
+    long_key = "r" * 4000 + ":" + "g" * 4000
+    name = state_path_name(long_key)
+    assert len(name) <= 255
+    assert len(name.encode("utf-8")) < 255
+    # Still injective at the extreme: two different long keys map to different segments.
+    assert state_path_name("x" * 5000) != state_path_name("y" * 5000)
+
+
 # -- the probe harness end-to-end ---------------------------------------------------------------
 
 def test_default_mode_resets_state_between_games(monkeypatch):
@@ -180,7 +207,7 @@ def test_default_mode_resets_state_between_games(monkeypatch):
     probe.act(_turn(RUN_A, 1))
     out1 = probe.act(_turn(RUN_A, 1))
     assert out1["reasoning"] == (
-        f"state_key={RUN_A}:{_gid(RUN_A, 1)}; reset_between_games=True; "
+        f"state_key={_gid(RUN_A, 1)}; reset_between_games=True; "
         f"events_seen=2; turns_seen=2"
     )
 
@@ -188,10 +215,10 @@ def test_default_mode_resets_state_between_games(monkeypatch):
     out2 = probe.act(_turn(RUN_A, 2))
     assert "events_seen=0" in out2["reasoning"]
     assert "turns_seen=1" in out2["reasoning"]
-    assert f"state_key={RUN_A}:{_gid(RUN_A, 2)}" in out2["reasoning"]
+    assert f"state_key={_gid(RUN_A, 2)}" in out2["reasoning"]
 
-    # The two games are tracked under distinct keys.
-    assert set(probe.turns) == {f"{RUN_A}:{_gid(RUN_A, 1)}", f"{RUN_A}:{_gid(RUN_A, 2)}"}
+    # The two games are tracked under distinct (raw game-id) keys.
+    assert set(probe.turns) == {_gid(RUN_A, 1), _gid(RUN_A, 2)}
 
 
 def test_run_scoped_mode_carries_state_across_games_and_separates_runs(monkeypatch):

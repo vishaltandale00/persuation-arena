@@ -91,28 +91,35 @@ def _run_id_from_game_id(game_instance_id: str | None) -> str | None:
 def state_key(obj, reset_between_games: bool = True) -> str | None:
     """Key harness-owned memory by game or run.
 
-    `obj` is an SDK Event or Turn. Game scope resets between games (one key per game, still
-    namespaced by run when known). Run scope carries memory across games in the same run while
-    keeping different runs separate. If run_id is unavailable, the game id is the safe fallback.
+    `obj` is an SDK Event or Turn. Game scope resets between games: the game id is already globally
+    unique (the arena ships `f"{run_id}_game_{NNN}"`), so it IS the key — we do NOT re-prefix run_id,
+    which would double an uncapped run id into the key and risk blowing the 255-byte filename limit
+    after state_path_name() even in the default mode. Run scope carries memory across games in the
+    same run while keeping different runs separate. If run_id is unavailable, the game id is the
+    safe fallback.
     """
     gid = getattr(obj, "game_instance_id", None)
-    run_id = getattr(obj, "run_id", None) or _run_id_from_game_id(gid)
     if reset_between_games:
-        if gid is None:
-            return None
-        return f"{run_id}:{gid}" if run_id else gid
+        return gid  # None for run-level objects; otherwise the globally-unique game id verbatim
+    run_id = getattr(obj, "run_id", None) or _run_id_from_game_id(gid)
     return run_id or gid
 
 
+# Run/game ids are not length-capped upstream (--run-id / POST /api/runs), so a raw key can exceed
+# common 255-byte filename limits. Bound the readable stem and lean on the hash suffix for identity.
+_STATE_STEM_MAX = 96
+
+
 def state_path_name(key: str) -> str:
-    """Make a state key safe as one local path segment, INJECTIVELY.
+    """Make a state key safe as one local path segment, INJECTIVELY and within filename limits.
 
     Sanitizing alone is many-to-one ('run:a' and 'run_a' both collapse to 'run_a'), which would
     point two distinct state keys at the same memory file/workspace and corrupt run separation. So
-    we suffix a short stable hash of the exact key: the readable sanitized stem stays for humans,
-    while the hash guarantees distinct keys never share a path.
+    we suffix a short stable hash of the EXACT key: the (length-bounded) sanitized stem stays for
+    humans, while the hash guarantees distinct keys never share a path even when the bounded stems
+    collide. The bound keeps the segment well under the 255-byte filesystem limit for any key.
     """
-    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("_") or "state"
+    sanitized = (re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("_") or "state")[:_STATE_STEM_MAX]
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
     return f"{sanitized}-{digest}"
 

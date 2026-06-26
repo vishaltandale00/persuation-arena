@@ -42,8 +42,9 @@ class Event:
     game_instance_id: str | None = None
     visibility: str | None = None
     phase: str | None = None
-    run_id: str | None = None   # appended LAST: Event is an exported SDK dataclass, so inserting
-    # run_id earlier would shift positional args (e.g. Event("e","speech",{},1,"game_1")).
+    # run_id is appended LAST on purpose: Event is an exported SDK dataclass, so inserting it
+    # earlier would shift existing positional args (e.g. Event("e", "speech", {}, 1, "game_1")).
+    run_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "Event":
