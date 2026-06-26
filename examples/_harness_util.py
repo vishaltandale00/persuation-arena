@@ -14,12 +14,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from typing import Any
 
-from openai import OpenAI
-
+from arena._jsonparse import extract_json
 from arena.identity import NO_ONE_REF, participant
+from arena.openrouter import openrouter_client, reasoning_extra_body
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
@@ -41,7 +40,8 @@ SYSTEM = (
 ACTION_INSTRUCTIONS = {
     "onuw.discussion.speak_or_pass":
         'Speak to the whole table — be persuasive for YOUR team (claim a role, share or fake info, '
-        'accuse, defend). action = {"speak": "<what you say>"} or {"pass": true}.',
+        'accuse, defend). action = {"speak": "<what you say>", "urgency": 1|2|3} (3 = must speak now) '
+        'or pass with {"pass": true, "stance": "wait"|"done"} ("done" = ready to vote).',
     "onuw.vote":
         f'Vote for who should be eliminated. action = {{"target": "@participant"}} or {{"target": "{NO_ONE_REF}"}} for no one.',
     "onuw.seer.inspect":
@@ -57,9 +57,6 @@ ACTION_INSTRUCTIONS = {
     "onuw.doppelganger.copy_player":
         'NIGHT (Doppelganger): action = {"target":"@participant"} to copy that player\'s role.',
 }
-
-_client: OpenAI | None = None
-
 
 def _message_field(message: Any, field: str) -> Any:
     if isinstance(message, dict):
@@ -86,22 +83,20 @@ def _llm(
     temperature: float = DEFAULT_TEMPERATURE,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> dict[str, Any]:
-    global _client
-    if _client is None:
-        key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-        if not key:
-            raise RuntimeError("OPENROUTER_API_KEY not set in the harness's environment")
-        _client = OpenAI(base_url=OPENROUTER_BASE_URL, api_key=key)
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY not set in the harness's environment")
     try:
-        r = _client.chat.completions.create(
+        # Shared OpenRouter client; compression is left OFF for harnesses (the arena's own
+        # client opts in). Keeping it explicit means the unified helper never silently changes
+        # the harness request shape.
+        r = openrouter_client(key).chat.completions.create(
             model=model,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             timeout=timeout,
-            extra_body={
-                "reasoning": {"effort": DEFAULT_REASONING_EFFORT, "exclude": False},
-            },
+            extra_body=reasoning_extra_body(DEFAULT_REASONING_EFFORT, compression=False),
         )
         message = r.choices[0].message
         raw = (_message_field(message, "content") or "").strip()
@@ -110,74 +105,161 @@ def _llm(
         return _assistant_message(f"<error: {type(e).__name__}>")
 
 
-def _extract_json(text: str) -> dict | None:
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError:
-        frag = m.group(0)
-        for end in range(len(frag), 0, -1):
-            try:
-                return json.loads(frag[:end])
-            except json.JSONDecodeError:
-                continue
-    return None
+# Engine-as-source-of-truth: every harness affordance below is derived from the turn's shipped
+# `legal_action` (the `choices`/`schema` the engine emitted), NOT from hand-maintained per-role
+# constants. The engine is free to tighten an action's shape (e.g. discussion now REQUIRES an
+# urgency/stance); these helpers read that shape off the turn so the harness can't drift from it.
+# jsonschema is not installed, so the few stdlib checks here interpret the shipped `choices`.
+
+
+def _choices(turn) -> dict:
+    la = turn.legal_action or {}
+    ch = la.get("choices")
+    return ch if isinstance(ch, dict) else {}
+
+
+def _schema(turn) -> dict:
+    la = turn.legal_action or {}
+    sch = la.get("schema")
+    return sch if isinstance(sch, dict) else {}
+
+
+def _matches_schema(schema: dict, value: Any) -> bool:
+    """A tiny stdlib validator for the JSON-Schema SUBSET the ONUW engine actually ships
+    (object/oneOf/required/properties/additionalProperties/enum/type + array
+    items/minItems/maxItems/uniqueItems). jsonschema is not installed; we only need to cover what
+    the engine emits, and an empty {} schema accepts anything (matching jsonschema)."""
+    if not schema:
+        return True
+    if "oneOf" in schema:
+        return sum(1 for s in schema["oneOf"] if _matches_schema(s, value)) == 1
+    if "enum" in schema:
+        if value not in schema["enum"]:
+            return False
+    t = schema.get("type")
+    if t == "object":
+        if not isinstance(value, dict):
+            return False
+        for req in schema.get("required", []):
+            if req not in value:
+                return False
+        props = schema.get("properties", {})
+        if schema.get("additionalProperties") is False:
+            if any(k not in props for k in value):
+                return False
+        return all(_matches_schema(props[k], value[k]) for k in value if k in props)
+    if t == "array":
+        if not isinstance(value, list):
+            return False
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            return False
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            return False
+        if schema.get("uniqueItems") and len(value) != len(set(map(_hashable, value))):
+            return False
+        item_schema = schema.get("items")
+        return item_schema is None or all(_matches_schema(item_schema, v) for v in value)
+    if t == "string":
+        if not isinstance(value, str):
+            return False
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            return False
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            return False
+        return True
+    if t == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if t == "null":
+        return value is None
+    return True
+
+
+def _hashable(v: Any) -> Any:
+    return tuple(v) if isinstance(v, list) else v
 
 
 def _legal_players(turn) -> list:
-    return [p.get("ref", p.get("seat")) for p in (turn.legal_action.get("choices", {}).get("players") or [])]
+    return [p.get("ref", p.get("seat")) for p in (_choices(turn).get("players") or [])]
 
 
 def _coerce(turn, a: Any) -> Any:
+    # A bare string in discussion is a shorthand for speaking; the engine now requires an urgency
+    # on every speak, so coerce to the lowest urgency rather than emitting a bare {speak:...}.
     if turn.action_kind == "onuw.discussion.speak_or_pass" and isinstance(a, str):
-        return {"pass": True} if a.strip().lower() in ("pass", "(pass)", "") else {"speak": a}
+        s = a.strip()
+        if s.lower() in ("pass", "(pass)", ""):
+            return {"pass": True, "stance": "done"}
+        return {"speak": a, "urgency": 1}
     return a
 
 
 def _is_legal(turn, a: Any) -> bool:
     if not isinstance(a, dict):
         return False
-    kind, players = turn.action_kind, set(_legal_players(turn))
+    # The engine ships the authoritative JSON-Schema for the turn; when present it is the source
+    # of truth (it already enumerates legal player refs, center indices, urgency 1..3, stances,
+    # and requires the fields the engine now mandates — e.g. urgency on every speak).
+    schema = _schema(turn)
+    if schema:
+        return _matches_schema(schema, a)
+    # No schema shipped (older/fake turns): fall back to choices-driven shape checks.
+    kind = turn.action_kind
+    choices = _choices(turn)
+    players = set(_legal_players(turn))
     if kind == "onuw.discussion.speak_or_pass":
-        return (isinstance(a.get("speak"), str) and a["speak"].strip() != "") or a.get("pass") is True
+        if a.get("pass") is True:
+            stances = set(choices.get("stances") or [])
+            return a.get("stance") in stances if stances else True
+        return isinstance(a.get("speak"), str) and a["speak"].strip() != ""
     if kind == "onuw.vote":
-        return a.get("target") in {NO_ONE_REF, -1} or a.get("target") in players
+        no_one = choices.get("no_one", NO_ONE_REF)
+        return a.get("target") in {no_one, NO_ONE_REF, -1} or a.get("target") in players
     if kind == "onuw.seer.inspect":
+        center = set(choices.get("center") or [])
         if a.get("mode") == "center":
-            return isinstance(a.get("indices"), list) and len(a["indices"]) >= 1
+            idx = a.get("indices")
+            return (isinstance(idx, list) and len(idx) == 2 and idx[0] != idx[1]
+                    and all(i in center for i in idx))
         if a.get("mode") == "player":
             return a.get("target") in players
         return False
     if kind == "onuw.robber.swap_or_decline":
-        return a.get("target") in players or a.get("target") is None
+        if a.get("target") is None:
+            return bool(choices.get("decline"))
+        return a.get("target") in players
     if kind == "onuw.troublemaker.swap_two_or_decline":
         if a.get("a") is None and a.get("b") is None:
-            return True
+            return bool(choices.get("decline"))
         return a.get("a") in players and a.get("b") in players and a.get("a") != a.get("b")
     if kind == "onuw.doppelganger.copy_player":
         return a.get("target") in players
     if kind == "onuw.drunk.swap_center":
-        return a.get("index") in (0, 1, 2)
+        return a.get("index") in set(choices.get("center") or [])
     return True
 
 
 def _fallback_action(turn) -> dict:
-    kind, players = turn.action_kind, _legal_players(turn)
+    """A guaranteed-legal action, built from the engine's shipped `choices` so it always matches
+    the current action shape (mirrors the engine's own `default_wire_action`, which is not
+    forwarded to the harness on the turn)."""
+    kind = turn.action_kind
+    choices = _choices(turn)
+    players = _legal_players(turn)
+    center = list(choices.get("center") or [])
     if kind == "onuw.vote":
-        return {"target": NO_ONE_REF}
+        return {"target": choices.get("no_one", NO_ONE_REF)}
     if kind == "onuw.seer.inspect":
-        return {"mode": "center", "indices": [0, 1]}
+        return {"mode": "center", "indices": center[:2] if len(center) >= 2 else [0, 1]}
     if kind == "onuw.troublemaker.swap_two_or_decline":
         return {"a": None, "b": None}
     if kind == "onuw.robber.swap_or_decline":
-        return {"target": players[0] if players else None}
+        return {"target": None} if choices.get("decline") else {"target": players[0] if players else None}
     if kind == "onuw.doppelganger.copy_player":
         return {"target": players[0] if players else 0}
     if kind == "onuw.drunk.swap_center":
-        return {"index": 0}
-    return {"pass": True}
+        return {"index": center[0] if center else 0}
+    stances = choices.get("stances") or ["done"]
+    return {"pass": True, "stance": "done" if "done" in stances else stances[0]}
 
 
 def render_event(event) -> str:
@@ -230,7 +312,7 @@ def interpret(turn, raw_text: str) -> tuple[Any, str, bool]:
     """Parse one brain's raw text into (action, reasoning, is_legal). Pure: no model call, no
     mutation. Every harness brain (OpenRouter chat, codex, opencode, Claude Agent SDK) funnels its
     output through here, so JSON extraction, coercion, and legality live in exactly one place."""
-    obj = _extract_json(raw_text) or {}
+    obj = extract_json(raw_text) or {}
     action = _coerce(turn, obj.get("action"))
     reasoning = str(obj.get("declared_reasoning", obj.get("reasoning", ""))).strip()
     return action, reasoning, _is_legal(turn, action)
