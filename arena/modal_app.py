@@ -19,10 +19,14 @@ Secret.from_name, scaledown_window/timeout, modal.Dict).
 """
 from __future__ import annotations
 
+import os
+
 import modal
 
-APP_NAME = "persuasion-arena-coordinator"
-URL_DICT_NAME = "arena-coordinator-urls"
+APP_NAME = os.environ.get("ARENA_MODAL_APP_NAME", "persuasion-arena-coordinator")
+URL_DICT_NAME = os.environ.get("ARENA_MODAL_URL_DICT_NAME", "arena-coordinator-urls")
+DB_SECRET_NAME = os.environ.get("ARENA_MODAL_DB_SECRET_NAME", "neon-database-url")
+SPAWN_SECRET_NAME = os.environ.get("ARENA_MODAL_SPAWN_SECRET_NAME", "arena-spawn-token")
 PORT = 8000
 
 app = modal.App(APP_NAME)
@@ -42,10 +46,10 @@ image = (
 
 # The Neon connection string (DATABASE_URL) — the coordinator reads/writes Neon; it makes no model
 # calls, so no LLM key is ever shipped to Modal. This is just the credential, not a database we create.
-db_secret = modal.Secret.from_name("neon-database-url", required_keys=["DATABASE_URL"])
+db_secret = modal.Secret.from_name(DB_SECRET_NAME, required_keys=["DATABASE_URL"])
 
 # Shared secret the Vercel central API presents to trigger a coordinator spawn (see spawn_endpoint).
-spawn_secret = modal.Secret.from_name("arena-spawn-token", required_keys=["ARENA_SPAWN_TOKEN"])
+spawn_secret = modal.Secret.from_name(SPAWN_SECRET_NAME, required_keys=["ARENA_SPAWN_TOKEN"])
 
 # run_id -> public tunnel URL. The central API / agents read this to find the run's container.
 coordinator_urls = modal.Dict.from_name(URL_DICT_NAME, create_if_missing=True)

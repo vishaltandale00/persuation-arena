@@ -1,0 +1,314 @@
+# .github/workflows/full-stack-preview.yml
+#
+# Manual-only full-stack preview orchestration. This intentionally does NOT run on pull_request:
+# Neon branches and Modal deployments cost real resources, so a collaborator with repo write access
+# must explicitly click "Run workflow" when a production-like preview is worth it.
+name: Full Stack Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Provision or clean up a full-stack preview"
+        required: true
+        default: provision
+        type: choice
+        options:
+          - provision
+          - cleanup
+      preview_id:
+        description: "Stable lowercase id, for example pr-123"
+        required: true
+        type: string
+      neon_parent_branch:
+        description: "Neon parent branch name or id"
+        required: true
+        default: main
+        type: string
+      ttl_hours:
+        description: "Neon branch TTL in hours"
+        required: true
+        default: "48"
+        type: string
+      pr_number:
+        description: "Optional PR number to comment with preview details"
+        required: false
+        type: string
+      run_smoke:
+        description: "Run /api/leaderboard and /api/runs smoke after provision"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: full-stack-preview-${{ inputs.preview_id }}
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    if: github.repository == 'vishaltandale00/persuation-arena'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RAW_OPERATION: ${{ inputs.operation }}
+      RAW_PREVIEW_ID: ${{ inputs.preview_id }}
+      NEON_PARENT_BRANCH: ${{ inputs.neon_parent_branch }}
+      TTL_HOURS: ${{ inputs.ttl_hours }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+      RUN_SMOKE: ${{ inputs.run_smoke }}
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+      NEON_DATABASE_NAME: ${{ vars.NEON_DATABASE_NAME || 'neondb' }}
+      NEON_ROLE_NAME: ${{ vars.NEON_ROLE_NAME || 'neondb_owner' }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Normalize preview names
+        shell: bash
+        run: |
+          set -euo pipefail
+          preview_id="$(printf '%s' "$RAW_PREVIEW_ID" | tr '[:upper:]' '[:lower:]')"
+          if ! [[ "$preview_id" =~ ^[a-z0-9][a-z0-9-]{1,40}$ ]]; then
+            echo "::error title=Invalid preview_id::Use lowercase letters, numbers, and hyphens only, e.g. pr-123."
+            exit 1
+          fi
+          if ! [[ "$TTL_HOURS" =~ ^[0-9]+$ ]] || [ "$TTL_HOURS" -lt 1 ] || [ "$TTL_HOURS" -gt 168 ]; then
+            echo "::error title=Invalid ttl_hours::Use an integer from 1 to 168."
+            exit 1
+          fi
+          {
+            echo "PREVIEW_ID=$preview_id"
+            echo "NEON_BRANCH_NAME=pa-$preview_id"
+            echo "MODAL_APP_NAME=persuasion-arena-coordinator-$preview_id"
+            echo "MODAL_DB_SECRET_NAME=neon-database-url-$preview_id"
+            echo "MODAL_SPAWN_SECRET_NAME=arena-spawn-token-$preview_id"
+            echo "MODAL_URL_DICT_NAME=arena-coordinator-urls-$preview_id"
+          } >> "$GITHUB_ENV"
+
+      - name: Check owner-provided provider secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            NEON_API_KEY NEON_PROJECT_ID \
+            VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID \
+            MODAL_TOKEN_ID MODAL_TOKEN_SECRET
+          do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error title=Missing required secrets::%s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install CLIs and project deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g neonctl@2.27.1 vercel@50.1.2
+          python -m pip install --upgrade pip uv modal==1.5.1
+          uv sync
+
+      - name: Cleanup preview resources
+        if: inputs.operation == 'cleanup'
+        shell: bash
+        run: |
+          set -euo pipefail
+          modal app stop --yes "$MODAL_APP_NAME" || true
+          modal secret delete --yes --allow-missing "$MODAL_DB_SECRET_NAME" || true
+          modal secret delete --yes --allow-missing "$MODAL_SPAWN_SECRET_NAME" || true
+          modal dict delete --yes --allow-missing "$MODAL_URL_DICT_NAME" || true
+          printf 'y\n' | neon branches delete "$NEON_BRANCH_NAME" \
+            --project-id "$NEON_PROJECT_ID" \
+            --api-key "$NEON_API_KEY" || true
+          {
+            echo "### Full-stack preview cleaned up"
+            echo
+            echo "- Preview id: \`$PREVIEW_ID\`"
+            echo "- Neon branch: \`$NEON_BRANCH_NAME\`"
+            echo "- Modal app: \`$MODAL_APP_NAME\`"
+            echo
+            echo "Vercel preview deployments are immutable; deleting the Neon branch and stopping Modal removes the live backing resources."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment cleanup on PR
+        if: inputs.operation == 'cleanup' && inputs.pr_number != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/full-stack-preview-cleanup.md <<EOF
+          Full-stack preview \`$PREVIEW_ID\` was cleaned up.
+
+          - Neon branch: \`$NEON_BRANCH_NAME\`
+          - Modal app: \`$MODAL_APP_NAME\`
+          EOF
+          gh pr comment "$PR_NUMBER" --body-file /tmp/full-stack-preview-cleanup.md
+
+      - name: Create or reuse Neon preview branch
+        if: inputs.operation == 'provision'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expires_at="$(date -u -d "+${TTL_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)"
+          if neon branches get "$NEON_BRANCH_NAME" \
+              --project-id "$NEON_PROJECT_ID" \
+              --api-key "$NEON_API_KEY" \
+              --output json >/tmp/neon-branch.json 2>/dev/null; then
+            echo "Reusing Neon branch $NEON_BRANCH_NAME"
+            neon branches set-expiration "$NEON_BRANCH_NAME" \
+              --project-id "$NEON_PROJECT_ID" \
+              --api-key "$NEON_API_KEY" \
+              --expires-at "$expires_at" \
+              --output json >/tmp/neon-branch-expiration.json
+          else
+            neon branches create \
+              --project-id "$NEON_PROJECT_ID" \
+              --api-key "$NEON_API_KEY" \
+              --name "$NEON_BRANCH_NAME" \
+              --parent "$NEON_PARENT_BRANCH" \
+              --expires-at "$expires_at" \
+              --output json >/tmp/neon-branch.json
+          fi
+          database_url="$(neon connection-string "$NEON_BRANCH_NAME" \
+            --project-id "$NEON_PROJECT_ID" \
+            --api-key "$NEON_API_KEY" \
+            --role-name "$NEON_ROLE_NAME" \
+            --database-name "$NEON_DATABASE_NAME" \
+            --ssl require)"
+          echo "::add-mask::$database_url"
+          echo "DATABASE_URL=$database_url" >> "$GITHUB_ENV"
+
+      - name: Apply schema to Neon preview branch
+        if: inputs.operation == 'provision'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATABASE_URL="$DATABASE_URL" uv run python -c "from arena import store; store.init_schema(); print('preview Neon schema up to date')"
+
+      - name: Deploy isolated Modal preview coordinator
+        if: inputs.operation == 'provision'
+        shell: bash
+        run: |
+          set -euo pipefail
+          spawn_token="$(python - <<'PY'
+          import secrets
+          print("preview_" + secrets.token_urlsafe(32))
+          PY
+          )"
+          echo "::add-mask::$spawn_token"
+          echo "SPAWN_TOKEN=$spawn_token" >> "$GITHUB_ENV"
+
+          modal secret create --force "$MODAL_DB_SECRET_NAME" DATABASE_URL="$DATABASE_URL"
+          modal secret create --force "$MODAL_SPAWN_SECRET_NAME" ARENA_SPAWN_TOKEN="$spawn_token"
+
+          ARENA_MODAL_APP_NAME="$MODAL_APP_NAME" \
+          ARENA_MODAL_URL_DICT_NAME="$MODAL_URL_DICT_NAME" \
+          ARENA_MODAL_DB_SECRET_NAME="$MODAL_DB_SECRET_NAME" \
+          ARENA_MODAL_SPAWN_SECRET_NAME="$MODAL_SPAWN_SECRET_NAME" \
+            modal deploy --name "$MODAL_APP_NAME" arena/modal_app.py
+
+          spawn_url="$(
+            ARENA_MODAL_APP_NAME="$MODAL_APP_NAME" \
+              python - <<'PY'
+          import os
+          import modal
+          fn = modal.Function.from_name(os.environ["ARENA_MODAL_APP_NAME"], "spawn_endpoint")
+          print(fn.get_web_url())
+          PY
+          )"
+          echo "SPAWN_URL=$spawn_url" >> "$GITHUB_ENV"
+
+      - name: Deploy Vercel preview wired to preview Neon and Modal
+        if: inputs.operation == 'provision'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .vercel
+          cat > .vercel/project.json <<EOF
+          {"projectId":"$VERCEL_PROJECT_ID","orgId":"$VERCEL_ORG_ID"}
+          EOF
+          preview_url="$(
+            vercel deploy --yes \
+              --target=preview \
+              --token "$VERCEL_TOKEN" \
+              --env DATABASE_URL="$DATABASE_URL" \
+              --env ARENA_SPAWN_URL="$SPAWN_URL" \
+              --env ARENA_SPAWN_TOKEN="$SPAWN_TOKEN" \
+              | tail -n 1
+          )"
+          echo "VERCEL_PREVIEW_URL=$preview_url" >> "$GITHUB_ENV"
+
+      - name: Smoke preview API
+        if: inputs.operation == 'provision' && inputs.run_smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$VERCEL_PREVIEW_URL/api/leaderboard" -o /tmp/leaderboard.json
+          curl -fsS "$VERCEL_PREVIEW_URL/api/runs" -o /tmp/runs.json
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const leaderboard = JSON.parse(fs.readFileSync('/tmp/leaderboard.json', 'utf8'));
+          const runs = JSON.parse(fs.readFileSync('/tmp/runs.json', 'utf8'));
+          if (!Array.isArray(leaderboard.competitors)) throw new Error('leaderboard.competitors missing');
+          const runList = Array.isArray(runs) ? runs : runs.runs;
+          if (!Array.isArray(runList)) throw new Error('runs response is not an array');
+          console.log(`preview smoke ok: competitors=${leaderboard.competitors.length} runs=${runList.length}`);
+          NODE
+
+      - name: Summarize provisioned preview
+        if: inputs.operation == 'provision'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### Full-stack preview provisioned"
+            echo
+            echo "- Preview id: \`$PREVIEW_ID\`"
+            echo "- Vercel preview: $VERCEL_PREVIEW_URL"
+            echo "- Neon branch: \`$NEON_BRANCH_NAME\`"
+            echo "- Modal app: \`$MODAL_APP_NAME\`"
+            echo "- Modal spawn URL: $SPAWN_URL"
+            echo
+            echo "Cleanup: rerun this workflow with \`operation=cleanup\` and \`preview_id=$PREVIEW_ID\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment preview on PR
+        if: inputs.operation == 'provision' && inputs.pr_number != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/full-stack-preview.md <<EOF
+          Full-stack preview \`$PREVIEW_ID\` is ready.
+
+          - Vercel preview: $VERCEL_PREVIEW_URL
+          - Neon branch: \`$NEON_BRANCH_NAME\`
+          - Modal app: \`$MODAL_APP_NAME\`
+
+          Cleanup: rerun **Full Stack Preview** with \`operation=cleanup\` and \`preview_id=$PREVIEW_ID\`.
+          EOF
+          gh pr comment "$PR_NUMBER" --body-file /tmp/full-stack-preview.md

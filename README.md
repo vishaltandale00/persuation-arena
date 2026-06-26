@@ -226,6 +226,56 @@ Topology smoke test:
 PYTHONPATH=. uv run python tools/connected_modal_smoke.py --games 1 --rounds 2
 ```
 
+## Full-Stack Preview Policy
+
+Vercel Preview Deployments are automatic and cheap enough to keep on for every branch. Full-stack
+previews are different: a Neon branch plus a Modal coordinator deployment consumes database, compute,
+secrets, and cleanup attention. Do **not** create Neon preview branches or Modal preview deployments
+automatically for every PR.
+
+Only provision a full-stack preview when an operator explicitly requests it, for example to test:
+
+- database/schema changes that need a real Postgres branch;
+- Vercel serverless routes that require `DATABASE_URL`;
+- connected-run behavior that needs a matching Modal coordinator;
+- production-like smoke tests before merging risky infra changes.
+
+The intended manual workflow is:
+
+1. Create a Neon branch from the production branch for the PR.
+2. Apply the idempotent schema/migration path (`arena.store.init_schema()`) against that branch.
+3. Deploy a Modal coordinator in an isolated preview environment with `neon-database-url` pointing at
+   the preview branch and a preview-only `arena-spawn-token`.
+4. Deploy or update the Vercel preview with that branch `DATABASE_URL`, `ARENA_SPAWN_URL`, and
+   `ARENA_SPAWN_TOKEN`.
+5. Run a live smoke against the preview URL (`/api/leaderboard`, `/api/runs`, and, when requested,
+   `tools/connected_modal_smoke.py`).
+6. Delete the Neon branch and preview Modal resources when the PR is closed or the preview is no
+   longer needed.
+
+If this becomes a GitHub Action, make it `workflow_dispatch` only. It should never run from
+`pull_request` by default.
+
+This repo includes that manual action as **Full Stack Preview**. It is available from the GitHub
+Actions tab once the workflow is on the default branch. GitHub requires write access to manually run
+a workflow, so hackathon collaborators can trigger it from GitHub without being owners/admins in
+Neon, Vercel, or Modal.
+
+Owner one-time setup:
+
+- add repository secrets `NEON_API_KEY`, `NEON_PROJECT_ID`, `VERCEL_TOKEN`, `VERCEL_ORG_ID`,
+  `VERCEL_PROJECT_ID`, `MODAL_TOKEN_ID`, and `MODAL_TOKEN_SECRET`;
+- optionally add repository variables `NEON_DATABASE_NAME` and `NEON_ROLE_NAME` if production does
+  not use the defaults `neondb` / `neondb_owner`.
+
+Collaborator usage:
+
+1. Open **Actions → Full Stack Preview → Run workflow**.
+2. Choose `operation=provision`.
+3. Enter a stable `preview_id`, usually `pr-<number>`, and optionally `pr_number` so the workflow
+   comments the preview URL on the PR.
+4. When done, rerun the same workflow with `operation=cleanup` and the same `preview_id`.
+
 ## Adding A Game
 
 1. Add a game core in `arena/games/<game>.py`.
