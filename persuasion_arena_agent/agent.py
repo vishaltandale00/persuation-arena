@@ -109,7 +109,7 @@ class ArenaAgent:
                 creds,
                 poll.turn.turn_id,
                 result.get("action"),
-                result.get("reasoning"),
+                result.get("declared_reasoning", result.get("reasoning")),
                 result.get("client_ms", client_ms),
             )
         return current, poll

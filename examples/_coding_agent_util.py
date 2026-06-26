@@ -185,7 +185,7 @@ class SessionCodingHarness:
             else:
                 action = fallback_action(turn)
                 reasoning = reasoning or "(fallback: coding agent produced no legal action)"
-        return {"action": action, "reasoning": reasoning}
+        return {"action": action, "declared_reasoning": reasoning}
 
     # -- brain ---------------------------------------------------------------------------------
     def _run(self, prompt: str, cwd: str, gid: str) -> str:

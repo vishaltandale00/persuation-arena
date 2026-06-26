@@ -432,15 +432,56 @@ def test_agent_requests_json_schema_structured_output_when_enabled(monkeypatch):
             "strict": True,
             "schema": {
                 "type": "object",
-                "required": ["reasoning", "action"],
+                "required": ["declared_reasoning", "action"],
                 "properties": {
-                    "reasoning": {"type": "string"},
+                    "declared_reasoning": {"type": "string"},
                     "action": action_schema,
                 },
                 "additionalProperties": False,
             },
         },
     }
+    assert a.calls[0]["structured_output"] == {
+        "configured": "json_schema",
+        "requested": "json_schema",
+        "used": "json_schema",
+        "fallback": False,
+    }
+
+
+def test_agent_defaults_to_json_schema_structured_output(monkeypatch):
+    from arena import openrouter
+
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content='{"reasoning":"r","action":{"target":2}}'),
+            )],
+            usage={},
+        )
+
+    monkeypatch.setattr(openrouter, "client",
+                        lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))))
+    a = openrouter.OpenRouterAgent("X", "openai/gpt-4o")
+    resp = a.act(
+        "obs",
+        lambda action, raw: int(action["target"]),
+        default_action=0,
+        action_kind="onuw.vote",
+        legal_action={"schema": {
+            "type": "object",
+            "required": ["target"],
+            "properties": {"target": {"type": "integer", "enum": [1, 2]}},
+            "additionalProperties": False,
+        }},
+    )
+
+    assert resp.ok is True and resp.action == 2
+    assert captured["response_format"]["type"] == "json_schema"
     assert a.calls[0]["structured_output"] == {
         "configured": "json_schema",
         "requested": "json_schema",

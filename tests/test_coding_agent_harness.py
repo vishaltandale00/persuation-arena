@@ -45,21 +45,21 @@ class FakeBrain(SessionCodingHarness):
 
     def _call(self, prompt, cwd, session_id):
         self.calls.append((prompt, session_id))
-        text = self.scripted.pop(0) if self.scripted else '{"action":{"pass":true},"reasoning":""}'
+        text = self.scripted.pop(0) if self.scripted else '{"action":{"pass":true},"declared_reasoning":""}'
         return text, "sess-xyz"
 
 
 def test_first_turn_opens_session_later_turns_resume_with_only_deltas(tmp_path):
     h = FakeBrain([
-        json.dumps({"action": {"speak": "hello"}, "reasoning": "open"}),
-        json.dumps({"action": {"speak": "again"}, "reasoning": "delta"}),
+        json.dumps({"action": {"speak": "hello"}, "declared_reasoning": "open"}),
+        json.dumps({"action": {"speak": "again"}, "declared_reasoning": "delta"}),
     ], workdir=str(tmp_path))
 
     h.on_event(_event("game_setup", {"n": 5}))
     h.on_event(_event("role_info", {"seat": 0, "role": "Seer"}))
     out1 = h.act(_speak_turn())
 
-    assert out1 == {"action": {"speak": "hello"}, "reasoning": "open"}
+    assert out1 == {"action": {"speak": "hello"}, "declared_reasoning": "open"}
     first_prompt, first_session = h.calls[0]
     assert first_session is None                      # opened a fresh session
     assert "The game so far" in first_prompt          # opening prompt shape
@@ -68,7 +68,7 @@ def test_first_turn_opens_session_later_turns_resume_with_only_deltas(tmp_path):
     h.on_event(_event("speech", {"actor_seat": 2, "text": "I am the Robber"}))
     out2 = h.act(_speak_turn())
 
-    assert out2 == {"action": {"speak": "again"}, "reasoning": "delta"}
+    assert out2 == {"action": {"speak": "again"}, "declared_reasoning": "delta"}
     second_prompt, second_session = h.calls[1]
     assert second_session == "sess-xyz"               # resumed the SAME session, not a fresh one
     assert "New events since your last turn" in second_prompt
@@ -80,7 +80,7 @@ def test_first_turn_opens_session_later_turns_resume_with_only_deltas(tmp_path):
 def test_illegal_first_reply_is_repaired_in_the_same_session(tmp_path):
     h = FakeBrain([
         "not json at all",
-        json.dumps({"action": {"speak": "fixed"}, "reasoning": "ok"}),
+        json.dumps({"action": {"speak": "fixed"}, "declared_reasoning": "ok"}),
     ], workdir=str(tmp_path))
     out = h.act(_speak_turn())
     assert out["action"] == {"speak": "fixed"}
@@ -105,7 +105,7 @@ def test_failed_open_repairs_with_full_context_not_a_bare_nudge(tmp_path):
             self.calls.append((prompt, session_id))
             if len(self.calls) == 1:
                 return "<brain error: timeout>", None          # open fails, no session id
-            return json.dumps({"action": {"speak": "recovered"}, "reasoning": "ok"}), "sess-late"
+            return json.dumps({"action": {"speak": "recovered"}, "declared_reasoning": "ok"}), "sess-late"
 
     h = FailOpenBrain(workdir=str(tmp_path))
     h.on_event(_event("role_info", {"seat": 0, "role": "Robber"}))
@@ -215,7 +215,7 @@ def test_codex_argv_opens_with_sandbox_resumes_without_and_injects_model(tmp_pat
     import examples.codex_agent as cx
     calls: list[list[str]] = []
     monkeypatch.setattr(cx, "run_cli", lambda cmd, input_text=None, cwd=None: (
-        calls.append(cmd) or '{"action": {"pass": true}, "reasoning": "r"}'))
+        calls.append(cmd) or '{"action": {"pass": true}, "declared_reasoning": "r"}'))
 
     h = cx.CodexHarness(model="gpt-x", workdir=str(tmp_path))
     h._call("p", str(tmp_path), None)            # opening
@@ -245,11 +245,11 @@ def test_claude_agent_sdk_options_include_reasoning_effort(tmp_path, monkeypatch
 
     class AssistantMessage:
         def __init__(self):
-            self.content = [TextBlock('{"action":{"pass":true},"reasoning":"r"}')]
+            self.content = [TextBlock('{"action":{"pass":true},"declared_reasoning":"r"}')]
 
     class ResultMessage:
         def __init__(self):
-            self.result = '{"action":{"pass":true},"reasoning":"r"}'
+            self.result = '{"action":{"pass":true},"declared_reasoning":"r"}'
             self.session_id = "claude-session"
 
     class ClaudeAgentOptions:
@@ -273,7 +273,7 @@ def test_claude_agent_sdk_options_include_reasoning_effort(tmp_path, monkeypatch
         "p", str(tmp_path), None,
     )
 
-    assert text == '{"action":{"pass":true},"reasoning":"r"}'
+    assert text == '{"action":{"pass":true},"declared_reasoning":"r"}'
     assert session == "claude-session"
     assert captured["model"] == "claude-x"
     assert captured["effort"] == "high"

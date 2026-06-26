@@ -43,7 +43,7 @@ class SessionAgent:
         s.append({"role": "user", "content": action_request(turn)})
         action, reasoning, assistant = decide(self.model, s, turn)
         s.append(assistant)  # keep provider-native reasoning fields when OpenRouter returns them
-        return {"action": action, "reasoning": reasoning}
+        return {"action": action, "declared_reasoning": reasoning}
 
 
 # Module-level handlers for `arena-agent play ... examples/session_agent.py` (model via env).

@@ -22,6 +22,19 @@ function enrichTranscriptTurnReasoning(transcript, events, runId, gid) {
     if (!queues.has(key)) queues.set(key, []);
     queues.get(key).push(payload);
   }
+  const callLogs = transcript.agentCallLog || transcript.callLog || {};
+  const callQueues = new Map();
+  if (callLogs && typeof callLogs === 'object') {
+    for (const [seat, calls] of Object.entries(callLogs)) {
+      if (!Array.isArray(calls)) continue;
+      for (const call of calls) {
+        if (!call || typeof call !== 'object' || !call.action_kind) continue;
+        const key = `${Number(seat)}:${String(call.action_kind)}`;
+        if (!callQueues.has(key)) callQueues.set(key, []);
+        callQueues.get(key).push(call);
+      }
+    }
+  }
 
   function normalizedText(value) {
     return String(value || '').split(/\s+/).filter(Boolean).join(' ');
@@ -42,9 +55,40 @@ function enrichTranscriptTurnReasoning(transcript, events, runId, gid) {
       return Number(action) === Number(replayEvent.tgt);
     }
     if (replayEvent.t === 'act') {
-      return payload.ok === true;
+      return true;
     }
     return false;
+  }
+
+  function matchingCallLog(payload, seat) {
+    if (!payload.action_kind) return {};
+    const queue = callQueues.get(`${Number(seat)}:${String(payload.action_kind)}`) || [];
+    if (!queue.length) return {};
+    for (let idx = 0; idx < queue.length; idx += 1) {
+      const candidate = queue[idx];
+      const sameRaw = payload.raw != null && candidate.raw === payload.raw;
+      const sameOk = payload.ok == null || Boolean(candidate.ok !== false) === Boolean(payload.ok);
+      const sameMs = Number.isFinite(Number(candidate.ms)) && Number.isFinite(Number(payload.ms))
+        && Math.abs(Number(candidate.ms) - Number(payload.ms)) < 0.01;
+      if (sameOk && (sameMs || sameRaw)) return queue.splice(idx, 1)[0];
+    }
+    return queue.shift() || {};
+  }
+
+  function attachTurnTelemetry(event, payload, call = {}) {
+    const ok = payload.ok ?? call.ok;
+    if (ok != null) {
+      event.model_call_ok = Boolean(ok);
+      if (!ok) event.defaulted = true;
+    }
+    const validationError = payload.validation_error || call.validation_error;
+    if (validationError) event.validation_error = validationError;
+    const raw = payload.raw || call.raw;
+    if (raw) event.raw_model_output = raw;
+    if (payload.action_kind || call.action_kind) event.action_kind = payload.action_kind || call.action_kind;
+    if (payload.model || call.model) event.model = payload.model || call.model;
+    if (call.structured_output) event.structured_output = call.structured_output;
+    if (call.finish_reason != null) event.finish_reason = call.finish_reason;
   }
 
   for (const phase of enriched.phases || []) {
@@ -65,6 +109,8 @@ function enrichTranscriptTurnReasoning(transcript, events, runId, gid) {
             'provider_reasoning',
             'provider_reasoning_details',
             'raw',
+            'ok',
+            'validation_error',
             'action_kind',
             'model',
             'ms',
@@ -76,12 +122,11 @@ function enrichTranscriptTurnReasoning(transcript, events, runId, gid) {
       }
       const payload = queue[matchIdx];
       queue.splice(0, matchIdx + 1);
+      const call = matchingCallLog(payload, Number(event.pid));
       if (payload.reasoning) event.declared_reasoning = payload.reasoning;
       if (payload.provider_reasoning != null) event.provider_reasoning = payload.provider_reasoning;
       if (payload.provider_reasoning_details != null) event.provider_reasoning_details = payload.provider_reasoning_details;
-      if (payload.raw) event.raw_model_output = payload.raw;
-      if (payload.action_kind) event.action_kind = payload.action_kind;
-      if (payload.model) event.model = payload.model;
+      attachTurnTelemetry(event, payload, call);
     }
   }
   return enriched;

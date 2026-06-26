@@ -485,7 +485,7 @@ class ONUW(Game):
         targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.doppelganger.copy_player") + (
             "\n\nNIGHT ACTION (Doppelganger): look at one player's card and become a copy of that role.\n"
-            'Reply JSON {"reasoning":"...","action":{"target":"@participant"}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"target":"@participant"}}.'
         )
 
         def parse(a, raw):
@@ -533,7 +533,7 @@ class ONUW(Game):
             "\n\nNIGHT ACTION (Seer): choose ONE:\n"
             '  {"mode":"player","target":"@participant"}  view one other player\'s card, OR\n'
             '  {"mode":"center","indices":[a,b]}  view two of the three center cards (0-based).\n'
-            'Reply JSON {"reasoning":"...","action":{...}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{...}}.'
         )
 
         def parse(a, raw):
@@ -605,7 +605,7 @@ class ONUW(Game):
         targets = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.robber.swap_or_decline") + (
             "\n\nNIGHT ACTION (Robber): swap your card with a player's and see your new role, or decline.\n"
-            'Reply JSON {"reasoning":"...","action":{"target":"@participant or null"}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"target":"@participant or null"}}.'
         )
 
         def parse(a, raw):
@@ -644,7 +644,7 @@ class ONUW(Game):
         others = [i for i in range(self.n) if i != pid]
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.troublemaker.swap_two_or_decline") + (
             "\n\nNIGHT ACTION (Troublemaker): swap two OTHER players' cards (you don't see them), or decline.\n"
-            'Reply JSON {"reasoning":"...","action":{"a":"@participant or null","b":"@participant or null"}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"a":"@participant or null","b":"@participant or null"}}.'
         )
 
         def parse(a, raw):
@@ -707,7 +707,7 @@ class ONUW(Game):
     def _drunk_action(self, pid: int, agent: Agent):
         prompt = self.base_prompt(pid, phase="night", action_kind="onuw.drunk.swap_center") + (
             "\n\nNIGHT ACTION (Drunk): swap your card with a center card (0-based) without looking.\n"
-            'Reply JSON {"reasoning":"...","action":{"index":<0,1,2>}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"index":<0,1,2>}}.'
         )
 
         def parse(a, raw):
@@ -824,8 +824,8 @@ class ONUW(Game):
             "corrections, direct rebuttals, or critical claims; use 1 for low-priority contributions. "
             "You may pass with stance \"wait\" if you specifically want more discussion before voting, "
             "or stance \"done\" if you are ready to end discussion and vote.\n"
-            'Reply JSON {"reasoning":"...","action":{"speak":"<what you say>","urgency":1|2|3}} '
-            'or {"reasoning":"...","action":{"pass":true,"stance":"wait"|"done"}}.'
+            'Reply JSON {"declared_reasoning":"...","action":{"speak":"<what you say>","urgency":1|2|3}} '
+            'or {"declared_reasoning":"...","action":{"pass":true,"stance":"wait"|"done"}}.'
         )
 
         def parse(a, raw):
@@ -946,7 +946,7 @@ class ONUW(Game):
         prompt = self.base_prompt(pid, phase="vote", action_kind="onuw.vote") + (
             "\n\nFINAL VOTE: point at the player you believe should be eliminated, or vote for no one. "
             "You cannot vote for yourself.\n"
-            f'Reply JSON {{"reasoning":"...","action":{{"target":"@participant"}}}} or {{"action":{{"target":"{NO_ONE_REF}"}}}} for no one.'
+            f'Reply JSON {{"declared_reasoning":"...","action":{{"target":"@participant"}}}} or {{"action":{{"target":"{NO_ONE_REF}"}}}} for no one.'
         )
 
         def parse(a, raw):

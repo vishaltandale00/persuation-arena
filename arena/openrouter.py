@@ -1,9 +1,9 @@
 """OpenRouter-backed agent.
 
 An agent receives a filtered text observation + a JSON action schema for the turn, and returns
-a parsed {"reasoning": str, "action": ...}. That JSON field is `declared_reasoning`: private
-agent-authored rationale logged by the arena. OpenRouter/provider-native reasoning is requested and
-stored separately as `provider_reasoning` when the provider returns it.
+a parsed {"declared_reasoning": str, "action": ...}. That field is private agent-authored rationale
+logged by the arena. OpenRouter/provider-native reasoning is requested and stored separately as
+`provider_reasoning` when the provider returns it.
 
 On a malformed/failed response we retry once, then fall back to a safe default the caller supplies.
 """
@@ -53,6 +53,7 @@ class AgentResponse:
         declared_reasoning: str = "",
         provider_reasoning: Any = None,
         provider_reasoning_details: Any = None,
+        validation_error: str | None = None,
     ) -> None:
         self.declared_reasoning = declared_reasoning
         self.action = action
@@ -61,6 +62,7 @@ class AgentResponse:
         self.ms = ms
         self.provider_reasoning = provider_reasoning
         self.provider_reasoning_details = provider_reasoning_details
+        self.validation_error = validation_error
 
 
 def _extract_json(text: str) -> dict | None:
@@ -107,9 +109,9 @@ def _structured_schema_name(action_kind: str | None) -> str:
 def _response_schema(action_schema: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "type": "object",
-        "required": ["reasoning", "action"],
+        "required": ["declared_reasoning", "action"],
         "properties": {
-            "reasoning": {"type": "string"},
+            "declared_reasoning": {"type": "string"},
             "action": action_schema or {},
         },
         "additionalProperties": False,
@@ -160,6 +162,7 @@ class OpenRouterAgent:
         raw: str,
         provider_reasoning: Any,
         provider_reasoning_details: Any,
+        validation_error: str | None = None,
     ) -> None:
         assistant_message: dict[str, Any] = {"role": "assistant", "content": raw}
         if provider_reasoning_details is not None:
@@ -184,7 +187,7 @@ class OpenRouterAgent:
         }
 
     def _response_format(self, action_kind: str | None, action_schema: dict[str, Any] | None) -> dict[str, Any] | None:
-        mode = getattr(SETTINGS.caps, "openrouter_structured_output", "off")
+        mode = getattr(self.caps, "openrouter_structured_output", "off")
         if mode == "off":
             return None
         if mode == "auto":
@@ -300,7 +303,7 @@ class OpenRouterAgent:
             if obj is None:
                 last_validation_error = "response did not contain a JSON object"
                 continue
-            declared_reasoning = str(obj.get("reasoning", "")).strip()
+            declared_reasoning = str(obj.get("declared_reasoning", obj.get("reasoning", ""))).strip()
             try:
                 action = parse_action(obj.get("action"), last_raw)
             except (ValueError, KeyError, TypeError, AttributeError) as e:
@@ -336,6 +339,7 @@ class OpenRouterAgent:
                 raw=last_raw,
                 provider_reasoning=provider_reasoning,
                 provider_reasoning_details=provider_reasoning_details,
+                validation_error=last_validation_error,
             )
             return AgentResponse(
                 declared_reasoning=declared_reasoning,
@@ -382,4 +386,5 @@ class OpenRouterAgent:
             ms=ms,
             provider_reasoning=provider_reasoning,
             provider_reasoning_details=provider_reasoning_details,
+            validation_error=last_validation_error or last_error,
         )

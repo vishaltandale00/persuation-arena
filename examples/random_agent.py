@@ -15,25 +15,25 @@ def act(turn):
     players = _players(turn)
     if kind == "onuw.discussion.speak_or_pass":
         if _rng.random() < 0.35:
-            return {"action": {"pass": True}, "reasoning": "Randomly chose silence."}
+            return {"action": {"pass": True}, "declared_reasoning": "Randomly chose silence."}
         return {"action": {"speak": "I am not certain yet, but I want pressure on quiet seats."},
-                "reasoning": "Random baseline chose to speak."}
+                "declared_reasoning": "Random baseline chose to speak."}
     if kind == "onuw.vote":
-        return {"action": {"target": _rng.choice(players + [NO_ONE_REF])}, "reasoning": "Random legal vote."}
+        return {"action": {"target": _rng.choice(players + [NO_ONE_REF])}, "declared_reasoning": "Random legal vote."}
     if kind == "onuw.seer.inspect":
         if players and _rng.random() < 0.5:
-            return {"action": {"mode": "player", "target": _rng.choice(players)}, "reasoning": "Random player inspect."}
-        return {"action": {"mode": "center", "indices": [0, 1]}, "reasoning": "Random center inspect."}
+            return {"action": {"mode": "player", "target": _rng.choice(players)}, "declared_reasoning": "Random player inspect."}
+        return {"action": {"mode": "center", "indices": [0, 1]}, "declared_reasoning": "Random center inspect."}
     if kind == "onuw.troublemaker.swap_two_or_decline":
         if len(players) >= 2 and _rng.random() < 0.7:
             a, b = _rng.sample(players, 2)
-            return {"action": {"a": a, "b": b}, "reasoning": "Random swap."}
-        return {"action": {"a": None, "b": None}, "reasoning": "Random decline."}
+            return {"action": {"a": a, "b": b}, "declared_reasoning": "Random swap."}
+        return {"action": {"a": None, "b": None}, "declared_reasoning": "Random decline."}
     if kind == "onuw.robber.swap_or_decline":
         return {"action": {"target": _rng.choice(players) if players and _rng.random() < 0.8 else None},
-                "reasoning": "Random robber choice."}
+                "declared_reasoning": "Random robber choice."}
     if kind == "onuw.doppelganger.copy_player":
-        return {"action": {"target": _rng.choice(players)}, "reasoning": "Random copy target."}
+        return {"action": {"target": _rng.choice(players)}, "declared_reasoning": "Random copy target."}
     if kind == "onuw.drunk.swap_center":
-        return {"action": {"index": _rng.choice([0, 1, 2])}, "reasoning": "Random center card."}
-    return {"action": {"pass": True}, "reasoning": "Fallback pass."}
+        return {"action": {"index": _rng.choice([0, 1, 2])}, "declared_reasoning": "Random center card."}
+    return {"action": {"pass": True}, "declared_reasoning": "Fallback pass."}

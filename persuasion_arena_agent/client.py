@@ -128,11 +128,14 @@ class ArenaHttpClient:
         return PollResponse.from_dict(r.json())
 
     def reply_turn(self, creds: AgentCredentials, turn_id: str, action: Any,
-                   reasoning: str | None = None, client_ms: int | None = None) -> dict:
+                   declared_reasoning: str | None = None, client_ms: int | None = None,
+                   *, reasoning: str | None = None) -> dict:
+        if declared_reasoning is None:
+            declared_reasoning = reasoning
         r = self._request(
             "POST",
             f"/api/turns/{turn_id}/reply",
             headers=creds.auth_header(),
-            json={"action": action, "reasoning": reasoning, "client_ms": client_ms},
+            json={"action": action, "declared_reasoning": declared_reasoning, "client_ms": client_ms},
         )
         return r.json()

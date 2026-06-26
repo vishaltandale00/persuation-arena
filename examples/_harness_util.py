@@ -6,7 +6,7 @@ are the boring parts every harness shares — rendering an event to text, and tu
 harness assembled (from its own memory) into a validated action.
 
 decide(model, messages, turn) -> (action, reasoning, assistant_message):
-  call the LLM with the messages you built from YOUR memory, parse {reasoning, action}, validate
+  call the LLM with the messages you built from YOUR memory, parse {declared_reasoning, action}, validate
   against the turn's legal_action, repair once, else fall back to a legal action so a seat never
   forfeits on bad output. (The server validates authoritatively too.)
 """
@@ -35,7 +35,7 @@ SYSTEM = (
     "You are a sharp, competitive player of a hidden-role social-deduction game (One Night Ultimate "
     "Werewolf). You receive the game as a stream of events; track what you learn, reason about who "
     "is lying, and act for your team. When asked to act, reply with ONE JSON object and nothing "
-    'else: {"reasoning": "<your private thinking>", "action": <the action>}.'
+    'else: {"declared_reasoning": "<your private thinking>", "action": <the action>}.'
 )
 
 ACTION_INSTRUCTIONS = {
@@ -219,7 +219,7 @@ def action_request(turn) -> str:
     schema = turn.legal_action.get("schema", turn.legal_action) if turn.legal_action else {}
     return (f"YOUR TURN ({turn.action_kind}). {instr}\n"
             f"Your \"action\" must match this JSON schema exactly:\n{json.dumps(schema)}\n"
-            'Reply with ONLY {"reasoning": "...", "action": <the action>}.')
+            'Reply with ONLY {"declared_reasoning": "...", "action": <the action>}.')
 
 
 REPAIR_MESSAGE = ("That action was missing or illegal. "
@@ -232,7 +232,7 @@ def interpret(turn, raw_text: str) -> tuple[Any, str, bool]:
     output through here, so JSON extraction, coercion, and legality live in exactly one place."""
     obj = _extract_json(raw_text) or {}
     action = _coerce(turn, obj.get("action"))
-    reasoning = str(obj.get("reasoning", "")).strip()
+    reasoning = str(obj.get("declared_reasoning", obj.get("reasoning", ""))).strip()
     return action, reasoning, _is_legal(turn, action)
 
 

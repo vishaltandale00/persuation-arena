@@ -175,7 +175,7 @@ class Avalon(Game):
         prompt = self.base_prompt(leader) + (
             f"\n\nYou are the leader. Propose a quest team of EXACTLY {size} players (you may include yourself) "
             "and say one sentence to justify it.\n"
-            f'Reply JSON {{"reasoning":"...","action":{{"team":["@participant", ... {size} total],"statement":"<one sentence>"}}}}.'
+            f'Reply JSON {{"declared_reasoning":"...","action":{{"team":["@participant", ... {size} total],"statement":"<one sentence>"}}}}.'
         )
 
         def parse(a, raw):
@@ -193,7 +193,7 @@ class Avalon(Game):
         prompt = self.base_prompt(pid) + (
             f"\n\nThe proposed quest team is: {', '.join(self.names[t] for t in team)}. "
             "Vote to APPROVE or REJECT this team.\n"
-            'Reply JSON {"reasoning":"...","action":"approve"} or {"action":"reject"}.'
+            'Reply JSON {"declared_reasoning":"...","action":"approve"} or {"action":"reject"}.'
         )
 
         def parse(a, raw):
@@ -209,7 +209,7 @@ class Avalon(Game):
         prompt = self.base_prompt(pid) + (
             "\n\nYou are on the quest. Secretly play a card: SUCCESS or FAIL. "
             "(Only evil may fail; failing advances evil but exposes that an evil player was on the team.)\n"
-            'Reply JSON {"reasoning":"...","action":"success"} or {"action":"fail"}.'
+            'Reply JSON {"declared_reasoning":"...","action":"success"} or {"action":"fail"}.'
         )
 
         def parse(a, raw):
@@ -228,7 +228,7 @@ class Avalon(Game):
             "\n\nGood has completed 3 quests. As the Assassin you get ONE guess: name the player you believe is MERLIN. "
             "If correct, evil steals the win.\n"
             f"Candidates (good players): {', '.join(participant_label(self.names, g) for g in good_seats)}.\n"
-            'Reply JSON {"reasoning":"...","action":"@participant"}.'
+            'Reply JSON {"declared_reasoning":"...","action":"@participant"}.'
         )
 
         def parse(a, raw):

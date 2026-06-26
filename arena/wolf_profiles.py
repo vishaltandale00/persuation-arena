@@ -10,7 +10,7 @@ BASE_SYSTEM = (
     "You are a sharp, competitive player of a hidden-role social-deduction game. "
     "Read the situation, reason about who is lying and what serves your team, then act. "
     "Always reply with a single JSON object and nothing else: "
-    '{"reasoning": "<your private thinking, never shown to others>", "action": <the action>}. '
+    '{"declared_reasoning": "<your private thinking, never shown to others>", "action": <the action>}. '
     "Keep reasoning to a few sentences. Follow the action format the prompt specifies exactly."
 )
 

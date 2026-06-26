@@ -565,6 +565,17 @@ def get_game(run_id: str, gid: int) -> dict | None:
         return json.loads(r["transcript_json"]) if r else None
 
 
+def update_game_transcript(run_id: str, gid: int, transcript: dict) -> bool:
+    """Replace a stored transcript JSON blob without touching scoring columns or player rows."""
+    ph = _ph()
+    with conn() as c:
+        cur = c.execute(
+            f"UPDATE games SET transcript_json={ph} WHERE run_id={ph} AND gid={ph}",
+            (json.dumps(transcript), run_id, gid),
+        )
+        return (cur.rowcount or 0) > 0
+
+
 def player_rows(run_id: str) -> list[dict]:
     ph = _ph()
     with conn() as c:

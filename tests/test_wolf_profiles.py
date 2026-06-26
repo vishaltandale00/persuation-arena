@@ -4,7 +4,7 @@ from arena.wolf_profiles import BASE_SYSTEM, PROFILE_INSTRUCTIONS, prompt_for
 def test_named_profiles_are_distinct() -> None:
     prompts = {name: prompt_for(name) for name in ("base", "bayes", "charisma", "chaos")}
     assert len(set(prompts.values())) == 4
-    assert all('"reasoning"' in prompt and '"action"' in prompt for prompt in prompts.values())
+    assert all('"declared_reasoning"' in prompt and '"action"' in prompt for prompt in prompts.values())
 
 
 def test_base_profile_preserves_original_prompt() -> None:

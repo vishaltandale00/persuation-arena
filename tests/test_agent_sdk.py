@@ -53,6 +53,7 @@ def test_http_client_uses_protocol_paths_and_bearer_headers():
                                              "run_status": "active", "events": [],
                                              "turn": None, "poll_after_ms": 250})
         if request.url.path == "/api/turns/turn_1/reply":
+            assert json.loads(request.content or b"{}")["declared_reasoning"] == "ok"
             return httpx.Response(200, json={"ok": True, "accepted": True})
         return httpx.Response(404, json={"path": request.url.path})
 
@@ -234,7 +235,7 @@ def test_arena_agent_ready_poll_act_and_event_cursor(tmp_path):
     def act(turn):
         calls["acts"] += 1
         assert turn.observation["text"] == "speak"
-        return {"action": {"speak": "hello"}, "reasoning": "test"}
+        return {"action": {"speak": "hello"}, "declared_reasoning": "test"}
 
     signup = agent.signup(run_id="run_1")
     agent.run_once([signup])

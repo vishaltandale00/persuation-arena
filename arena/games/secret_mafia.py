@@ -108,7 +108,7 @@ class SecretMafia(Game):
         if mafia and victims:
             kill, r, ms = self._pick(mafia[0], agents[mafia[0]],
                                   f"\n\nNIGHT (Mafia): choose a player to kill.\nReply JSON "
-                                  '{"reasoning":"...","action":"@participant"}.',
+                                  '{"declared_reasoning":"...","action":"@participant"}.',
                                   victims)
             reason[mafia[0]] = r
             events.append({"t": "act", "pid": mafia[0], "text": "Mafia targets " + self.names[kill], "ms": ms})
@@ -117,7 +117,7 @@ class SecretMafia(Game):
         if doc is not None:
             protect, r, ms = self._pick(doc, agents[doc],
                                     "\n\nNIGHT (Doctor): choose a player to protect (may be yourself).\nReply JSON "
-                                    '{"reasoning":"...","action":"@participant"}.',
+                                    '{"declared_reasoning":"...","action":"@participant"}.',
                                     self._alive_list(), default=doc)
             reason[doc] = r
             events.append({"t": "act", "pid": doc, "text": "Doctor protects " + self.names[protect], "ms": ms})
@@ -126,7 +126,7 @@ class SecretMafia(Game):
             others = [i for i in self.alive if i != det]
             tgt, r, ms = self._pick(det, agents[det],
                                 "\n\nNIGHT (Detective): choose a player to investigate.\nReply JSON "
-                                '{"reasoning":"...","action":"@participant"}.',
+                                '{"declared_reasoning":"...","action":"@participant"}.',
                                 others)
             reason[det] = r
             is_maf = self.role[tgt] == "Mafia"
@@ -155,7 +155,7 @@ class SecretMafia(Game):
             for pid in order:
                 prompt = self.base_prompt(pid) + (
                     "\n\nSpeak to the town — accuse, defend, or share (or fake) information.\n"
-                    'Reply JSON {"reasoning":"...","action":"<what you say>"} or {"action":"pass"}.')
+                    'Reply JSON {"declared_reasoning":"...","action":"<what you say>"} or {"action":"pass"}.')
 
                 def parse(a, raw):
                     s = str(a).strip()
@@ -181,7 +181,7 @@ class SecretMafia(Game):
             targets = [i for i in self._alive_list() if i != pid]
             tgt, r, ms = self._pick(pid, agents[pid],
                                 "\n\nVOTE: name the player to eliminate.\nReply JSON "
-                                '{"reasoning":"...","action":"@participant"}.',
+                                '{"declared_reasoning":"...","action":"@participant"}.',
                                 targets)
             votes[pid] = tgt; vote_ms[pid] = ms
         for pid in order:

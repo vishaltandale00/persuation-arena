@@ -287,11 +287,14 @@ class StreamingAgent:
             "ok": bool(getattr(resp, "ok", True)),
             "ms": getattr(resp, "ms", None),
             "action": getattr(resp, "action", None),
-            "reasoning": getattr(resp, "reasoning", ""),
+            "reasoning": getattr(resp, "declared_reasoning", ""),
         }
         raw = getattr(resp, "raw", None)
         if raw:
             payload["raw"] = raw
+        validation_error = getattr(resp, "validation_error", None)
+        if validation_error:
+            payload["validation_error"] = validation_error
         provider_reasoning = getattr(resp, "provider_reasoning", None)
         if provider_reasoning is not None:
             payload["provider_reasoning"] = provider_reasoning
