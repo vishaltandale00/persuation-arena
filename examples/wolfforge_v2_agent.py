@@ -38,6 +38,7 @@ from examples.wolfforge_v2_policy import (
     POLICY_VERSION,
     baseline_prompt_hash,
     build_messages,
+    build_strategy_overlay,
     charisma_baseline_system_prompt,
     fallback_action,
     interpret,
@@ -204,12 +205,16 @@ class WolfForgeV2Agent:
                  system_prompt_text: str | None = None,
                  policy_version: str = POLICY_VERSION,
                  prompt_hash_value: str | None = None,
-                 harness: str = "wolfforge-v2"):
+                 harness: str = "wolfforge-v2",
+                 strategy_overlay: bool = True):
         self.run_id = run_id
         self.config = config or V2Config.from_env()
         self.model = self.config.model
         self.agent_name = agent_name
         self.harness = harness
+        # The deterministic V2 strategy overlay (urgency hint + own-team/Tanner-bait vote guard). It
+        # is OFF for the frozen CharismaBaseline so the baseline arm stays byte-identical.
+        self.strategy_overlay = strategy_overlay
         self.system_prompt_text = system_prompt_text or system_prompt()
         self.policy_version = policy_version
         self.prompt_hash_value = prompt_hash_value or prompt_hash()
@@ -224,7 +229,7 @@ class WolfForgeV2Agent:
         kwargs.setdefault("agent_name", "CharismaBaseline")
         return cls(run_id, system_prompt_text=charisma_baseline_system_prompt(),
                    policy_version=BASELINE_POLICY_VERSION, prompt_hash_value=baseline_prompt_hash(),
-                   harness="charisma-baseline", **kwargs)
+                   harness="charisma-baseline", strategy_overlay=False, **kwargs)
 
     # ---- state isolation -----------------------------------------------------------------------
     def state_key(self, game_instance_id: str | None) -> str:
@@ -275,6 +280,10 @@ class WolfForgeV2Agent:
         diag = _StructuredDiag(requested=structured_requested)
         call_timeout = self._call_timeout(remaining)
 
+        # Build the deterministic strategy overlay once from this game's folded state (V2 only; None
+        # for CharismaBaseline so interpret() behaves byte-identically for the baseline arm).
+        strategy = build_strategy_overlay(state) if self.strategy_overlay else None
+
         result = self.brain.complete(messages, response_format=response_format, timeout=call_timeout)
         if result.structured_rejected:
             # Ladder rung: structured output rejected -> retry once without it, same budget. We never
@@ -283,7 +292,7 @@ class WolfForgeV2Agent:
             result = self.brain.complete(messages, response_format=None,
                                          timeout=self._call_timeout(self._remaining_s(turn.deadline_at)))
 
-        decision = interpret(action_kind, legal, result.content if result.ok else "")
+        decision = interpret(action_kind, legal, result.content if result.ok else "", strategy)
         if decision.legal:
             return self._commit(state, turn, t0, decision, result,
                                 repair_attempted=False, fallback_used=False, diag=diag)
@@ -302,7 +311,7 @@ class WolfForgeV2Agent:
                 diag.bypassed("provider_rejected_response_format")
                 r2 = self.brain.complete(repair_msgs, response_format=None,
                                          timeout=self._call_timeout(self._remaining_s(turn.deadline_at)))
-            decision2 = interpret(action_kind, legal, r2.content if r2.ok else "")
+            decision2 = interpret(action_kind, legal, r2.content if r2.ok else "", strategy)
             if decision2.legal:
                 return self._commit(state, turn, t0, decision2, r2,
                                     repair_attempted=True, fallback_used=False, diag=diag,

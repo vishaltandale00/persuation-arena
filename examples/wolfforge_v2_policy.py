@@ -25,7 +25,12 @@ import json
 from typing import Any
 
 from arena.identity import NO_ONE_REF, public_ref
-from examples._action_schema import normalize_action, shape_fingerprint, validate_action
+from examples._action_schema import (
+    _required_urgency_enum,
+    normalize_action,
+    shape_fingerprint,
+    validate_action,
+)
 from examples.seat_state import SeatState
 
 # Bump this whenever the policy text, state shape, or decision logic changes. It is recorded in
@@ -33,7 +38,11 @@ from examples.seat_state import SeatState
 # it. The prompt hash (below) is a finer-grained fingerprint of the literal prompt text.
 # v2.1: migrated the connected-agent action boundary from integer seats to participant @refs after
 # main hid internal seats behind public participant references.
-POLICY_VERSION = "wolfforge-v2.1"
+# v2.2: strategy overlay addressing the three failures found in run wf_v2_memoff_dev_20260625_194641
+# (Tanner went 0/8, evil agents fragged their own werewolves, every speech bid urgency 2): active
+# Tanner self-incrimination, a state-aware speech-urgency hint, and a deterministic own-team / Tanner-
+# bait vote guard. Prompt text changes here AND the deterministic overlay below both feed this version.
+POLICY_VERSION = "wolfforge-v2.2"
 
 # Public "vote for no one" sentinel. The connected protocol uses the participant ref "@no-one"; the
 # engine still maps it to the internal -1 seat. We never emit a bare -1 in a public action.
@@ -77,8 +86,15 @@ _COALITION_POLICY = (
     "for others to repeat; build a coalition around a shared plan.\n"
     "- Late discussion: stop expanding theories; summarize the strongest public case; name ONE "
     "explicit target; coordinate the vote; never contradict your own earlier claims at the buzzer.\n"
+    "- Speech urgency: bid urgency 3 to seize the floor when you hold hard private information (a "
+    "Seer view, a Robber swap, a confirmed Mason partner), when you are the Tanner courting a vote, "
+    "or when late discussion needs you to lock in a concrete target and coalition. Use lower urgency "
+    "for routine questions and early probing — if you shout every turn, your high-urgency signal "
+    "stops meaning anything and you waste the floor.\n"
     "- Vote: choose the legal target that maximizes your current role/objective's win probability, "
-    "not merely the loudest or most suspicious speaker. You cannot vote for yourself.\n"
+    "not merely the loudest or most suspicious speaker. You cannot vote for yourself. Never throw "
+    "your vote onto a member of your own team, and treat a player loudly begging to be voted out as "
+    "a likely Tanner trap rather than an easy kill.\n"
     "Respect night-action chronology (Doppelganger, Werewolves, Minion, Masons, Seer, Robber, "
     "Troublemaker, Drunk, Insomniac). Never make a mechanically impossible role claim."
 )
@@ -90,7 +106,10 @@ ROLE_POLICY: dict[str, str] = {
         "Village information roles (Villager, Seer, Mason, Insomniac, Hunter): you win by getting a "
         "final-role Werewolf eliminated. Anchor the table on hard mechanical evidence, protect "
         "confirmed allies (e.g. a verified Mason pair), and converge the vote onto the best-"
-        "supported wolf. As Hunter, remember your vote also kills your target if you die."
+        "supported wolf. As Hunter, remember your vote also kills your target if you die. Treat a "
+        "player who loudly insists on being voted out ('vote me out', 'eliminate me', 'I'm a "
+        "liability') as a likely Tanner trap: do NOT grant the wish while any plausible werewolf is "
+        "still a target, because killing the Tanner loses the game for the village."
     ),
     "Seer": (
         "Seer: you saw one player's card OR two center cards at night. Share enough to steer the "
@@ -113,17 +132,26 @@ ROLE_POLICY: dict[str, str] = {
     "Werewolf": (
         "Werewolf (evil): you win if NO final-role werewolf is voted out. Blend in, claim a benign "
         "village role consistently, build a coalition that points away from you, and quietly steer "
-        "the vote onto a villager. A lone wolf peeked one center card — use it for a safe claim."
+        "the vote onto a villager. A lone wolf peeked one center card — use it for a safe claim. "
+        "NEVER vote for a fellow werewolf you recognized at night; voting your own partner is the one "
+        "mistake that hands the village a free win — steer the kill onto a villager instead."
     ),
     "Minion": (
         "Minion (evil): you know the werewolves; they do not know you. You win if no werewolf is "
         "eliminated — and you may sacrifice yourself to draw the vote. Protect the wolves, bait a "
-        "village mis-vote, and never reveal which players are the wolves."
+        "village mis-vote, and never reveal which players are the wolves. NEVER cast your vote at a "
+        "werewolf you learned at night; if you have no safe villager target, abstain rather than "
+        "eliminate a wolf and lose the game for your team."
     ),
     "Tanner": (
-        "Tanner (no team): you win ONLY if YOU are voted out. Act suspicious enough to be eliminated "
-        "without being so obvious the table deliberately spares you to deny your win. Never reveal "
-        "you are the Tanner."
+        "Tanner (no team): you win ONLY if YOU are voted out, so ACTIVELY court your own elimination. "
+        "Take the floor at high urgency and behave like a player with something to hide: over-claim, "
+        "give a slightly inconsistent or overconfident account, dodge a pointed question, or act "
+        "cagey — enough that the table reads you as a likely wolf and wants you gone. Do NOT play the "
+        "calm, helpful villager, and never say outright that you are the Tanner (the table will then "
+        "spare you to deny your win). When you vote, do not pile onto the most-likely werewolf or "
+        "otherwise look helpful — cast a plausible vote at a non-self target that keeps suspicion "
+        "pointed at you."
     ),
 }
 
@@ -334,6 +362,205 @@ def _opt_ref(x: Any) -> str | None:
         return None
     s = str(x).strip()
     return s or None
+
+
+# --------------------------------------------------------------------------------------------------
+# Strategy overlay (V2-only, deterministic, model-free)
+# --------------------------------------------------------------------------------------------------
+# A small, deterministic post-processing layer applied ONLY to WolfForgeV2 (never CharismaBaseline)
+# after the model's action is parsed. It encodes the three lessons from dev run
+# wf_v2_memoff_dev_20260625_194641: (1) bid urgency 3 in the states where seizing the floor matters
+# (Tanner, hard private info, late-with-a-plan) when the model omitted urgency; (2) never vote a
+# teammate the agent recognized at night; (3) as village, don't grant an obvious Tanner-bait its wish
+# while another target exists. It only ever changes an action to another LEGAL action, and it acts
+# solely on HIGH-CONFIDENCE belief — teammates learned in the night's private events, or a player's
+# own explicit public self-elimination — leaving everything else to the prompt and the model.
+
+# Display-name prefixes the engine uses in a seat's private night observations (arena/games/onuw.py).
+_WOLF_PARTNERS_PREFIX = "You woke as a Werewolf and saw: "
+_MINION_WOLVES_PREFIX = "As Minion you learned the werewolves: "
+# Concrete private knowledge that justifies seizing the floor at high urgency.
+_HARD_INFO_PREFIXES = (
+    "As Seer you looked",
+    "As Robber you swapped",
+    "As Mason you saw the other",
+    "As Insomniac you checked",
+    "As Troublemaker you swapped",
+    "As Doppelganger you copied",
+)
+# Strong self-elimination phrases that mark a player as a probable Tanner courting the vote. Kept
+# deliberately narrow (and negation-guarded below) so an ordinary defensive "don't vote me" is not
+# mistaken for a bait.
+# Deliberately first-person and specific: ordinary accusations ("P2 should be voted out") must NOT
+# match, only a player asking for their OWN elimination.
+_SELF_ELIM_PHRASES = (
+    "vote me out", "vote for me", "eliminate me", "get rid of me",
+    "i want to be voted", "i want to be eliminated", "i need to be voted",
+    "i should be voted", "i should be eliminated", "i must be eliminated",
+    "i'm a liability", "i am a liability", "i'm the one you want to vote",
+)
+_NEGATIONS = ("don't", "do not", "dont", "shouldn't", "should not", "never")
+
+
+def _believed_team(role: str | None) -> str:
+    """Map a believed CURRENT role to the team whose win condition the agent should optimize."""
+    if role == "Werewolf":
+        return "werewolf"
+    if role == "Minion":
+        return "minion"
+    if role == "Tanner":
+        return "tanner"
+    if role:
+        return "village"
+    return "unknown"
+
+
+def _names_after_prefix(text: str, prefix: str) -> list[str]:
+    """Parse the comma-separated display names following a known night-observation prefix."""
+    body = text[len(prefix):].rstrip(". ").strip()
+    if not body or body.lower().startswith("none"):
+        return []
+    return [n.strip() for n in body.split(",") if n.strip()]
+
+
+def _is_self_elimination(text: str) -> bool:
+    """True if a public line is a player asking to be voted out (not a negated 'don't vote me')."""
+    low = text.lower()
+    for phrase in _SELF_ELIM_PHRASES:
+        idx = low.find(phrase)
+        if idx == -1:
+            continue
+        window = low[max(0, idx - 16):idx]
+        if any(neg in window for neg in _NEGATIONS):
+            continue
+        return True
+    return False
+
+
+@dataclass(frozen=True)
+class StrategyOverlay:
+    """Deterministic, high-confidence strategic adjustments for one V2 turn (see section header)."""
+    believed_team: str = "unknown"
+    is_tanner: bool = False
+    has_hard_info: bool = False
+    is_late: bool = False
+    has_plan: bool = False
+    own_team_refs: frozenset[str] = frozenset()   # teammates recognized at night — never vote these
+    bait_refs: frozenset[str] = frozenset()       # players publicly begging to be voted out
+    self_ref: str | None = None
+    preferred_refs: tuple[str, ...] = ()          # this seat's own primary/secondary vote targets
+
+    # ---- speech urgency ------------------------------------------------------------------------
+    def speak_urgency_hint(self, enum: list | None) -> int:
+        """The state-aware urgency to use when the model omitted one. Max allowed when seizing the
+        floor matters (Tanner, hard private info, or a late vote-locking plan); otherwise the schema
+        minimum — we only RAISE the bid where it counts, we never invent a higher ordinary default."""
+        allowed = [u for u in (enum or [1, 2, 3]) if isinstance(u, int)] or [1, 2, 3]
+        if self.is_tanner or self.has_hard_info or (self.is_late and self.has_plan):
+            return max(allowed)
+        return min(allowed)
+
+    # ---- vote guard ----------------------------------------------------------------------------
+    def _pick_alternative(self, target: Any, legal_refs: list, avoid: frozenset[str]) -> Any:
+        """Choose a legal replacement vote target, preferring this seat's own planned targets, then
+        any other legal player, never a teammate/avoided/self ref. Returns None if none is safe."""
+        blocked = set(avoid) | self.own_team_refs | {target}
+        if self.self_ref:
+            blocked.add(self.self_ref)
+        for cand in self.preferred_refs:
+            if cand in legal_refs and cand not in blocked:
+                return cand
+        for cand in sorted(r for r in legal_refs if isinstance(r, str)):
+            if cand not in blocked:
+                return cand
+        return None
+
+    def guard_vote(self, target: Any, legal_refs: list) -> tuple[Any, str | None]:
+        """Redirect a vote that would frag a teammate or grant a Tanner-bait. Returns
+        (target, reason); reason is None when the original vote is kept."""
+        if self.believed_team in ("werewolf", "minion") and target in self.own_team_refs:
+            alt = self._pick_alternative(target, legal_refs, frozenset())
+            if alt is not None:
+                return alt, "own_team_guard"
+        if self.believed_team == "village" and target in self.bait_refs:
+            # Only redirect if a non-bait, non-self alternative actually exists.
+            if any(r != target and r not in self.bait_refs and r != self.self_ref for r in legal_refs):
+                alt = self._pick_alternative(target, legal_refs, self.bait_refs)
+                if alt is not None:
+                    return alt, "tanner_bait_guard"
+        return target, None
+
+    # ---- application ---------------------------------------------------------------------------
+    def adjust(self, action_kind: str, legal_action: dict | None, action: Any,
+               model_omitted_urgency: bool) -> Any:
+        """Return a possibly-adjusted action. Pure; caller re-validates legality before adopting."""
+        if not isinstance(action, dict):
+            return action
+        if action_kind == "onuw.discussion.speak_or_pass" and isinstance(action.get("speak"), str):
+            # Only set urgency when the model omitted it AND the schema actually has an urgency field
+            # (older/looser schemas without one are left exactly as the shared normalizer produced).
+            if model_omitted_urgency:
+                enum = _required_urgency_enum(legal_action)
+                if enum:
+                    hint = self.speak_urgency_hint(enum)
+                    if action.get("urgency") != hint:
+                        return {**action, "urgency": hint}
+            return action
+        if action_kind == "onuw.vote" and "target" in action:
+            new_target, reason = self.guard_vote(action["target"], legal_players(legal_action))
+            if reason is not None and new_target != action["target"]:
+                return {**action, "target": new_target}
+        return action
+
+
+def build_strategy_overlay(state: "GameState") -> StrategyOverlay:
+    """Build the deterministic overlay from a game's folded state (model-free). Teammate and bait
+    refs are derived from this seat's own private night events and the public conversation."""
+    s = state.seat
+    roster_names = set(s.roster.values())
+    my_name = s.roster.get(s.seat) if s.seat is not None else None
+    self_ref = public_ref(my_name) if my_name else None
+    believed_team = _believed_team(s.believed_role)
+
+    def to_refs(names: list[str]) -> set[str]:
+        return {public_ref(n) for n in names if n in roster_names}
+
+    own_team: set[str] = set()
+    has_hard_info = False
+    for obs in s.night_obs:
+        if obs.startswith(_WOLF_PARTNERS_PREFIX) and believed_team == "werewolf":
+            own_team |= to_refs(_names_after_prefix(obs, _WOLF_PARTNERS_PREFIX))
+        elif obs.startswith(_MINION_WOLVES_PREFIX) and believed_team == "minion":
+            own_team |= to_refs(_names_after_prefix(obs, _MINION_WOLVES_PREFIX))
+        if obs.startswith(_HARD_INFO_PREFIXES):
+            has_hard_info = True
+    own_team.discard(self_ref)
+
+    bait: set[str] = set()
+    speeches = 0
+    for line in s.public:
+        if ": " not in line:
+            continue
+        speaker, text = line.split(": ", 1)
+        speeches += 1
+        if _is_self_elimination(text) and speaker in roster_names:
+            ref = public_ref(speaker)
+            if ref != self_ref:
+                bait.add(ref)
+
+    preferred = tuple(r for r in (state.primary_target, state.secondary_target) if isinstance(r, str))
+    has_plan = state.primary_target is not None and len(state.coalition) >= 1
+    return StrategyOverlay(
+        believed_team=believed_team,
+        is_tanner=(s.believed_role == "Tanner"),
+        has_hard_info=has_hard_info,
+        is_late=speeches >= 2,
+        has_plan=has_plan,
+        own_team_refs=frozenset(own_team),
+        bait_refs=frozenset(bait),
+        self_ref=self_ref,
+        preferred_refs=preferred,
+    )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -562,8 +789,26 @@ def _exact_legal(action_kind: str, legal_action: dict | None, action: Any) -> tu
     return (True, None) if ok else (False, reason)
 
 
-def interpret(action_kind: str, legal_action: dict | None, raw_text: str) -> Decision:
+def _model_omitted_urgency(obj: Any) -> bool:
+    """True if neither the enveloped action nor a top-level action object carried an `urgency` key —
+    i.e. any urgency now present was filled by normalization, so the overlay may set it instead."""
+    if not isinstance(obj, dict):
+        return True
+    src = obj.get("action")
+    if not isinstance(src, dict):
+        src = obj
+    return not (isinstance(src, dict) and "urgency" in src)
+
+
+def interpret(action_kind: str, legal_action: dict | None, raw_text: str,
+              strategy: "StrategyOverlay | None" = None) -> Decision:
     """Parse one brain reply into a Decision. Pure: no model call, no mutation.
+
+    `strategy` (WolfForgeV2 only; CharismaBaseline always passes None so its behavior is byte-
+    identical) applies the deterministic strategy overlay to the chosen LEGAL action: a state-aware
+    speech-urgency fill when the model omitted urgency, and an own-team / Tanner-bait vote guard. The
+    overlay can only ever swap in another action that ALSO passes exact legality; otherwise the
+    original action is kept.
 
     Envelope recovery: the canonical reply nests the action under "action". Some models (notably
     gpt-4o-mini under a nested-envelope contract) occasionally drop the envelope and emit the action
@@ -587,6 +832,14 @@ def interpret(action_kind: str, legal_action: dict | None, raw_text: str) -> Dec
         ok2, reason2 = _exact_legal(action_kind, legal_action, recovered)
         if ok2:
             action, legal, reason = recovered, True, None
+    # V2-only deterministic overlay: adjust a legal action (urgency fill / vote guard), keeping it
+    # only if the adjusted action is itself exactly legal. No-op for CharismaBaseline (strategy=None).
+    if strategy is not None and legal:
+        adjusted = strategy.adjust(action_kind, legal_action, action, _model_omitted_urgency(obj))
+        if adjusted is not action and adjusted != action:
+            ok3, _ = _exact_legal(action_kind, legal_action, adjusted)
+            if ok3:
+                action = adjusted
     brief = str(obj.get("brief_reasoning", obj.get("reasoning", ""))).strip()
     update = obj.get("state_update") if isinstance(obj.get("state_update"), dict) else None
     return Decision(action=action, brief_reasoning=brief, state_update=update, legal=legal,
