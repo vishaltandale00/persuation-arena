@@ -11,10 +11,12 @@ This test introspects all three and fails loudly in CI when they disagree:
      typo'd / renamed-away / one-backend-only columns).
 
 It runs in plain pytest (no live Postgres): the SQLite side executes the real init_schema; the PG
-side is parsed from the DDL text.
+side is parsed from the DDL text. Scope is table/column presence only; type/default/index/constraint
+parity still depends on reviewing the handwritten DDL.
 """
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -89,7 +91,8 @@ def _sqlite_columns() -> dict[str, set[str]]:
     from arena import store
     os.environ.pop("DATABASE_URL", None)
     assert not store._is_pg(), "schema drift check must run on SQLite, not the remote DB"
-    tmp = Path(tempfile.mkdtemp(prefix="schema_drift_")) / "drift.db"
+    tmp_dir = Path(tempfile.mkdtemp(prefix="schema_drift_"))
+    tmp = tmp_dir / "drift.db"
     orig = store.DB_PATH
     store.DB_PATH = tmp
     try:
@@ -101,6 +104,7 @@ def _sqlite_columns() -> dict[str, set[str]]:
             return {t: {r["name"] for r in c.execute(f"PRAGMA table_info({t})")} for t in names}
     finally:
         store.DB_PATH = orig
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _insert_column_lists() -> list[tuple[str, str, list[str]]]:
